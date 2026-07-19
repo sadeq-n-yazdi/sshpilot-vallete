@@ -152,8 +152,11 @@ func strength(alg domain.Algorithm, pub ssh.PublicKey) (int, error) {
 		if !ok {
 			return 0, ErrMalformed
 		}
+		// A typed-nil *rsa.PublicKey wrapped in the interface would pass the
+		// assertion with ok == true; guard against it so rpk.N below can never
+		// nil-panic on a malformed key.
 		rpk, ok := cpk.CryptoPublicKey().(*rsa.PublicKey)
-		if !ok {
+		if !ok || rpk == nil {
 			return 0, ErrMalformed
 		}
 		n := rpk.N.BitLen()
