@@ -45,7 +45,8 @@
 | Risk | Vector | Mitigation | Status |
 | --- | --- | --- | --- |
 | `authorized_keys` directive injection | Option-bearing "public key" is stored and re-emitted | Canonical storage, forbid options | Confirmed (0006) |
-| Unauthorized key addition | Weak/absent management authN | Pluggable authN + owner-scoped authZ | Confirmed (0009, 0004); token model TBD |
+| Unauthorized key addition | Weak/absent management authN | Pluggable authN + owner-scoped authZ + token scopes | Confirmed (0009, 0004, 0018) |
+| Leaked management token | Bearer token stolen | Short-lived access tokens + revocable refresh creds + optional narrow scopes | Confirmed (0018); TTLs TBD |
 | Weak-key acceptance | DSA / short RSA | Algorithm + size floors at ingest | Confirmed (0006) |
 | Cross-tenant access | Missing owner scoping | Owner-scoping enforced in repository | Confirmed (0004, 0008) |
 | Duplicate/clobbered host files | Non-idempotent `>>` append | Managed-block helper (atomic, 0600, marked block) / AuthorizedKeysCommand | Confirmed (0013); helper form TBD |

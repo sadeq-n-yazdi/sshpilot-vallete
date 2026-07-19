@@ -31,6 +31,7 @@ consequences. They are the project's decision memory.
 | [0015](0015-https-only-transport-and-certificate-provisioning.md) | HTTPS-only transport with pluggable certificate provisioning | Accepted |
 | [0016](0016-named-key-sets.md) | Named key sets per owner | Accepted |
 | [0017](0017-reserved-blocklisted-identifiers.md) | Reserved / blocklisted identifiers | Accepted |
+| [0018](0018-auth-credentials-enrollment-and-scopes.md) | Auth credentials, enrollment, and authorization scopes | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.

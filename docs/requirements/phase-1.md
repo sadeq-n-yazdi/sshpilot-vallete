@@ -65,7 +65,8 @@ CLI for managing keys.
 | 19 | **ACME challenges**: TLS-ALPN-01 and DNS-01 (pluggable DNS providers, e.g. Cloudflare); HTTP-01 not used. | 0015 |
 | 20 | **Multiple named key sets** per owner (many-to-many key membership), addressed at `/{handle}/{set}`; bare `/{handle}` serves an owner-designated **default set**; **visibility is per set** (access keys per set). | 0016, 0010 |
 | 21 | **Reserved-identifier blocklist** for handles & key-set names (system/impersonation/offensive terms + confusable/leetspeak matching); built-in default, deployer-seedable, and **runtime-editable by a system administrator** (audited). Introduces an **administrator** role. | 0017 |
-| 22 | Management credentials: **refresh + short-lived access tokens**; enrollment via **device-authorization grant, manual token paste, or in-client login** (deployer/owner choice). | 0009 (+ auth ADR TBD) |
+| 22 | Management credentials: **refresh + short-lived access tokens** (individually revocable); enrollment via **device-authorization grant, manual token paste, or in-client login** (deployer/owner choice). | 0009, 0018 |
+| 23 | Authorization: tokens carry **scopes** — default **full owner authority**, with mintable narrower scopes (read-only, single-set, single-device). Admin authority is a separate axis. | 0018 |
 
 ## 4. Phase-1 scope (as described so far)
 
@@ -147,12 +148,13 @@ store (→ SQLite + Postgres, decision 4), CA signing (→ deferred, decision 16
 
 Still open:
 
-1. **Protected-handle access mechanism:** when a handle requires a key, how is it
+1. **Protected-set access mechanism:** when a set requires a key, how is it
    presented so plain `curl` still works? (`Authorization` header, `?key=` query,
    basic-auth?) Each has caching/logging/leak trade-offs.
-2. **Token model:** scope, lifetime, rotation, and revocation for API tokens and
-   device-pairing credentials.
-3. **OIDC specifics:** which providers, discovery/config, claim→owner mapping.
+2. **Auth fine detail:** exact scope catalog, access/refresh token TTLs, and
+   revocation propagation (short TTL vs revocation check). (Model set in ADR-0018.)
+3. **OIDC & WebAuthn specifics:** which OIDC providers, discovery/config,
+   claim→owner mapping and account linking; WebAuthn RP configuration.
 4. **Instance config mechanism:** file/env schema for enabling auth providers,
    onboarding mode, default handle visibility, and store selection.
 5. **Handle claiming & uniqueness**, reservation, and change/rename rules
@@ -192,9 +194,11 @@ Still open:
   (many-to-many key membership), addressed at `/{handle}/{set}` with a default
   set at `/{handle}`; visibility and access keys are per set. Added ADR-0016;
   refined ADR-0004 and ADR-0010.
-- 2026-07-19 (auth cluster, partial) — Management credentials = refresh +
-  short-lived access tokens; enrollment supports device-authorization grant,
-  manual token paste, and in-client login (decision #22). Full auth ADR pending.
+- 2026-07-19 (gap: auth) — Consolidated the auth model in ADR-0018: refresh +
+  short-lived access tokens (individually revocable), enrollment via
+  device-grant / manual paste / in-client login, and scoped authorization
+  (default full owner authority; mintable read-only / single-set / single-device
+  scopes). Admin authority is a separate axis (decisions #22, #23).
 - 2026-07-19 (feature: reserved identifiers) — System-wide blocklist for handles
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system
