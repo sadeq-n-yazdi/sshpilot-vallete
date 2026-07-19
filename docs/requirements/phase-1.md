@@ -63,7 +63,7 @@ CLI for managing keys.
 | 17 | Transport is **HTTPS-only**: no plaintext listener, plaintext **refused** (not redirected), HSTS, TLS ≥ 1.2. | 0015 |
 | 18 | **Certificate modes** (deployer selects): automatic ACME, operator-provided cert+key, generate CSR for external signing, TLS terminated upstream, or **ephemeral self-signed** (dev/install-bootstrap only; ≤ ~6h validity; refused in production without explicit override). | 0015 |
 | 19 | **ACME challenges**: TLS-ALPN-01 and DNS-01 (pluggable DNS providers, e.g. Cloudflare); HTTP-01 not used. | 0015 |
-| 20 | **Multiple named key sets** per owner (many-to-many key membership), addressed at `/{handle}/{set}`; bare `/{handle}` serves an owner-designated **default set**; **visibility is per set** (access keys per set). | 0016, 0010 |
+| 20 | **Multiple named key sets** per owner (many-to-many key membership), addressed at `/{handle}/{set}`; bare `/{handle}` serves an owner-designated **default set**; **visibility is per set** (access keys per set). **Set names:** lowercase `a–z`/`0–9`/hyphen, 1–64 chars, blocklist applies. **Max sets default 100** (configurable). **Default set not deletable** (reassign first); **non-empty delete needs confirmation**; **freed set names quarantine**. | 0016, 0010 |
 | 21 | **Reserved-identifier blocklist** for handles & key-set names (system/impersonation/offensive terms + confusable/leetspeak matching); built-in default, deployer-seedable, and **runtime-editable by a system administrator** (audited). Introduces an **administrator** role. | 0017 |
 | 22 | Management credentials: **refresh + short-lived access tokens** (individually revocable). **Access TTL 15m**; **refresh rotates on use** (reuse-theft detection) with a **90-day absolute cap**; revocation **hybrid** (TTL + small live denylist for immediate effect). Enrollment via **device-authorization grant, manual token paste, or in-client login** (deployer/owner choice). | 0009, 0018 |
 | 23 | Authorization: tokens carry **scopes** — default **full owner authority**, with mintable narrower scopes (**read-only, single-set, single-device**, each bound to exactly one resource). Admin authority is a separate axis. **OIDC** provider-agnostic via discovery + configurable claim mapping; documented/tested for Keycloak/Authentik, Google, Microsoft Entra, Auth0, GitHub. | 0018 |
@@ -71,7 +71,7 @@ CLI for managing keys.
 | 25 | **Testing**: all code covered by **unit + e2e** tests spanning **happy, fail, and gray** paths; positive *and* negative tests mandatory; CI-enforced coverage gate; run against SQLite and Postgres. | 0020 |
 | 26 | **Self-served API docs**: `GET /docs/` returns the OpenAPI document by requested type (rendered HTML / YAML / JSON), **default JSON**; `/docs/spec/` gives stable JSON/YAML URLs; assets bundled (no CDN); exposure deployer-configurable. | 0021 |
 | 27 | **Config**: structured file (YAML/TOML) + env overrides (env > file > defaults), validated fail-closed at startup. **Secrets** never in the file — via env/file refs behind a pluggable secret-provider interface (Vault/KMS later); never logged. | 0022 |
-| 28 | **Protected-set access** presented as an **`Authorization: Bearer`** header (never query string). | 0010 |
+| 28 | **Protected-set access** presented as an **`Authorization: Bearer`** header (never query string). Per-set access keys: **multiple named, independently revocable**, **rotate-with-grace**, **stored hashed**, **shown in plaintext once** at creation. | 0010 |
 | 29 | **Rate limiting**: built-in, tiered, configurable (auth/signup/publish/admin), `429`+`Retry-After`, trusted-IP keying; coexists with external limiters. | 0023 |
 | 30 | **Audit retention/erasure**: append-only + configurable retention purge; **pseudonymize** owner data on deletion/erasure while keeping the structural record. | 0024 |
 | 31 | **Observability**: OpenTelemetry (OTLP) core + Prometheus `/metrics`; supports Grafana/New Relic/Datadog/etc. by config; `/healthz`+`/readyz` (readiness reflects DB & cert); `/metrics` exposure configurable; no secrets/PII in telemetry. | 0025 |
@@ -168,8 +168,8 @@ store (→ SQLite + Postgres, decision 4), CA signing (→ deferred, decision 16
 Still open:
 
 1. ~~Protected-set access mechanism~~ — **resolved:** `Authorization: Bearer`
-   header (ADR-0010). Access-key issuance/rotation/revocation lifecycle remains
-   open (§5a).
+   header (ADR-0010); access-key issuance/rotation/revocation lifecycle resolved
+   in §5a (multiple named keys, rotate-with-grace, hashed, shown once).
 2. ~~Auth fine detail~~ — **resolved (ADR-0018):** access TTL **15m**; refresh
    **rotates on use** with reuse-theft detection and **90-day absolute cap**;
    revocation is **hybrid** (TTL + small live denylist for immediate effect).
@@ -184,10 +184,14 @@ Still open:
    via env/file refs behind a pluggable provider (ADR-0022). Exact schema/field
    names and YAML-vs-TOML remain implementation detail.
 5. ~~Handle claiming & uniqueness / rename rules~~ — **resolved:** globally
-   unique; rename allowed with quarantine (ADR-0026). Quarantine duration and
-   set-name quarantine remain open (§5a).
-5a. **Key-set details:** set-name rules & reserved names; max sets per owner;
-   deleting a non-empty or default set; per-set access-key lifecycle.
+   unique; rename allowed with quarantine (ADR-0026). Quarantine **duration**
+   remains open (§Ops detail); set-name quarantine now resolved (§5a).
+5a. ~~Key-set details~~ — **resolved (ADR-0016):** set-name rules = lowercase
+   `a–z`/`0–9`/hyphen, 1–64 chars, blocklist applies; **max sets default 100**
+   (configurable); **default set not deletable** (reassign first); **non-empty
+   delete needs confirmation**; **freed set names quarantine**. Per-set access
+   keys: **multiple named, independently revocable, rotate-with-grace, stored
+   hashed, shown once** (ADR-0010).
 5b. **Blocklist details:** confusable/leetspeak folding tables and per-category
    match mode; false-positive handling / allowlist; treatment of existing
    identifiers that later become blocked; whether device names are covered.
@@ -256,6 +260,12 @@ Still open:
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system
   administrator** role (audited). Added ADR-0017.
+- 2026-07-19 (open items: key-set detail) — Fixed key-set tuning in ADR-0016 /
+  ADR-0010: set-name rules (lowercase/`0-9`/hyphen, 1–64, blocklist applies),
+  **max sets default 100** (configurable), **default set not deletable**,
+  **non-empty delete needs confirmation**, **freed set names quarantine**; per-set
+  access keys are **multiple named, independently revocable, rotate-with-grace,
+  hashed, shown once** (decisions #20, #28).
 - 2026-07-19 (open items: auth detail) — Fixed concrete auth tuning in ADR-0018:
   **access TTL 15m**, **rotating refresh** with reuse-theft detection and a
   **90-day absolute cap**, and **hybrid revocation** (TTL + small live denylist).

@@ -33,7 +33,9 @@ first priority throughout.
 - **Owner / Handle / Device** model; **owner-scoping enforced at the data layer**
   (multi-tenant isolation) (ADR-0004).
 - **Named key sets** per owner (many-to-many key membership); `/{handle}/{set}`,
-  bare `/{handle}` = owner-designated **default set** (#20 · ADR-0016).
+  bare `/{handle}` = owner-designated **default set**. Set names lowercase
+  `a–z`/`0–9`/hyphen, 1–64; **max 100** (configurable); **default not deletable**,
+  **non-empty delete confirmed**, **freed names quarantine** (#20 · ADR-0016).
 - **Handle lifecycle:** globally unique; **rename allowed with quarantine** so a
   freed handle never serves another owner's keys (old URL 404/410) (#32 · ADR-0026).
 - **Reserved-identifier blocklist** (system/impersonation/offensive +
@@ -52,7 +54,8 @@ first priority throughout.
 - **Publish semantics:** deterministic output, **short bounded TTL (~60s) + ETag**;
   protected sets never shared-cached; documented revocation window (#24 · ADR-0019).
 - **Per-set visibility:** public by default or **access-key protected**, presented
-  as **`Authorization: Bearer`** (#11, #28 · ADR-0010).
+  as **`Authorization: Bearer`**. Access keys: **multiple named, independently
+  revocable, rotate-with-grace, hashed, shown once** (#11, #28 · ADR-0010).
 - **Per-owner CA signing: deferred** beyond phase 1; model stays forward-compatible
   (#16 · ADR-0014).
 
@@ -131,8 +134,9 @@ Per-owner CA signing (ADR-0014); web/TUI/CLI management clients; teams/orgs/RBAC
   single-resource binding), access TTL 15m, rotating refresh + 90-day cap, hybrid
   revocation, OIDC discovery + claim mapping (Keycloak/Authentik, Google, Entra,
   Auth0, GitHub). Remaining: **WebAuthn RP config** (with library choice).
-- **Key-set detail:** set-name rules/reserved names, max sets, delete-default/
-  non-empty rules, per-set access-key lifecycle; whether set names quarantine.
+- ~~**Key-set detail:**~~ **resolved (ADR-0016/0010):** set-name rules, max 100,
+  delete rules (default protected / non-empty confirmed / freed names quarantine),
+  access-key lifecycle (multiple named, rotate-with-grace, hashed, shown once).
 - **Blocklist detail:** confusable/leetspeak folding tables, per-category match
   mode, false-positive allowlist, treatment of already-existing-now-blocked names.
 - **TLS detail:** EAB for ZeroSSL, first DNS-01 providers, cert/key/cred storage,
