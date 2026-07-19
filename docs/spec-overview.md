@@ -54,7 +54,9 @@ first priority throughout.
 - **Canonical storage; forbid `authorized_keys` options; reject weak keys**
   (DSA, RSA<3072). Publisher reconstructs lines, never echoes input (#12 · ADR-0006).
 - **Clientless distribution** via native `authorized_keys` (#6 · ADR-0003), applied
-  by **`curl` + managed-block helper** or **`AuthorizedKeysCommand`** (#15 · ADR-0013).
+  by **`curl` + managed-block helper** or **`AuthorizedKeysCommand`**; helper
+  delivered **both** as a signed release artifact and a served endpoint, with a
+  **pinned-hash verified install** (#15 · ADR-0013).
 - **Publish semantics:** deterministic output, **short bounded TTL (~60s) + ETag**;
   protected sets never shared-cached; documented revocation window (#24 · ADR-0019).
 - **Per-set visibility:** public by default or **access-key protected**, presented

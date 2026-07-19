@@ -31,14 +31,29 @@ Support and document **two application methods** for phase 1:
    `AuthorizedKeysCommand` to fetch keys on each auth, so hosts are always
    current without a cron/pull and without editing the file at all.
 
+### Helper delivery
+
+The managed-block helper is delivered **both ways**:
+
+- **Shipped with releases** — the audited script is a release artifact, covered
+  by the supply-chain controls (signed / SBOM / reproducible, ADR-0027), for
+  offline and version-pinned installs.
+- **Served from an endpoint** — the same script is available from the app for a
+  one-liner `curl` bootstrap.
+
+Because `curl | sh` is a trust decision, the docs show a **pinned-hash install**
+(download, verify the published checksum/signature, then run) rather than piping
+an unverified stream to a shell; the served copy and the release artifact are the
+same audited bytes.
+
 ## Consequences
 
 - Users pick convenience (`curl`) or always-current correctness
   (`AuthorizedKeysCommand`).
 - The helper's safety properties (atomicity, permissions, block markers, never
   removing unmanaged lines) are security-relevant and must be tested.
-- Helper delivery form (bundled script vs served script vs both) is an open
-  question.
+- Helper delivery form is **resolved: both** (release artifact + served
+  endpoint), with a pinned-hash verified install documented.
 
 ## Alternatives considered
 

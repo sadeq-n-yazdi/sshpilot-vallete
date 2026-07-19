@@ -58,7 +58,7 @@ CLI for managing keys.
 | 12 | Ingest security: **forbid `authorized_keys` options**; **canonical storage**; **reject weak keys** (DSA, RSA < 3072). | 0006 |
 | 13 | **Append-only audit log** of every access-affecting change. | 0007 |
 | 14 | Owner onboarding: **deployer-configurable** — open self-signup or invite/admin-provisioned. | 0012 |
-| 15 | Key application: support **`curl`** and **`AuthorizedKeysCommand`**; ship a **managed-block helper** for the curl path. | 0013 |
+| 15 | Key application: support **`curl`** and **`AuthorizedKeysCommand`**; ship a **managed-block helper** for the curl path, delivered **both** as a signed release artifact **and** from a served endpoint, with a **pinned-hash verified install**. | 0013 |
 | 16 | Per-owner **CA signing**: **deferred** beyond phase 1. | 0014 |
 | 17 | Transport is **HTTPS-only**: no plaintext listener, plaintext **refused** (not redirected), HSTS, **TLS 1.2+ with a strong-AEAD cipher allowlist, TLS 1.3 preferred**. Cert/key stored as **`0600` files**; renewal is **renew-ahead + backoff + alert** and **fail-closed on expiry** (never serve an expired cert). | 0015 |
 | 18 | **Certificate modes** (deployer selects): automatic **Let's Encrypt (ACME)** or **Cloudflare Origin CA** (the two selectable automatic providers in phase 1), operator-provided cert+key, generate CSR for external signing, TLS terminated upstream, or **ephemeral self-signed** (dev/install-bootstrap only; ≤ ~6h validity; refused in production without explicit override). Other ACME CAs (ZeroSSL/EAB) and other DNS providers are **deferred to later phases**. | 0015 |
@@ -213,8 +213,9 @@ Still open:
    ~60/min/IP, management ~120/min/cred, admin ~60/min) and a **pluggable
    in-memory / shared-store** counter design (shared with the auth revocation
    denylist) for multi-instance.
-7. **Managed-block helper form:** shell script shipped with releases vs an
-   endpoint that serves the script vs both.
+7. ~~Managed-block helper form~~ — **resolved (ADR-0013): both** — shipped as a
+   signed release artifact **and** served from an endpoint, with a **pinned-hash
+   verified install** documented (no blind `curl | sh`).
 8. ~~TLS specifics~~ — **resolved (ADR-0015):** phase 1 ships **two selectable
    automatic providers — Let's Encrypt (ACME, with both TLS-ALPN-01 and DNS-01
    solvers) and Cloudflare Origin CA**. **DNS-01** supports a **manual mode** and
@@ -280,6 +281,9 @@ Still open:
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system
   administrator** role (audited). Added ADR-0017.
+- 2026-07-19 (open items: helper delivery) — ADR-0013: the managed-block helper
+  ships **both** as a signed release artifact and from a served endpoint, with a
+  **pinned-hash verified install** (no blind `curl | sh`) (decision #15).
 - 2026-07-19 (open items: ops detail) — Fixed ops tuning: **quarantine default
   30 days** for handles & set names (ADR-0026); **audit retention 365 days** with
   **salted-hash/destroyed-salt** pseudonymization (ADR-0024); **rate-limit
