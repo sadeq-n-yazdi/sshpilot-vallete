@@ -26,9 +26,15 @@ func NewHandler(logger *slog.Logger, pinger Pinger) http.Handler {
 	mux.Handle("GET /healthz", healthzHandler())
 	mux.Handle("GET /readyz", readyzHandler(pinger, logger))
 
-	// Outermost first: every request gets an ID, then is logged, then is
-	// protected from panics.
+	// Outermost first: every response carries the transport policy, then every
+	// request gets an ID, then is logged, then is protected from panics.
+	//
+	// hstsMiddleware is outermost so the header is set before any inner layer
+	// can write — including the 500 that recoveryMiddleware writes for a
+	// panicking handler, which would otherwise be the one response that escapes
+	// without the policy.
 	return chain(mux,
+		hstsMiddleware,
 		requestIDMiddleware,
 		loggingMiddleware(logger),
 		recoveryMiddleware(logger),
