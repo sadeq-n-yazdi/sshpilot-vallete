@@ -69,6 +69,7 @@ func TestDefaultTermsAreSkeletonStable(t *testing.T) {
 		"favicon.ico":      true,
 		"sitemap.xml":      true,
 		"sshpilot-vallet":  true,
+		"sshpilot-vallete": true,
 		"customer-service": true,
 		"customer-support": true,
 		"contact-us":       true,
@@ -270,6 +271,73 @@ func TestWholeSkeletonTermsActuallyBlock(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestTheServiceCannotBeImpersonated pins the one reservation no route table
+// could ever make on its own: the product's own name. A handle equal to it,
+// under any spelling or separator, is a claim to be the operator.
+//
+// It is a named test rather than another row in the term walk because the
+// compound spelling is easy to get subtly wrong -- the module is
+// "sshpilot-vallete", and an entry that silently reserved a near-miss instead
+// would look correct in review while leaving the real name free.
+func TestTheServiceCannotBeImpersonated(t *testing.T) {
+	m := defaultMatcher(t)
+
+	for _, name := range []string{
+		"sshpilot", "vallet", "vallete",
+		"sshpilot-vallete", "sshpilot-vallet",
+		"sshpilotvallete", "SSHPilot-Vallete", "ssh-pilot",
+		"s-s-h-p-i-l-o-t", "ѕshpilot",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := m.Check(name); !got.Blocked() {
+				t.Fatalf("Check(%q) allowed a spelling of the service's own name", name)
+			}
+		})
+	}
+}
+
+// TestKnownLeetGapForTheLetterL records a live evasion class that this package
+// cannot close, so that it is tracked rather than rediscovered.
+//
+// The digit "1" has two leet readings, "i" and "l". Fb1's table picks "i",
+// which is what makes "4dm1n" fold to "admin". The consequence is that the
+// other reading is unavailable: "he1p" folds to "heip", not "help", so every
+// reserved word containing an L can be spelled past the blocklist -- "1ogin",
+// "bi11ing", "officia1", "1ega1", "nu11".
+//
+// This is deliberately NOT fixed here, on two grounds. It lives in the folding
+// tables, not the match engine, and any change there alters which identifiers
+// compare equal and so must be a reviewed TableVersion bump rather than a side
+// effect of adding a word list. And the fix is not a one-line table edit: a
+// rune with two readings cannot be folded to one output without losing the
+// other, so closing it means either the fold or the matcher generating both
+// candidate readings -- a design change with its own false-positive budget,
+// since "i" and "l" would then be interchangeable everywhere.
+//
+// Papering over it from this side by adding "he1p" as a curated term was
+// rejected: the term would be stored as its skeleton "heip" and the data would
+// stop meaning what it reads as, which is the property lists.go depends on.
+//
+// These assertions PASS today by asserting the gap is open. If one starts
+// failing, Fb1 has closed it and this test and its note should be deleted.
+func TestKnownLeetGapForTheLetterL(t *testing.T) {
+	m := defaultMatcher(t)
+
+	for _, evasion := range []string{"he1p", "1ogin", "bi11ing", "officia1", "nu11"} {
+		t.Run(evasion, func(t *testing.T) {
+			if m.Check(evasion).Blocked() {
+				t.Fatalf("Check(%q) is now blocked -- the 1-as-l leet gap has "+
+					"been closed in the folding tables; delete this test", evasion)
+			}
+		})
+	}
+
+	// The reading that IS covered, for contrast: the same digit folding to "i".
+	if !m.Check("4dm1n").Blocked() {
+		t.Fatal("Check(\"4dm1n\") allowed; the 1-as-i reading must stay covered")
 	}
 }
 
