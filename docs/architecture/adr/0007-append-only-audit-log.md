@@ -21,4 +21,5 @@ Audit records never contain private key material or other secrets.
 
 - Incident investigation and accountability are possible from day one.
 - Minor write overhead per mutating operation.
-- Retention/rotation policy is a follow-up decision.
+- Retention, purge, and owner-erasure (pseudonymization) policy is specified in
+  **ADR-0024**.

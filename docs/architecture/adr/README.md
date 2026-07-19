@@ -36,6 +36,8 @@ consequences. They are the project's decision memory.
 | [0020](0020-testing-strategy.md) | Testing strategy: unit + e2e, happy/fail/gray | Accepted |
 | [0021](0021-openapi-docs-endpoints.md) | Self-served OpenAPI spec and docs endpoints | Accepted |
 | [0022](0022-configuration-and-secrets.md) | Configuration and secrets management | Accepted |
+| [0023](0023-rate-limiting-and-abuse.md) | Rate limiting and abuse protection | Accepted |
+| [0024](0024-audit-retention-and-erasure.md) | Audit retention and erasure | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.

@@ -72,6 +72,8 @@ CLI for managing keys.
 | 26 | **Self-served API docs**: `GET /docs/` returns the OpenAPI document by requested type (rendered HTML / YAML / JSON), **default JSON**; `/docs/spec/` gives stable JSON/YAML URLs; assets bundled (no CDN); exposure deployer-configurable. | 0021 |
 | 27 | **Config**: structured file (YAML/TOML) + env overrides (env > file > defaults), validated fail-closed at startup. **Secrets** never in the file — via env/file refs behind a pluggable secret-provider interface (Vault/KMS later); never logged. | 0022 |
 | 28 | **Protected-set access** presented as an **`Authorization: Bearer`** header (never query string). | 0010 |
+| 29 | **Rate limiting**: built-in, tiered, configurable (auth/signup/publish/admin), `429`+`Retry-After`, trusted-IP keying; coexists with external limiters. | 0023 |
+| 30 | **Audit retention/erasure**: append-only + configurable retention purge; **pseudonymize** owner data on deletion/erasure while keeping the structural record. | 0024 |
 
 ## 4. Phase-1 scope (as described so far)
 
@@ -178,7 +180,9 @@ Still open:
 5b. **Blocklist details:** confusable/leetspeak folding tables and per-category
    match mode; false-positive handling / allowlist; treatment of existing
    identifiers that later become blocked; whether device names are covered.
-6. **Rate limiting / abuse** on the public endpoint (more pressing for SaaS).
+6. ~~Rate limiting / abuse~~ — **resolved:** built-in tiered + external-friendly
+   (ADR-0023). Default values and the multi-instance shared counter store remain
+   open.
 7. **Managed-block helper form:** shell script shipped with releases vs an
    endpoint that serves the script vs both.
 8. **TLS specifics:** EAB handling for ZeroSSL-style CAs; which DNS-01 providers
@@ -225,6 +229,9 @@ Still open:
 - 2026-07-19 (gaps: access mechanism, config) — Protected-set access via
   `Authorization: Bearer` (ADR-0010, decision #28); configuration = file + env
   overrides with pluggable, never-logged secret providers (ADR-0022, #27).
+- 2026-07-19 (gaps: rate limiting, audit lifecycle) — Built-in tiered,
+  external-friendly rate limiting (ADR-0023, #29); audit append-only with
+  retention purge and pseudonymize-on-erasure (ADR-0024, #30).
 - 2026-07-19 (feature: reserved identifiers) — System-wide blocklist for handles
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system
