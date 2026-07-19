@@ -9,7 +9,9 @@ import (
 
 // RefreshCredentialRepository persists RefreshCredential rows. The token
 // denylist is intentionally not modeled here; it is separate infrastructure
-// (ADR-0018). Methods are owner-scoped except GetByID, which authenticates.
+// (ADR-0018). Methods are owner-scoped except GetByID (which authenticates)
+// and DeleteExpired (a system-maintenance sweep); both are tagged UNSCOPED at
+// the method.
 type RefreshCredentialRepository interface {
 	// Create persists a fully populated RefreshCredential, including its
 	// SecretHash.

@@ -30,7 +30,7 @@ type OwnerRepository interface {
 	SoftDelete(ctx context.Context, id domain.OwnerID, now time.Time) error
 
 	// List returns a page of owners together with the next-page cursor. A
-	// returned cursor of "" means there are no further pages. This method is an
-	// administrative sweep across all owners and so is not owner-scoped.
+	// returned cursor of "" means there are no further pages.
+	// UNSCOPED: an administrative sweep across all owners; not owner-scoped.
 	List(ctx context.Context, page Page) ([]domain.Owner, string, error)
 }
