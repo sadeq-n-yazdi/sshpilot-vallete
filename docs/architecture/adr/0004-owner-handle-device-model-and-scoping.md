@@ -22,6 +22,9 @@ Three core concepts:
 - **Device** — belongs to an owner; groups the keys it generated so a
   lost/retired device can be revoked as a unit.
 
+(ADR-0016 adds **key sets** — named, owner-scoped subsets of keys that publish
+under the handle at `/{handle}/{set}`. Owner-scoping extends to them.)
+
 **Owner-scoping is enforced at the data layer:** every query is scoped by
 `OwnerID`, not just checked in handlers. Authorization is a property of the
 repository, which is what makes "teams later" additive rather than a rewrite.

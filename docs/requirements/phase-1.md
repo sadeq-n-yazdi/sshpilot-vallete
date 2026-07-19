@@ -22,8 +22,10 @@ CLI for managing keys.
 
 - **Owner** — the entity that owns devices and keys. Today a single user; the
   abstraction is designed to become a team/org later without a rewrite.
-- **Handle** — an owner's URL-safe identifier. An owner's active public keys are
-  published at `GET /{handle}`. Visibility is per-owner configurable (§5).
+- **Handle** — an owner's URL-safe, globally-unique identifier. Key sets publish
+  under it at `GET /{handle}/{set}`; `GET /{handle}` serves the default set.
+- **Key set** — a named, owner-scoped subset of the owner's keys with its own
+  publish address and its own visibility. Keys may belong to several sets.
 - **Device** — a machine that generated one or more key pairs. Keys are grouped
   by device so a lost/retired device can be revoked as a unit.
 - **Public key** — an SSH public key (incl. hardware/passkey-backed
@@ -56,13 +58,16 @@ CLI for managing keys.
 | 17 | Transport is **HTTPS-only**: no plaintext listener, plaintext **refused** (not redirected), HSTS, TLS ≥ 1.2. | 0015 |
 | 18 | **Certificate modes** (deployer selects): automatic ACME, operator-provided cert+key, generate CSR for external signing, TLS terminated upstream, or **ephemeral self-signed** (dev/install-bootstrap only; ≤ ~6h validity; refused in production without explicit override). | 0015 |
 | 19 | **ACME challenges**: TLS-ALPN-01 and DNS-01 (pluggable DNS providers, e.g. Cloudflare); HTTP-01 not used. | 0015 |
+| 20 | **Multiple named key sets** per owner (many-to-many key membership), addressed at `/{handle}/{set}`; bare `/{handle}` serves an owner-designated **default set**; **visibility is per set** (access keys per set). | 0016, 0010 |
 
 ## 4. Phase-1 scope (as described so far)
 
 Captured from the requirements given to date. **Incomplete — will grow.**
 
-- **Publish public keys.** Store an owner's public keys and expose the active
-  set at a handle in native `authorized_keys` format.
+- **Publish public keys via key sets.** Store an owner's public keys, let the
+  owner organize them into named **key sets**, and expose each set's active keys
+  at `/{handle}/{set}` (and the default set at `/{handle}`) in native
+  `authorized_keys` format. (ADR-0016)
 - **Clientless consumption.** `curl https://<host>/<handle> >> ~/.ssh/authorized_keys`
   (or via `AuthorizedKeysCommand`) works with no proprietary client on the
   consuming server.
@@ -141,6 +146,8 @@ Still open:
    onboarding mode, default handle visibility, and store selection.
 5. **Handle claiming & uniqueness**, reservation, and change/rename rules
    (esp. across tenants).
+5a. **Key-set details:** set-name rules & reserved names; max sets per owner;
+   deleting a non-empty or default set; per-set access-key lifecycle.
 6. **Rate limiting / abuse** on the public endpoint (more pressing for SaaS).
 7. **Managed-block helper form:** shell script shipped with releases vs an
    endpoint that serves the script vs both.
@@ -167,3 +174,7 @@ Still open:
   certificate mode for development and install bootstrap: ≤ ~6h validity ceiling,
   explicit/first-run activation, production start-refusal without override, loud
   warnings + audit event.
+- 2026-07-19 (gap: key sets) — Owners can define multiple named key sets
+  (many-to-many key membership), addressed at `/{handle}/{set}` with a default
+  set at `/{handle}`; visibility and access keys are per set. Added ADR-0016;
+  refined ADR-0004 and ADR-0010.

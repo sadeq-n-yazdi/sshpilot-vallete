@@ -9,9 +9,14 @@ Keys are published at `GET /{handle}` and consumed by plain `curl` (ADR-0003).
 Public keys are not secret, but the *association* handle→keys is metadata some
 owners will want to restrict, while others want a frictionless public URL.
 
+> **Refined by ADR-0016:** with named key sets, visibility is a **per key set**
+> setting (each set is independently public or protected, with per-set access
+> keys). The rationale and mechanics below are unchanged; read "handle" as "key
+> set".
+
 ## Decision
 
-Handle visibility is a **per-owner setting**:
+Handle/key-set visibility is a **per key set** setting (originally per-owner):
 
 - **Public (default):** anyone with the handle can fetch the keys. Rationale:
   public keys are public by nature, and this preserves the zero-friction
