@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -82,6 +83,35 @@ func TestOpenFilePragmas(t *testing.T) {
 	}
 	if fk != 1 {
 		t.Errorf("foreign_keys = %d, want 1", fk)
+	}
+}
+
+// TestOpenPathWithReservedChars guards the DSN against fail-open truncation: a
+// path containing '?' or '#' (both structural in a DSN) must still open the
+// database at the literal path with foreign_keys enforced, not silently drop
+// the pragmas at the reserved byte.
+func TestOpenPathWithReservedChars(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "weird?name#x.db")
+	db, err := Open(Options{Path: path})
+	if err != nil {
+		t.Fatalf("Open reserved-char path: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+
+	var fk int
+	if err := db.QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fk); err != nil {
+		t.Fatalf("query foreign_keys: %v", err)
+	}
+	if fk != 1 {
+		t.Errorf("foreign_keys = %d, want 1", fk)
+	}
+	if _, err := db.ExecContext(ctx, "CREATE TABLE t (id INTEGER)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("expected database file at literal path %q: %v", path, err)
 	}
 }
 
