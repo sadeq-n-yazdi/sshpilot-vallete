@@ -91,9 +91,16 @@ jobs:
       #     --certificate valletd.pem \
       #     --signature valletd.sig \
       #     --certificate-identity-regexp \
-      #       '^https://github.com/sadeq-n-yazdi/sshpilot-vallete/\.github/workflows/release\.yml@' \
+      #       '^https://github.com/sadeq-n-yazdi/sshpilot-vallete/\.github/workflows/release\.yml@refs/tags/' \
       #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
       #     valletd
+      #
+      # The identity is anchored to @refs/tags/ because a release always runs
+      # on a tag ref. Without that anchor the pattern would also accept a
+      # signature produced by a branch-ref run of this same workflow.
+      #
+      # sbom.cdx.json and checksums.txt verify identically -- substitute the
+      # filename and its matching .sig and .pem.
       - name: Sign artifacts
         working-directory: dist
         run: |
