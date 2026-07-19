@@ -12,7 +12,7 @@ func TestString(t *testing.T) {
 			want: "0.0.0-dev",
 		},
 		{
-			name: "matches exported Version constant",
+			name: "matches exported Version variable",
 			want: Version,
 		},
 	}

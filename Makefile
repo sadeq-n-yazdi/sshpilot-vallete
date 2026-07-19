@@ -1,4 +1,10 @@
-.PHONY: build test lint cover vet tidy vuln
+.PHONY: build test lint cover vet tidy vuln hooks
+
+# Point git at the tracked hooks directory so the pre-commit gates run.
+# Run once per clone.
+hooks:
+	git config core.hooksPath .githooks
+	@echo "git hooks enabled (core.hooksPath=.githooks)"
 
 # Build all packages.
 build:
