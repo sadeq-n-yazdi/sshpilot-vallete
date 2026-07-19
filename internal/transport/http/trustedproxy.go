@@ -47,8 +47,11 @@ func newTrustedPeers(entries []string) trustedPeers {
 			continue
 		}
 		if addr, err := netip.ParseAddr(entry); err == nil {
-			// Unmap so a ::ffff:10.0.0.1 entry and a 10.0.0.1 entry compare
-			// equal to the same peer.
+			// Unmap so that ::ffff:10.0.0.1 and 10.0.0.1 name the same peer.
+			// This is not cosmetic: trusts unmaps the peer address for the same
+			// reason (a dual-stack listener reports IPv4 peers in mapped form),
+			// and if only one side unmapped, an operator's entry would silently
+			// fail to match the proxy it was written for.
 			addr = addr.Unmap()
 			prefixes = append(prefixes, netip.PrefixFrom(addr, addr.BitLen()))
 		}
