@@ -138,6 +138,22 @@ func (a *Authenticator) resolve(ctx context.Context, identity Identity) (domain.
 		return "", ErrAuthFailed
 	}
 
+	// A link with no owner is a malformed row: the column is NOT NULL with a
+	// foreign key, so the database cannot produce one. Deny before querying
+	// anyway, so that "an empty owner id is never used as a lookup key" holds
+	// locally, here, instead of being derived from what the owner repository
+	// happens to do with one.
+	//
+	// The identity check below already denies this case -- an empty id cannot
+	// equal any real owner's id -- so this is depth, not a hole being closed.
+	// It is worth the three lines because it is the cheaper of the two: the
+	// derived argument stops holding the moment someone refactors the check
+	// below, and a lookup key that means "unfiltered" to some future store is
+	// the kind of mistake that is invisible until it is an account takeover.
+	if li.OwnerID == "" {
+		return "", ErrAuthFailed
+	}
+
 	// B3 (revocation denylist) adds link revocation state. This is its single
 	// insertion point: the check belongs here, between matching the link and
 	// accepting its owner, so that both Authenticate and Resolve get it at once.

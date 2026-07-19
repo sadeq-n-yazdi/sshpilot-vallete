@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
@@ -116,11 +117,16 @@ type fakeOwners struct {
 	// override replaces the returned owner, simulating a repository that
 	// ignored the requested id.
 	override *domain.Owner
+	// calls counts lookups, so a test can assert that a denial happened
+	// before the owner store was ever consulted. Atomic because the
+	// concurrency test shares one fake across goroutines.
+	calls atomic.Int64
 }
 
 var _ repository.OwnerRepository = (*fakeOwners)(nil)
 
 func (f *fakeOwners) Get(_ context.Context, id domain.OwnerID) (*domain.Owner, error) {
+	f.calls.Add(1)
 	if f.err != nil {
 		return nil, f.err
 	}

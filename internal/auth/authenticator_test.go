@@ -209,6 +209,12 @@ func failureCases() []failureCase {
 			},
 		},
 		{
+			name: "link row carries no owner id",
+			setup: func(_ *fakeProvider, links *fakeLinks, _ *fakeOwners) {
+				links.override = link(string(testProvider), string(testSubject), "")
+			},
+		},
+		{
 			name: "linked owner does not exist",
 			setup: func(_ *fakeProvider, _ *fakeLinks, owners *fakeOwners) {
 				owners.rows = nil
@@ -358,5 +364,32 @@ func TestResolveFailsClosedOnMalformedIdentity(t *testing.T) {
 				t.Fatal("a malformed identity reached the link store")
 			}
 		})
+	}
+}
+
+// TestDeniesEmptyOwnerIDBeforeQuerying pins where the denial happens, not just
+// that it happens.
+//
+// A link row with no owner cannot come out of the database -- the column is
+// NOT NULL behind a foreign key -- and the identity check on the returned
+// owner would reject it regardless, since an empty id equals no real owner's
+// id. The guard exists so that "an empty owner id is never used as a lookup
+// key" is true of the resolution path on its own, rather than being a
+// conclusion about what the owner repository does when handed one. Asserting
+// the store is never reached is what makes that a property instead of a
+// comment.
+func TestDeniesEmptyOwnerIDBeforeQuerying(t *testing.T) {
+	a, _, links, owners := newFixture(t)
+	links.override = link(string(testProvider), string(testSubject), "")
+
+	owner, err := a.Authenticate(context.Background(), testProvider, testCred())
+	if owner != "" {
+		t.Fatalf("denied authentication returned owner %q, want empty", owner)
+	}
+	if !errors.Is(err, auth.ErrAuthFailed) {
+		t.Fatalf("error = %v, want auth.ErrAuthFailed", err)
+	}
+	if n := owners.calls.Load(); n != 0 {
+		t.Errorf("owner store was queried %d time(s) with an empty id; the denial must come first", n)
 	}
 }
