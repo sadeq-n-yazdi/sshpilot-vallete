@@ -1,6 +1,7 @@
 package blocklist
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -571,11 +572,278 @@ func TestReasonString(t *testing.T) {
 		ReasonTooLong:           "too-long",
 		ReasonBlockedTerm:       "blocked-term",
 		ReasonEngineUnavailable: "engine-unavailable",
+		ReasonTooAmbiguous:      "too-ambiguous",
 		Reason(200):             "unknown",
 	}
 	for reason, want := range cases {
 		if got := reason.String(); got != want {
 			t.Errorf("Reason(%d).String() = %q; want %q", reason, got, want)
 		}
+	}
+}
+
+// --- Ambiguous-reading expansion (TableVersion 4) ---------------------------
+
+// TestCandidateSkeletonsContract pins the three properties Check depends on:
+// the first candidate is the input untouched, the set is exactly the subsets of
+// the ambiguous positions, and the order is fixed.
+func TestCandidateSkeletonsContract(t *testing.T) {
+	for _, tc := range []struct{ name, in string }{
+		{"no ambiguous rune", "admin"},
+		{"empty", ""},
+		{"l does not expand", "hello"},
+		{"one position", "heip"},
+		{"two positions", "biiing"},
+		{"non-ascii is not a key", "αi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := candidateSkeletons(tc.in)
+			if !ok {
+				t.Fatalf("candidateSkeletons(%q) refused an in-bounds input", tc.in)
+			}
+			if got[0] != tc.in {
+				t.Errorf("candidateSkeletons(%q)[0] = %q; want the input itself",
+					tc.in, got[0])
+			}
+			if len(got) != 1<<strings.Count(tc.in, "i") {
+				t.Errorf("candidateSkeletons(%q) returned %d candidates; want 2^%d",
+					tc.in, len(got), strings.Count(tc.in, "i"))
+			}
+			// Every candidate must differ from the input only by i->l.
+			for _, c := range got {
+				if len(c) != len(tc.in) {
+					t.Errorf("candidate %q has a different length to %q", c, tc.in)
+					continue
+				}
+				for i := 0; i < len(c); i++ {
+					if c[i] == tc.in[i] {
+						continue
+					}
+					if tc.in[i] != 'i' || c[i] != 'l' {
+						t.Errorf("candidate %q changed byte %d of %q from %q to %q; "+
+							"only i->l is permitted", c, i, tc.in, tc.in[i], c[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestCandidateSkeletonsAreDeterministic runs the expansion repeatedly and
+// requires an identical slice each time. Go randomizes map iteration, so a
+// refactor that ranged ambiguousReadings instead of indexing it would reorder
+// the candidates, and with them the term a Result reports.
+func TestCandidateSkeletonsAreDeterministic(t *testing.T) {
+	const in = "biiiing"
+	first, ok := candidateSkeletons(in)
+	if !ok {
+		t.Fatalf("candidateSkeletons(%q) refused an in-bounds input", in)
+	}
+	for range 200 {
+		again, ok := candidateSkeletons(in)
+		if !ok {
+			t.Fatal("candidateSkeletons became unavailable between calls")
+		}
+		if !slices.Equal(first, again) {
+			t.Fatalf("candidateSkeletons(%q) is not deterministic:\n%q\n%q",
+				in, first, again)
+		}
+	}
+}
+
+// TestCandidateExpansionBoundFailsClosed is the denial-of-service and
+// fail-closed test in one. An identifier with more ambiguous positions than the
+// bound must be refused, never expanded partially and never allowed.
+func TestCandidateExpansionBoundFailsClosed(t *testing.T) {
+	m := defaultMatcher(t)
+
+	t.Run("at the bound", func(t *testing.T) {
+		in := strings.Repeat("i", maxAmbiguousRunes)
+		got, ok := candidateSkeletons(in)
+		if !ok {
+			t.Fatalf("candidateSkeletons refused %d ambiguous runes; the bound is %d",
+				maxAmbiguousRunes, maxAmbiguousRunes)
+		}
+		if len(got) != maxCandidateSkeletons {
+			t.Errorf("got %d candidates at the bound; want %d",
+				len(got), maxCandidateSkeletons)
+		}
+	})
+
+	t.Run("past the bound", func(t *testing.T) {
+		in := strings.Repeat("i", maxAmbiguousRunes+1)
+		got, ok := candidateSkeletons(in)
+		if ok {
+			t.Fatalf("candidateSkeletons accepted %d ambiguous runes; the bound is %d",
+				maxAmbiguousRunes+1, maxAmbiguousRunes)
+		}
+		if got != nil {
+			t.Errorf("candidateSkeletons returned %d candidates alongside a "+
+				"refusal; a truncated set would be walked and would allow the input",
+				len(got))
+		}
+	})
+
+	// The verdict, which is the part that matters. Every one of these is
+	// entirely ambiguous runes and none is a reserved word, so a fail-OPEN
+	// bound would allow them all.
+	for _, in := range []string{
+		strings.Repeat("1", maxAmbiguousRunes+1),
+		strings.Repeat("i", maxAmbiguousRunes+1),
+		strings.Repeat("I", 40),
+		strings.Repeat("1", MaxInputBytes),
+		"admin" + strings.Repeat("1", maxAmbiguousRunes+1),
+	} {
+		t.Run("check "+in[:min(len(in), 12)], func(t *testing.T) {
+			got := m.Check(in)
+			if !got.Blocked() {
+				t.Fatalf("Check(%q) allowed an input too ambiguous to expand", in)
+			}
+			if got.Reason != ReasonTooAmbiguous && got.Reason != ReasonBlockedTerm {
+				t.Errorf("Check(%q).Reason = %v; want %v", in, got.Reason, ReasonTooAmbiguous)
+			}
+			// A refusal on this ground must not invent a term.
+			if got.Reason == ReasonTooAmbiguous &&
+				(got.List != "" || got.Term != "" || got.Mode != MatchModeInvalid) {
+				t.Errorf("Check(%q) = %+v: named a term without matching one", in, got)
+			}
+		})
+	}
+}
+
+// TestExpansionBlocksTheLeetLBypasses is the acceptance test for the bug: each
+// input is a reserved word spelled with the digit one for an l, and each was
+// permitted before TableVersion 4. The reported term is asserted too, not just
+// the boolean -- an audit record naming the wrong word is its own bug.
+func TestExpansionBlocksTheLeetLBypasses(t *testing.T) {
+	m := defaultMatcher(t)
+
+	for _, tc := range []struct{ in, list, term string }{
+		{"he1p", "routing", "help"},
+		{"1ogin", "routing", "login"},
+		{"1ogout", "routing", "logout"},
+		{"1oca1host", "routing", "localhost"},
+		{"1ega1", "routing", "legal"},
+		{"nu11", "routing", "null"},
+		{"ni1", "routing", "nil"},
+		{"bi11ing", "impersonation", "billing"},
+		{"officia1", "impersonation", "official"},
+		{"wa11et", "impersonation", "wallet"},
+		{"he1pdesk", "impersonation", "helpdesk"},
+		{"a1erts", "impersonation", "alerts"},
+		{"bo11ocks", "offensive", "bollocks"},
+		{"s1ut", "offensive", "slut"},
+		{"hit1er", "offensive", "hitler"},
+		// Mixed readings in one identifier: the first 1 reads as l, the
+		// second as i. Only a candidate SET can satisfy both at once.
+		{"b1ll1ng", "impersonation", "billing"},
+	} {
+		t.Run(tc.in, func(t *testing.T) {
+			got := m.Check(tc.in)
+			if !got.Blocked() {
+				t.Fatalf("Check(%q) allowed a reserved word spelled with a digit one", tc.in)
+			}
+			if got.Reason != ReasonBlockedTerm {
+				t.Fatalf("Check(%q).Reason = %v; want %v", tc.in, got.Reason, ReasonBlockedTerm)
+			}
+			if got.List != tc.list || got.Term != tc.term {
+				t.Errorf("Check(%q) blocked on %s/%q; want %s/%q",
+					tc.in, got.List, got.Term, tc.list, tc.term)
+			}
+		})
+	}
+}
+
+// TestExpansionDoesNotOverBlock is the false-positive direction, and it is the
+// direction that costs a real user their name rather than costing an attacker
+// an evasion.
+//
+// The expansion is one-way -- i gains a reading of l, l gains nothing -- so an
+// identifier spelled with genuine letters is only blocked if it was already.
+// The entries below all contain i, l, or both, and several are one i-to-l
+// substitution away from a reserved word without being one.
+func TestExpansionDoesNotOverBlock(t *testing.T) {
+	m := defaultMatcher(t)
+
+	for _, allowed := range []string{
+		// Ordinary names built from the letters in play.
+		"lima", "iima", "kelly", "keily", "lilian", "willow", "milli",
+		"phillip", "gillian", "linus", "olivia", "camilla",
+		// The collapse-both-directions design would have blocked these two:
+		// they collide with the reserved term "mail" once l and i are made
+		// interchangeable in BOTH directions. The one-way expansion does not.
+		"mall", "mali",
+		// Real words with many i's, well inside the expansion bound.
+		"indivisibility", "invisibility", "individualistic",
+		// Identifiers that merely contain a reserved word, still permitted by
+		// whole-skeleton mode, and still permitted after expansion.
+		"helpful", "logins", "billinger", "wallets", "officially",
+		// Plausible product handles.
+		"my-key-set", "prod-cluster", "ci-runner", "build-pipeline",
+	} {
+		t.Run(allowed, func(t *testing.T) {
+			got := m.Check(allowed)
+			if got.Blocked() {
+				t.Fatalf("Check(%q) blocked a legitimate identifier: %+v", allowed, got)
+			}
+		})
+	}
+}
+
+// TestExpansionPrefersTheExactSkeleton fixes which term is reported when the
+// skeleton itself matches one term and an alternative reading matches another.
+// candidates[0] is the skeleton untouched and Check walks candidates in order,
+// so the exact reading must win. Without that the reported term would depend on
+// expansion order, and an audit record would name a word the user did not type.
+func TestExpansionPrefersTheExactSkeleton(t *testing.T) {
+	// "il" reads as itself and, expanded, as "ll". Both are terms here.
+	m, err := NewMatcher(List{
+		Name: "test", Mode: MatchWholeSkeleton, Terms: []string{"ll", "il"},
+	})
+	if err != nil {
+		t.Fatalf("NewMatcher: %v", err)
+	}
+
+	// "i1" folds to the skeleton "il", which is itself a term and also expands
+	// to the term "ll". The exact reading must be the one reported.
+	if got := m.Check("i1"); got.Term != "il" {
+		t.Errorf("Check(\"i1\").Term = %q; want %q -- the exact skeleton must be "+
+			"reported ahead of an alternative reading", got.Term, "il")
+	}
+
+	// With the exact reading absent from the list, the alternative still fires.
+	// This is what proves the assertion above is about precedence rather than
+	// about "ll" being unreachable.
+	alt := testMatcher(t, List{
+		Name: "test", Mode: MatchWholeSkeleton, Terms: []string{"ll"},
+	})
+	if got := alt.Check("i1"); got.Term != "ll" {
+		t.Errorf("Check(\"i1\").Term = %q; want %q", got.Term, "ll")
+	}
+}
+
+// TestExpansionVerdictIsStableAcrossMatchers rebuilds the matcher from scratch
+// and requires an identical Result, term included. Determinism has to hold
+// across processes, not just across calls on one instance, because that is the
+// claim an audit record rests on.
+func TestExpansionVerdictIsStableAcrossMatchers(t *testing.T) {
+	for _, in := range []string{"he1p", "bi11ing", "b1ll1ng", "s1ut", "lima", "mall"} {
+		t.Run(in, func(t *testing.T) {
+			first, err := NewMatcher(DefaultLists()...)
+			if err != nil {
+				t.Fatalf("NewMatcher: %v", err)
+			}
+			want := first.Check(in)
+			for range 50 {
+				next, err := NewMatcher(DefaultLists()...)
+				if err != nil {
+					t.Fatalf("NewMatcher: %v", err)
+				}
+				if got := next.Check(in); got != want {
+					t.Fatalf("Check(%q) varies between matchers: %+v then %+v",
+						in, want, got)
+				}
+			}
+		})
 	}
 }

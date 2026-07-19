@@ -234,3 +234,83 @@ func TestTableVersionIsSet(t *testing.T) {
 		t.Errorf("TableVersion = %d, want a positive revision", TableVersion)
 	}
 }
+
+// TestAmbiguousReadingsAreASCII enforces the invariant candidateSkeletons
+// relies on to scan a skeleton byte by byte.
+//
+// Every key and every reading must be a single ASCII byte. If one were not,
+// two things would break at once: a multi-byte rune's continuation bytes could
+// be mistaken for a key, and substituting a reading of a different width would
+// shift every byte offset after it, so the candidates built from the remaining
+// positions would be garbage. Both failures are silent -- they produce wrong
+// candidates, not a panic -- which is why this is a test and not a comment.
+func TestAmbiguousReadingsAreASCII(t *testing.T) {
+	for key, readings := range ambiguousReadings {
+		if key >= 0x80 {
+			t.Errorf("ambiguousReadings key %#x is not ASCII", key)
+		}
+		if len(readings) == 0 {
+			t.Errorf("ambiguousReadings[%q] has no readings; the entry does nothing", key)
+		}
+		for _, r := range readings {
+			if r >= 0x80 {
+				t.Errorf("ambiguousReadings[%q] reading %#x is not ASCII", key, r)
+			}
+			if r == key {
+				t.Errorf("ambiguousReadings[%q] lists its own key as an alternative; "+
+					"candidates[0] already covers that reading", key)
+			}
+		}
+	}
+}
+
+// TestAmbiguousKeysAreSkeletonFixedPoints checks that every key is something a
+// skeleton can actually contain.
+//
+// ambiguousReadings is keyed on the pipeline's OUTPUT, so a key that the
+// pipeline never emits would be an entry that can never fire -- it would read
+// to a reviewer as coverage that does not exist. A key must therefore survive
+// Skeleton unchanged.
+func TestAmbiguousKeysAreSkeletonFixedPoints(t *testing.T) {
+	for key := range ambiguousReadings {
+		s := string(rune(key))
+		if got := Skeleton(s); got != s {
+			t.Errorf("ambiguousReadings key %q folds to %q; a key the pipeline "+
+				"never emits can never fire", s, got)
+		}
+	}
+}
+
+// TestAmbiguousReadingsAreNotThemselvesAmbiguous closes the loop on the
+// expansion being one-way and therefore terminating.
+//
+// If a reading were itself a key, expanding it would produce a further reading,
+// and the "candidates differ from the skeleton only at ambiguous positions"
+// property that bounds the set at 2^k would no longer hold. The one-way
+// direction is a deliberate false-positive decision (see ambiguousReadings);
+// this makes an accidental reversal a test failure.
+func TestAmbiguousReadingsAreNotThemselvesAmbiguous(t *testing.T) {
+	for key, readings := range ambiguousReadings {
+		for _, r := range readings {
+			if _, isKey := ambiguousReadings[r]; isKey {
+				t.Errorf("ambiguousReadings[%q] reads as %q, which is itself a key; "+
+					"the expansion must be one-way", key, r)
+			}
+		}
+	}
+}
+
+// TestMaxCandidateSkeletonsMatchesTheRuneBound keeps the two constants from
+// drifting apart. maxCandidateSkeletons is only meaningful as the exact ceiling
+// implied by maxAmbiguousRunes, and a bound that overstated the real one would
+// make the fail-closed test pass while the engine did more work than intended.
+func TestMaxCandidateSkeletonsMatchesTheRuneBound(t *testing.T) {
+	if maxCandidateSkeletons != 1<<maxAmbiguousRunes {
+		t.Errorf("maxCandidateSkeletons = %d; want 1<<%d = %d",
+			maxCandidateSkeletons, maxAmbiguousRunes, 1<<maxAmbiguousRunes)
+	}
+	if maxAmbiguousRunes < 1 {
+		t.Errorf("maxAmbiguousRunes = %d; expansion would be disabled entirely",
+			maxAmbiguousRunes)
+	}
+}
