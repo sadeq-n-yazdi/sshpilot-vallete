@@ -64,7 +64,7 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger) (*Server, error
 		logger = slog.New(slog.DiscardHandler)
 	}
 
-	tlsCfg, err := buildTLSConfig(cfg)
+	tlsCfg, err := buildTLSConfig(cfg, time.Now())
 	if err != nil {
 		return nil, err
 	}
