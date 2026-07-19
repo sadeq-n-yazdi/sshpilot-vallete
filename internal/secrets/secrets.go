@@ -82,6 +82,21 @@ func (r Ref) Validate() error {
 	if opaque == "" {
 		return fmt.Errorf("secrets: reference %s has empty opaque part", r.redacted())
 	}
+	// A reference carrying the redaction marker is the product of serializing a
+	// Ref and reading it back -- redaction is deliberately one-way (see
+	// redact.go), so such a document describes no secret at all.
+	//
+	// This case is rejected HERE, at load, rather than left to fail at Resolve.
+	// Left alone it would parse cleanly and only surface much later as "env var
+	// [REDACTED] not set", which reads like a deployment mistake and sends the
+	// operator hunting for a variable they never set. Naming the real cause at
+	// the point the document is read turns a confusing late failure into an
+	// immediate, self-explaining one -- and keeps the marshalers fail-closed:
+	// the cost of serializing a config is a loud refusal to reload it, never a
+	// leaked secret.
+	if opaque == redactedMarker {
+		return fmt.Errorf("secrets: reference %s is redacted, not a usable reference: it came from serialized output, which never carries secret references; restore this field from the original configuration", r.redacted())
+	}
 	return nil
 }
 

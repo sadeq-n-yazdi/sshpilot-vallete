@@ -179,3 +179,50 @@ func TestRefRedactedForms(t *testing.T) {
 		})
 	}
 }
+
+// TestRedactedRefIsRejectedOnReload pins the fail-closed half of one-way
+// redaction. Serializing a config and reading it back must not yield something
+// that looks usable: the marshalers replace every reference with the marker, so
+// the resulting document describes no secret at all.
+//
+// The requirement is that this is caught at LOAD, by Validate, with a message
+// naming the real cause. Without the check the round-tripped reference parses
+// cleanly -- "env" is a real scheme and "[REDACTED]" a non-empty opaque part --
+// and only fails much later at Resolve as "env var [REDACTED] not set", which
+// reads like a missing deployment variable and sends the operator looking in
+// entirely the wrong place.
+func TestRedactedRefIsRejectedOnReload(t *testing.T) {
+	original := Ref("env:VALLET_PG_DSN")
+	if err := original.Validate(); err != nil {
+		t.Fatalf("the original reference must be valid: %v", err)
+	}
+
+	// Round-trip it exactly as a config export would: marshal, then read back.
+	encoded, err := yaml.Marshal(struct {
+		DSNRef Ref `yaml:"dsn_ref"`
+	}{DSNRef: original})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded struct {
+		DSNRef Ref `yaml:"dsn_ref"`
+	}
+	if err := yaml.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if decoded.DSNRef == original {
+		t.Fatal("redaction is one-way: a marshaled reference must not survive the round trip intact")
+	}
+	err = decoded.DSNRef.Validate()
+	if err == nil {
+		t.Fatalf("Validate accepted the round-tripped reference %q; a redacted reference is not usable and must be refused at load", decoded.DSNRef)
+	}
+	if !strings.Contains(err.Error(), "redacted") {
+		t.Errorf("error must name the real cause, got: %v", err)
+	}
+	// The diagnostic itself must stay redacted, like every other Ref rendering.
+	if strings.Contains(err.Error(), "VALLET_PG_DSN") {
+		t.Errorf("error echoed the original reference: %v", err)
+	}
+}
