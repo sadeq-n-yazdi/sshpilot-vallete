@@ -34,7 +34,12 @@ type KeySetRepository interface {
 	CountByOwner(ctx context.Context, ownerID domain.OwnerID) (int, error)
 
 	// Update persists changes to the mutable fields of a key set, scoped by
-	// s.OwnerID and s.ID. It returns domain.ErrNotFound if the set does not
+	// s.OwnerID and s.ID. Only Visibility, State, QuarantineUntil,
+	// FlaggedForReview, and QuarantineOnRelease are mutable here. Name is
+	// immutable (renaming is a service-layer WithTx composition, not a field
+	// update) and IsDefault must be changed only via SetDefault; the
+	// implementation MUST ignore or reject changes to those fields rather than
+	// silently persist them. It returns domain.ErrNotFound if the set does not
 	// exist or belongs to another owner.
 	Update(ctx context.Context, s *domain.KeySet) error
 
