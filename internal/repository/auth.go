@@ -39,6 +39,20 @@ type RefreshCredentialRepository interface {
 	// MarkRotated moves the credential into the rotated state and stamps its
 	// timestamps with now. It returns domain.ErrNotFound if the credential does
 	// not exist or belongs to another owner.
+	//
+	// The transition is CONDITIONAL and MUST be a single statement: it applies
+	// only when the credential is currently active, and returns
+	// domain.ErrConflict when it is not. Implementations MUST NOT read the
+	// status and then write it, because between those two steps a second
+	// exchange of the same token can read the same active row.
+	//
+	// This is what makes a refresh token single-use under concurrency. Without
+	// the condition, two simultaneous presentations of one token both succeed
+	// and both mint a successor, which is precisely the state rotation exists to
+	// make impossible -- and the caller, seeing two ordinary successes, never
+	// learns the token was used twice. The conflict is not an error case to
+	// smooth over: it is the signal that a token was presented twice, and the
+	// service treats it as evidence of capture.
 	MarkRotated(ctx context.Context, ownerID domain.OwnerID, id domain.RefreshCredentialID, now time.Time) error
 
 	// Revoke marks the credential revoked, setting RevokedAt to now. It returns
