@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
-	"strings"
 	"time"
 
 	// Registers the "sqlite" database/sql driver. The driver's error type is
@@ -95,12 +94,13 @@ func dsn(path string) string {
 		return "file::memory:?" + q.Encode()
 	}
 
-	// A plain filesystem path is used as-is (not percent-encoded) so paths
-	// containing characters such as spaces round-trip unchanged; only the
-	// query string is encoded.
-	var b strings.Builder
-	b.WriteString(path)
-	b.WriteByte('?')
-	b.WriteString(q.Encode())
-	return b.String()
+	// A filesystem path is emitted as a percent-encoded file: URI. A raw path
+	// containing '?' or '#' would otherwise truncate the DSN at that byte,
+	// silently dropping every pragma — including foreign_keys, disabling
+	// foreign-key enforcement fail-open. url.URL escapes those bytes (and
+	// spaces) while leaving path separators intact, and modernc percent-decodes
+	// the URI path back to the literal filesystem path. OmitHost keeps a
+	// relative path from being misparsed as a URI authority.
+	u := url.URL{Scheme: "file", Path: path, OmitHost: true}
+	return u.String() + "?" + q.Encode()
 }
