@@ -2,6 +2,17 @@ module github.com/sadeq-n-yazdi/sshpilot-vallete
 
 go 1.26
 
+// The toolchain is pinned because it is the dominant input to build
+// reproducibility: the same source built with two different Go patch releases
+// produces different bytes. Pinning it here means a contributor's local build,
+// CI, and the release pipeline all use one compiler.
+//
+// go1.26.5 specifically: go1.26.4 carries GO-2026-5856, a reachable
+// crypto/tls Encrypted Client Hello privacy leak, which this server's TLS
+// listener calls into. The govulncheck gate keeps this honest -- a new
+// standard-library vulnerability turns CI red until the pin is raised.
+toolchain go1.26.5
+
 require (
 	golang.org/x/crypto v0.54.0
 	gopkg.in/yaml.v3 v3.0.1

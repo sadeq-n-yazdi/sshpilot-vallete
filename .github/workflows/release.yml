@@ -18,7 +18,11 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26"
+  # Pinned to an exact patch release, not a floating minor: the toolchain is
+  # the dominant input to build reproducibility, and go.mod pins the same
+  # version so local and CI builds use one compiler. check-latest is
+  # deliberately absent -- it would re-introduce the float this pin removes.
+  GO_VERSION: "1.26.5"
 
 jobs:
   release:
@@ -52,7 +56,6 @@ jobs:
         uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
         with:
           go-version: ${{ env.GO_VERSION }}
-          check-latest: true
 
       # The tag reaches the shell through the environment, never through direct
       # ${{ }} interpolation into a run block, which would allow a crafted tag
