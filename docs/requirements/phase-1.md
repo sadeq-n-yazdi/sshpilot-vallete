@@ -51,8 +51,8 @@ CLI for managing keys.
 | 5 | Key material: **public keys only** — private keys never touch the backend. | 0002 |
 | 6 | Phase-1 distribution: **clientless** — a server populates `authorized_keys` via stock `curl`/`AuthorizedKeysCommand`, no agent required. | 0003 |
 | 7 | Tenancy: **owner abstraction now**; **multi-tenant-capable, self-hosted first, SaaS-ready later** (both, phased). | 0004, 0008 |
-| 8 | License: **GPL-3.0** (matches the sshpilot family). | — |
-| 9 | Module path (assumed): `github.com/mfat/sshpilot-vallet` — trivially renamable. | — |
+| 8 | License: **MIT** (permissive; confirmed by owner). | — |
+| 9 | Module path: `github.com/sadeq-n-yazdi/sshpilot-vallete` (matches the `origin` remote). | — |
 | 10 | Management auth: **pluggable providers** — passkeys/WebAuthn (incl. **hardware security keys: YubiKey / FIDO2 roaming authenticators** as first-class), OAuth/OIDC, and API-token/device-pairing; the **deployer configures which are enabled**. Email+password excluded. | 0009 |
 | 11 | Publish access: **per-owner configurable** — public by default; optionally requires an access key. | 0010 |
 | 12 | Ingest security: **forbid `authorized_keys` options**; **canonical storage**; **reject weak keys** (DSA, RSA < 3072). | 0006 |
@@ -229,6 +229,14 @@ Still open:
 
 ## 9. Change log
 
+- 2026-07-19 (license & module) — License set to **MIT** (was assumed GPL-3.0);
+  module path fixed to **`github.com/sadeq-n-yazdi/sshpilot-vallete`** to match
+  the `origin` remote (decisions #8, #9).
+- 2026-07-19 (open items: enumeration) — Fixed the protected-set enumeration rule
+  in ADR-0019: existence is revealed **only to a valid credential**; any missing
+  or malformed/invalid/expired/revoked token returns a **uniform `404`**, so an
+  unauthenticated prober cannot read existence off a `401`-vs-`404` difference
+  (decision #24).
 - 2026-07-19 (b809bbb) — Initial capture: vision, confirmed decisions, phase-1
   scope, open questions.
 - 2026-07-19 (round 1 answers) — Added deployment model (both, phased),

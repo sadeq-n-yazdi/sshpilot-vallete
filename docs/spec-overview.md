@@ -26,7 +26,8 @@ first priority throughout.
   for zero-ops self-host, Postgres for SaaS/teams (#4 · ADR-0011).
 - **Deployment: multi-tenant-capable, self-hosted first, SaaS-ready** (both,
   phased) (#7 · ADR-0008).
-- **License GPL-3.0**; module `github.com/mfat/sshpilot-vallet` (assumed) (#8, #9).
+- **License MIT**; module `github.com/sadeq-n-yazdi/sshpilot-vallete` (matches the
+  `origin` remote) (#8, #9).
 
 ## B. Identity, tenancy & namespace
 
@@ -185,5 +186,6 @@ Per-owner CA signing (ADR-0014); web/TUI/CLI management clients; teams/orgs/RBAC
 
 ## Not-yet-written docs
 
-Top-level `LICENSE` (GPL-3.0), `SECURITY.md` (disclosure policy), `CONTRIBUTING.md`,
-and the developer / frontend-&-AI / operator / user guides.
+The developer / frontend-&-AI / operator / user guides. (Top-level `LICENSE`
+(MIT), `SECURITY.md`, `CONTRIBUTING.md`, and the GitHub issue/PR templates are
+now written.)
