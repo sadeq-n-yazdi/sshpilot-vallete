@@ -55,6 +55,7 @@
 | Forwarded-header spoofing | Trusting `X-Forwarded-*` from any source | Trust proxy headers only when explicitly configured | Confirmed (0015) |
 | TLS key / DNS-credential leakage | Weak storage, logging | Restrictive perms, never logged, least-privilege DNS creds | Confirmed (0015); storage form TBD |
 | Cert expiry outage | Renewal failure | Renewal scheduling + expiry alerting; fail-closed vs last-good | Open question (0015) |
+| Self-signed cert used in production | Dev/bootstrap mode left on | ~6h validity ceiling, production start-refusal, loud warnings + audit event | Confirmed (0015) |
 | Tampering without trace | No audit | Append-only audit log | Confirmed (0007) |
 
 ## Deferred defense-in-depth

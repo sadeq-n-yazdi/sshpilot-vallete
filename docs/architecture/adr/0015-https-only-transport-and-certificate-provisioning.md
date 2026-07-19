@@ -42,6 +42,31 @@ its absence is a hard configuration error.
   (nginx/Caddy/Cloudflare) terminates TLS; the app runs behind it and enforces
   HTTPS by requiring a trusted `X-Forwarded-Proto: https`. Proxy trust is
   **explicit opt-in** (never trust forwarded headers from arbitrary sources).
+- **Ephemeral self-signed (development / install bootstrap only).** The app
+  generates a **short-lived self-signed** certificate so it can serve over HTTPS
+  before a real cert exists — for local development and for the first-run/install
+  phase (letting an admin connect to configure a real cert). It preserves the
+  HTTPS-only invariant (never plaintext). Guardrails below make it unusable as a
+  production posture.
+
+### Guardrails for the ephemeral self-signed mode
+
+- **Short hard ceiling on validity:** certificates are valid for **at most ~6
+  hours** and are regenerated on expiry/restart. The ceiling is fixed low on
+  purpose so the mode cannot quietly become a steady-state posture; it is not
+  configurable to a long-lived value.
+- **Activation:** used only when the deployer explicitly selects this mode, or
+  automatically during the defined first-run/install bootstrap phase — never as a
+  silent fallback in normal operation.
+- **Production refusal:** if the instance is marked production, the app
+  **refuses to start** with a self-signed cert unless a separate, explicit
+  override is set. Whenever the mode is active it emits **loud warnings** and
+  records an **audit event**.
+- **Client expectations:** peers will see certificate-validation failures
+  (self-signed). This is acceptable only for development/bootstrap; it must never
+  serve real users. Docs will note the dev-only `curl -k` / trust-exception
+  caveat and that consumers must not disable verification against real
+  deployments.
 
 ### 3. Secrets handling
 

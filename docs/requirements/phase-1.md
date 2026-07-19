@@ -54,7 +54,7 @@ CLI for managing keys.
 | 15 | Key application: support **`curl`** and **`AuthorizedKeysCommand`**; ship a **managed-block helper** for the curl path. | 0013 |
 | 16 | Per-owner **CA signing**: **deferred** beyond phase 1. | 0014 |
 | 17 | Transport is **HTTPS-only**: no plaintext listener, plaintext **refused** (not redirected), HSTS, TLS ≥ 1.2. | 0015 |
-| 18 | **Certificate modes** (deployer selects): automatic ACME, operator-provided cert+key, generate CSR for external signing, or TLS terminated upstream. | 0015 |
+| 18 | **Certificate modes** (deployer selects): automatic ACME, operator-provided cert+key, generate CSR for external signing, TLS terminated upstream, or **ephemeral self-signed** (dev/install-bootstrap only; ≤ ~6h validity; refused in production without explicit override). | 0015 |
 | 19 | **ACME challenges**: TLS-ALPN-01 and DNS-01 (pluggable DNS providers, e.g. Cloudflare); HTTP-01 not used. | 0015 |
 
 ## 4. Phase-1 scope (as described so far)
@@ -78,7 +78,8 @@ Captured from the requirements given to date. **Incomplete — will grow.**
   (no plaintext listener); obtain certs via automatic ACME (TLS-ALPN-01 / DNS-01,
   incl. Let's Encrypt / ZeroSSL / Cloudflare-DNS), or use an operator-provided
   cert, or generate a CSR for external signing, or run behind an upstream TLS
-  terminator. (ADR-0015)
+  terminator, or use an **ephemeral self-signed** cert for development / install
+  bootstrap (≤ ~6h, refused in production without explicit override). (ADR-0015)
 - **Key management surface.** The backend exposes management operations (register
   device, add/list/revoke keys, set handle, set handle visibility) for a
   separate client (sshpilot desktop first; web/TUI/CLI later). *Management client
@@ -162,3 +163,7 @@ Still open:
   deployer-selectable certificate modes (ACME / provided / CSR / upstream),
   ACME via TLS-ALPN-01 and DNS-01 (no HTTP-01). Added ADR-0015 and TLS open
   items.
+- 2026-07-19 (feature: dev/bootstrap TLS) — Added an ephemeral self-signed
+  certificate mode for development and install bootstrap: ≤ ~6h validity ceiling,
+  explicit/first-run activation, production start-refusal without override, loud
+  warnings + audit event.
