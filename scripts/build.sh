@@ -59,7 +59,12 @@ mkdir -p "$OUT_DIR"
 
 # -s -w drop the symbol and DWARF tables. They shrink the artifact and, more
 # usefully here, remove a class of absolute-path and toolchain-detail leakage.
-ldflags="-s -w -X ${MODULE}/internal/version.Version=${VERSION}"
+# The -X value is single-quoted because cmd/go splits -ldflags with
+# quote-aware parsing: without the quotes a VERSION containing whitespace (a
+# tag like "1.0.0 beta 1") is split into separate linker arguments and the
+# build fails. This is the only -X flag set here; any future one needs the
+# same treatment.
+ldflags="-s -w -X '${MODULE}/internal/version.Version=${VERSION}'"
 
 echo "building ${BIN_NAME} version=${VERSION} os=${GOOS} arch=${GOARCH}" >&2
 
