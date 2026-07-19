@@ -100,6 +100,40 @@ func TestFileProviderPermWarn(t *testing.T) {
 	}
 }
 
+// TestFileProviderPermErrorOnFD proves the permission check still fires on the
+// fd-based read path: a too-open file is rejected under PermError before its
+// contents are read. This is the regression guard for the TOCTOU fix, which
+// bases the check on an fstat of the opened descriptor rather than a separate
+// stat of the path.
+func TestFileProviderPermErrorOnFD(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "secret", "value", 0o640)
+	_, err := NewFileProvider(FileOptions{PermMode: PermError}).Resolve(context.Background(), path)
+	errNames(t, err, "file:"+path, "value")
+	if !strings.Contains(err.Error(), "permission") {
+		t.Errorf("error %q should mention permissions", err)
+	}
+}
+
+// TestFileProviderSymlinkFollowed documents that a symlink is followed: the
+// descriptor resolves to the target, so a 0600 target is accepted and the
+// target's contents are returned.
+func TestFileProviderSymlinkFollowed(t *testing.T) {
+	dir := t.TempDir()
+	target := writeFile(t, dir, "secret", "linked-value\n", 0o600)
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	got, err := NewFileProvider(FileOptions{PermMode: PermError}).Resolve(context.Background(), link)
+	if err != nil {
+		t.Fatalf("Resolve via symlink: %v", err)
+	}
+	if got.Reveal() != "linked-value" {
+		t.Errorf("Resolve = %q, want linked-value", got.Reveal())
+	}
+}
+
 func TestFileProviderDirectory(t *testing.T) {
 	dir := t.TempDir()
 	_, err := NewFileProvider(FileOptions{}).Resolve(context.Background(), dir)

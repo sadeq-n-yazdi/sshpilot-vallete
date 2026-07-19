@@ -3,6 +3,7 @@ package secrets
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -56,18 +57,33 @@ func (p *FileProvider) Scheme() string { return fileScheme }
 // error. World-readable permissions are an error in PermError mode and a
 // warning in PermWarn mode. Errors name the reference (the path), never the
 // contents.
+//
+// The permission check and the read operate on a single open descriptor: the
+// path is opened once and every subsequent decision (fstat for mode, read for
+// contents) uses that descriptor. Statting a path and then separately opening
+// or reading it would be a time-of-check/time-of-use race, where the path (or
+// a symlink's target, or its permission bits) could change between the two
+// syscalls. A symlink is followed by the open; the fstat and read then observe
+// the exact inode the open resolved to, so the permission that is checked is
+// the permission of the bytes that are read.
 func (p *FileProvider) Resolve(_ context.Context, opaque string) (Redacted, error) {
 	ref := fileScheme + ":" + opaque
 
-	info, err := os.Stat(opaque)
+	f, err := os.Open(opaque)
+	if err != nil {
+		return "", fmt.Errorf("secrets: cannot open file for reference %q: %w", ref, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("secrets: cannot stat file for reference %q: %w", ref, err)
 	}
-	if info.IsDir() {
-		return "", fmt.Errorf("secrets: reference %q points to a directory", ref)
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("secrets: reference %q is not a regular file", ref)
 	}
 
-	if perm := info.Mode().Perm(); perm&worldReadableBits != 0 {
+	if perm := fi.Mode().Perm(); perm&worldReadableBits != 0 {
 		switch p.opts.PermMode {
 		case PermError:
 			return "", fmt.Errorf("secrets: file for reference %q has insecure permissions %#o (group/other access); want 0600 or stricter", ref, perm)
@@ -83,7 +99,7 @@ func (p *FileProvider) Resolve(_ context.Context, opaque string) (Redacted, erro
 		}
 	}
 
-	data, err := os.ReadFile(opaque)
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return "", fmt.Errorf("secrets: cannot read file for reference %q: %w", ref, err)
 	}
