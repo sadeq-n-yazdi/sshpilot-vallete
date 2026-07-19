@@ -349,6 +349,9 @@ func TestPublicKeyRevokeByDevice(t *testing.T) {
 		if got.Status != domain.KeyStatusRevoked || got.RevokedAt == nil || !got.RevokedAt.Equal(later) {
 			t.Errorf("%q status/revoked = %q/%v, want revoked/%v", id, got.Status, got.RevokedAt, later)
 		}
+		if !got.UpdatedAt.Equal(later) {
+			t.Errorf("%q UpdatedAt = %v, want %v", id, got.UpdatedAt, later)
+		}
 	}
 	// The other device's key is untouched.
 	if got, _ := s.Repos().PublicKeys.Get(ctx, "owner-a", "k-other"); got.Status != domain.KeyStatusActive {
@@ -494,6 +497,58 @@ func TestPublicKeyListActiveByKeySet(t *testing.T) {
 	// Empty for an unknown set.
 	if none, err := s.Repos().PublicKeys.ListActiveByKeySet(ctx, "owner-a", "set-ghost"); err != nil || none != nil {
 		t.Fatalf("unknown set = (%v, %v), want (nil, nil)", none, err)
+	}
+}
+
+// TestPublicKeyListActiveByKeySetExcludesForeignMember is the confused-deputy
+// case for the publish path. key_set_members carries no owner_id and its two
+// foreign keys only require that the set and the key EXIST, so a membership row
+// may legitimately point one owner's key set at ANOTHER owner's public key. The
+// pk.owner_id predicate in ListActiveByKeySet is the only thing standing between
+// such a row and publication, so a foreign key must never appear in the result.
+func TestPublicKeyListActiveByKeySetExcludesForeignMember(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	mustCreatePublicKey(t, s, newPublicKey("k-a", "owner-a", "d-a"))
+	mustCreatePublicKey(t, s, newPublicKey("k-b", "owner-b", "d-b"))
+
+	// Owner A's set contains A's own key AND, illegitimately, owner B's key.
+	seedKeySet(t, s, "set-a", "owner-a")
+	seedMembership(t, s, "set-a", "k-a")
+	seedMembership(t, s, "set-a", "k-b")
+
+	got, err := s.Repos().PublicKeys.ListActiveByKeySet(ctx, "owner-a", "set-a")
+	if err != nil {
+		t.Fatalf("ListActiveByKeySet: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "k-a" {
+		t.Fatalf("ListActiveByKeySet = %+v, want only owner-a's k-a", got)
+	}
+	for _, k := range got {
+		if k.OwnerID != "owner-a" {
+			t.Errorf("publish query leaked owner %q's key %q via a cross-owner membership", k.OwnerID, k.ID)
+		}
+	}
+
+	// Resolving the same set as owner B returns only B's own key, never A's.
+	// The query is scoped by pk.owner_id, not by key set ownership: whether the
+	// caller is entitled to name this set id at all is an authorization question
+	// the service layer answers before calling. What this repository guarantees,
+	// and what is asserted here, is the data-isolation half — in either
+	// direction, no owner ever receives another owner's key.
+	other, err := s.Repos().PublicKeys.ListActiveByKeySet(ctx, "owner-b", "set-a")
+	if err != nil {
+		t.Fatalf("owner B resolving A's set: %v", err)
+	}
+	if len(other) != 1 || other[0].ID != "k-b" {
+		t.Fatalf("owner B resolving A's set = %+v, want only B's own k-b", other)
+	}
+	for _, k := range other {
+		if k.OwnerID != "owner-b" {
+			t.Errorf("publish query leaked owner %q's key %q to owner-b", k.OwnerID, k.ID)
+		}
 	}
 }
 
