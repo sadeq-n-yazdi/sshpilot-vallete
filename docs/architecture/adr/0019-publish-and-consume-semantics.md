@@ -42,16 +42,20 @@ revocation.
 
 - Unknown handle or set → `404`. Existing but empty **public** set → `200` with
   an empty body.
-- **Enumeration hardening (resolved):** without a valid access credential, a
-  **protected** set responds **identically to a nonexistent** set — **`404`** —
-  so an unauthenticated scanner cannot distinguish "a protected set exists here"
-  from "nothing here." Legitimate consumers hold the access key (delivered
-  out-of-band with the URL) and always present the `Authorization: Bearer` token:
-  a **valid** token yields `200`; an **invalid/expired** token targeting that set
-  yields **`401`**. Combined with rate limiting (ADR-0023), this blunts
-  enumeration of protected set names. The trade-off — a mistyped/credential-less
-  request to a real protected set sees `404` rather than a helpful `401` — is
-  accepted in favor of not leaking existence.
+- **Enumeration hardening (resolved):** existence of a protected set is revealed
+  **only to a valid credential**. Anything short of a valid access key — no
+  `Authorization` header, or a **malformed/invalid/expired/revoked** token —
+  returns a **uniform `404`**, identical to a genuinely nonexistent set. This is
+  the GitHub-private-repo pattern: an attacker cannot probe with a garbage Bearer
+  token and read existence off a `401`-vs-`404` difference.
+  - **Only a syntactically valid, authenticated token produces a non-`404`
+    response:** the correct key → **`200`**; a valid token for a *different*
+    set/scope (authenticated but not authorized for this set) → **`403`**.
+  - Consequence: a legitimate consumer with a **mistyped or stale** key sees
+    `404`, not a diagnostic `401`. That reduced troubleshooting signal is
+    **accepted** in exchange for leaking no existence to unauthenticated probes.
+  - Combined with rate limiting (ADR-0023), this blunts enumeration of protected
+    set names.
 
 ## Consequences
 
