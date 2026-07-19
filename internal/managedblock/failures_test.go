@@ -316,3 +316,66 @@ func TestApplyReadFails(t *testing.T) {
 		t.Fatalf("target was modified after a failed read")
 	}
 }
+
+// TestApplyTempFileIsNeverWorldReadable proves the temp file is created at its
+// final mode rather than created wide and narrowed afterwards. Creating 0644
+// and chmod'ing to 0600 yields the same final mode but opens a real window in
+// which anyone on the host can read the file, so the assertion has to observe
+// the mode as it exists at creation time.
+func TestApplyTempFileIsNeverWorldReadable(t *testing.T) {
+	dir := tempDir(t)
+	setUmask(t)
+	path := filepath.Join(dir, "authorized_keys")
+	writeFile(t, path, "own\n", 0o600)
+
+	var atCreation fs.FileMode
+	seen := false
+	defer swapHooks(t, func(h *hooks) {
+		h.chmodFile = func(f *os.File, mode fs.FileMode) error {
+			info, err := f.Stat()
+			if err != nil {
+				t.Fatalf("stat temp file: %v", err)
+			}
+			atCreation, seen = info.Mode().Perm(), true
+			return f.Chmod(mode)
+		}
+	})()
+
+	if _, err := Apply([]string{keyLine(t, 28, "k")}, Options{Path: path}); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !seen {
+		t.Fatal("the temp file was never chmod'd")
+	}
+	if atCreation&0o177 != 0 {
+		t.Fatalf("temp file was created %04o: it was readable by others before the chmod", atCreation)
+	}
+}
+
+// TestApplyDryRunOnAnExistingDivergentFile is the dry-run case that matters:
+// the file exists, the content differs, and nothing may be written.
+func TestApplyDryRunOnAnExistingDivergentFile(t *testing.T) {
+	dir := tempDir(t)
+	setUmask(t)
+	path := filepath.Join(dir, "authorized_keys")
+	const original = "own key\n"
+	writeFile(t, path, original, 0o600)
+
+	rep, err := Apply([]string{keyLine(t, 29, "k")}, Options{Path: path, DryRun: true})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !rep.Changed || !rep.Existed {
+		t.Fatalf("report = %+v, want Changed=true Existed=true", rep)
+	}
+	if got := readFile(t, path); got != original {
+		t.Fatalf("dry run wrote to the file: %q", got)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("dry run left files behind: %v", entries)
+	}
+}
