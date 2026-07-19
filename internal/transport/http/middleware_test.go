@@ -374,3 +374,74 @@ func TestChainAppliesOutermostFirst(t *testing.T) {
 		t.Errorf("order = %v, want %v", order, want)
 	}
 }
+
+// TestRecoveryStandaloneDoesNotCorruptStartedResponse covers the case that the
+// old statusRecorder type assertion got wrong: recoveryMiddleware used on its
+// own, with no loggingMiddleware above it. The assertion failed there, so a
+// panic raised after the handler had already written left recovery believing
+// nothing had been sent, and it appended a 500 body to a 200 response.
+func TestRecoveryStandaloneDoesNotCorruptStartedResponse(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+	h := recoveryMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{"status":"ok"}`)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+		panic("after headers")
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (status line was already sent)", rec.Code, http.StatusOK)
+	}
+	if body := rec.Body.String(); body != `{"status":"ok"}` {
+		t.Fatalf("body = %q, want the original response with nothing appended", body)
+	}
+	if !strings.Contains(buf.String(), "panic recovered") {
+		t.Fatal("panic should still be logged")
+	}
+}
+
+// TestRecoveryStandaloneWritesFiveHundredBeforeAnySend is the other half: with
+// nothing yet sent, recovery must still produce a 500 when used standalone.
+func TestRecoveryStandaloneWritesFiveHundredBeforeAnySend(t *testing.T) {
+	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+	h := recoveryMiddleware(logger)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("before headers")
+	}))
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "before headers") {
+		t.Fatal("panic value must never reach the client")
+	}
+}
+
+func TestSanitizeLogPathReturnsCleanInputUnchanged(t *testing.T) {
+	for _, p := range []string{"", "/", "/alice/default", "/a/b?c=d", "/naïve/路径"} {
+		if got := sanitizeLogPath(p); got != p {
+			t.Errorf("sanitizeLogPath(%q) = %q, want it returned unchanged", p, got)
+		}
+	}
+}
+
+func TestSanitizeLogPathStillReplacesControlBytes(t *testing.T) {
+	got := sanitizeLogPath("/a\r\nX-Injected: 1\x00\x7f/b")
+	for _, bad := range []string{"\r", "\n", "\x00", "\x7f"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("sanitized path %q still contains %q", got, bad)
+		}
+	}
+	// Multi-byte runes must survive the byte-level scan intact.
+	if got := sanitizeLogPath("/naïve\n"); !strings.Contains(got, "naïve") {
+		t.Fatalf("multi-byte rune corrupted: %q", got)
+	}
+}
