@@ -10,17 +10,17 @@ import (
 	sqlite "modernc.org/sqlite"
 )
 
-// SQLite extended and primary result codes for constraint violations. Extended
-// codes are the authoritative signal for the kind of violation; the primary
-// code is a coarse fallback shared by every constraint failure.
+// SQLite extended result codes for the two constraint violations that map to a
+// conflict. Extended codes are the authoritative signal for the kind of
+// violation; the driver (modernc.org/sqlite) always reports the extended code,
+// never the bare primary code, so no primary-code fallback is needed. Relying
+// on the primary code 19 would be unsafe anyway: it is shared by NOT NULL,
+// CHECK, and foreign-key failures, which must not be reported as conflicts.
 const (
 	// sqliteConstraintUnique is SQLITE_CONSTRAINT_UNIQUE.
 	sqliteConstraintUnique = 2067
 	// sqliteConstraintPrimaryKey is SQLITE_CONSTRAINT_PRIMARYKEY.
 	sqliteConstraintPrimaryKey = 1555
-	// sqliteConstraintPrimary is SQLITE_CONSTRAINT, the primary code common to
-	// all constraint violations (extended = primary | (n << 8)).
-	sqliteConstraintPrimary = 19
 )
 
 // errPrefix is the static wrapper for errors that are neither "not found" nor a
@@ -53,12 +53,10 @@ func mapError(err error) error {
 }
 
 // isUniqueViolation reports whether err is a SQLite UNIQUE or PRIMARY KEY
-// constraint violation. It inspects the driver's *sqlite.Error result code:
-// the extended codes 2067 and 1555 are checked first because they identify the
-// violation precisely, and the primary code 19 is a last-resort fallback for
-// builds that surface only the primary code. The primary-code fallback is
-// deliberately narrow: 19 also covers NOT NULL, CHECK, and foreign-key
-// failures, but those are not expected on the uniqueness paths that call this.
+// constraint violation, identified by the driver's precise extended result
+// codes 2067 and 1555. Only these two map to a conflict; NOT NULL, CHECK, and
+// foreign-key failures deliberately fall through so they are not misreported as
+// conflicts.
 //
 // This function, and errors.go, are the only places that import the driver's
 // error type.
@@ -71,6 +69,6 @@ func isUniqueViolation(err error) bool {
 	case sqliteConstraintUnique, sqliteConstraintPrimaryKey:
 		return true
 	default:
-		return serr.Code() == sqliteConstraintPrimary
+		return false
 	}
 }
