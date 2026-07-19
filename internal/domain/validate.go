@@ -15,9 +15,10 @@ const (
 	MaxCommentLen    = 256
 )
 
-// slugRe matches a slug: 1-64 chars of [a-z0-9-] with no leading or trailing
-// hyphen.
-var slugRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)
+// slugRe matches a slug: lowercase [a-z0-9-] with no leading or trailing
+// hyphen. Length is enforced separately via MaxSlugLen so the pattern and the
+// limit cannot silently drift apart.
+var slugRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 
 // fingerprintRe matches a SHA256 SSH fingerprint: the literal "SHA256:" prefix
 // followed by exactly 43 characters of unpadded base64.
