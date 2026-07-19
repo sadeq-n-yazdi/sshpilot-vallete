@@ -314,3 +314,32 @@ func TestMaxCandidateSkeletonsMatchesTheRuneBound(t *testing.T) {
 			maxAmbiguousRunes)
 	}
 }
+
+// TestAmbiguousReadingsCannotOvershootTheCandidateCeiling ties the two bounds
+// together.
+//
+// maxAmbiguousRunes bounds POSITIONS and maxCandidateSkeletons bounds
+// CANDIDATES, and the second only follows from the first while every entry has
+// exactly one alternative reading. A two-reading entry would expand 3^k and
+// overshoot the ceiling. candidateSkeletons checks the real product and fails
+// closed, so this cannot become a bypass, but an entry that made every
+// identifier containing it too-ambiguous-to-check would be a severe and
+// silent over-block. This test makes that a review-time failure instead.
+func TestAmbiguousReadingsCannotOvershootTheCandidateCeiling(t *testing.T) {
+	worst := 1
+	for _, readings := range ambiguousReadings {
+		if branch := 1 + len(readings); branch > worst {
+			worst = branch
+		}
+	}
+	total := 1
+	for range maxAmbiguousRunes {
+		total *= worst
+		if total > maxCandidateSkeletons {
+			t.Fatalf("a skeleton with %d ambiguous positions can expand to %d "+
+				"candidates, past the ceiling of %d; maxAmbiguousRunes and "+
+				"maxCandidateSkeletons no longer agree",
+				maxAmbiguousRunes, total, maxCandidateSkeletons)
+		}
+	}
+}

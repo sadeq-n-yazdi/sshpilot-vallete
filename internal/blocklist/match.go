@@ -498,7 +498,8 @@ func (m *Matcher) Check(input string) Result {
 //     Two runs of two processes produce the same slice, which is what makes the
 //     reported term in an audit record mean something.
 //   - ok is false when sk holds more than maxAmbiguousRunes ambiguous
-//     positions. The candidate set is then NOT partially returned: a truncated
+//     positions, or when those positions would expand past
+//     maxCandidateSkeletons. The candidate set is then NOT partially returned: a truncated
 //     set is worse than none, because Check would walk it, find no match, and
 //     allow the identifier on the strength of an expansion it never finished.
 //     Callers MUST treat false as blocked.
@@ -507,12 +508,23 @@ func (m *Matcher) Check(input string) Result {
 // exact: every byte of a multi-byte rune is >= 0x80 and so matches no key, and
 // substituting one ASCII byte for another leaves every other offset in place.
 func candidateSkeletons(sk string) ([]string, bool) {
+	return expandCandidates(sk, ambiguousReadings)
+}
+
+// expandCandidates is candidateSkeletons with the table injected.
+//
+// The table is a parameter solely so that a test can exercise the ceiling
+// against a hypothetical multi-reading entry without writing to the package
+// variable. Check runs concurrently in this package's own tests, so a test that
+// swapped the global would be a data race rather than a test. Production code
+// has exactly one table and must call candidateSkeletons.
+func expandCandidates(sk string, table map[byte][]byte) ([]string, bool) {
 	// Count first, expand second. Finding the bound broken before allocating
 	// anything is what stops the denial-of-service case from being paid for on
 	// the way to refusing it.
 	positions := make([]int, 0, maxAmbiguousRunes)
 	for i := 0; i < len(sk); i++ {
-		if _, ok := ambiguousReadings[sk[i]]; !ok {
+		if _, ok := table[sk[i]]; !ok {
 			continue
 		}
 		if len(positions) == maxAmbiguousRunes {
@@ -521,11 +533,28 @@ func candidateSkeletons(sk string) ([]string, bool) {
 		positions = append(positions, i)
 	}
 
-	candidates := make([]string, 1, 1<<len(positions))
+	// Size the set exactly, and make maxCandidateSkeletons a real ceiling
+	// rather than one that happens to hold. Each position multiplies the set by
+	// 1 + len(readings) -- the unmodified reading plus its alternatives -- so
+	// 1<<len(positions) is only the right answer while every entry has exactly
+	// one alternative, which is true today and is not a property this function
+	// should depend on. A future two-reading entry would otherwise expand 3^k,
+	// silently overshoot the ceiling the bound is documented to enforce, and
+	// grow the slice past its hint on the way. Computing the product checks the
+	// ceiling before allocating and fails closed against it.
+	total := 1
+	for _, pos := range positions {
+		total *= 1 + len(table[sk[pos]])
+		if total > maxCandidateSkeletons {
+			return nil, false
+		}
+	}
+
+	candidates := make([]string, 1, total)
 	candidates[0] = sk
 
 	for _, pos := range positions {
-		readings := ambiguousReadings[sk[pos]]
+		readings := table[sk[pos]]
 		grown := make([]string, 0, len(candidates)*(1+len(readings)))
 		// The unmodified set first, so candidates[0] survives every round as
 		// sk itself.

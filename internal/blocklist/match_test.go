@@ -734,9 +734,17 @@ func TestExpansionBlocksTheLeetLBypasses(t *testing.T) {
 		{"bo11ocks", "offensive", "bollocks"},
 		{"s1ut", "offensive", "slut"},
 		{"hit1er", "offensive", "hitler"},
-		// Mixed readings in one identifier: the first 1 reads as l, the
-		// second as i. Only a candidate SET can satisfy both at once.
-		{"b1ll1ng", "impersonation", "billing"},
+		// Mixed readings in one identifier, and the case that a single fold
+		// cannot express however it is pointed. "b1l1ing" folds to "biliing":
+		// the first digit must read as i and the second as l for it to be
+		// "billing", so no one-output-per-rune table can reach it. Only a
+		// candidate SET satisfies both readings at once.
+		//
+		// Contrast "b1ll1ng", which is already covered by
+		// TestWholeSkeletonCatchesEveryFoldedEvasion and needs no expansion:
+		// both its digits sit at billing's i-positions, so it folds to
+		// "billing" exactly and was blocked before this change.
+		{"b1l1ing", "impersonation", "billing"},
 	} {
 		t.Run(tc.in, func(t *testing.T) {
 			got := m.Check(tc.in)
@@ -827,7 +835,7 @@ func TestExpansionPrefersTheExactSkeleton(t *testing.T) {
 // across processes, not just across calls on one instance, because that is the
 // claim an audit record rests on.
 func TestExpansionVerdictIsStableAcrossMatchers(t *testing.T) {
-	for _, in := range []string{"he1p", "bi11ing", "b1ll1ng", "s1ut", "lima", "mall"} {
+	for _, in := range []string{"he1p", "bi11ing", "b1l1ing", "s1ut", "lima", "mall"} {
 		t.Run(in, func(t *testing.T) {
 			first, err := NewMatcher(DefaultLists()...)
 			if err != nil {
@@ -845,5 +853,44 @@ func TestExpansionVerdictIsStableAcrossMatchers(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCandidateCeilingFailsClosedForMultiReadingTables covers the ceiling
+// against a table shape that does not exist yet.
+//
+// maxAmbiguousRunes bounds positions; maxCandidateSkeletons bounds candidates.
+// The second follows from the first only while every entry has exactly one
+// alternative reading. A two-reading entry expands 3^k, which passes the
+// position bound and blows the candidate ceiling, so expandCandidates checks
+// the real product. The table is injected rather than swapped on the package
+// variable, because Check runs concurrently elsewhere in this suite.
+func TestCandidateCeilingFailsClosedForMultiReadingTables(t *testing.T) {
+	// Two alternatives per position: each ambiguous rune triples the set.
+	table := map[byte][]byte{'i': {'l', '1'}}
+
+	// Well inside the position bound, but 3^10 = 59049 candidates, far past
+	// the ceiling. The position bound alone would wave this through.
+	in := strings.Repeat("i", 10)
+	if got, ok := expandCandidates(in, table); ok {
+		t.Errorf("expandCandidates(%q) returned %d candidates; %d ambiguous "+
+			"positions at 3 readings each is past the ceiling of %d",
+			in, len(got), len(in), maxCandidateSkeletons)
+	} else if got != nil {
+		t.Errorf("expandCandidates(%q) returned %d candidates alongside a refusal",
+			in, len(got))
+	}
+
+	// Small enough to fit: 3^3 = 27.
+	small := strings.Repeat("i", 3)
+	got, ok := expandCandidates(small, table)
+	if !ok {
+		t.Fatalf("expandCandidates(%q) refused a set of 27", small)
+	}
+	if len(got) != 27 {
+		t.Errorf("expandCandidates(%q) returned %d candidates; want 27", small, len(got))
+	}
+	if got[0] != small {
+		t.Errorf("expandCandidates(%q)[0] = %q; want the input itself", small, got[0])
 	}
 }

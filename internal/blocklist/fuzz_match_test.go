@@ -31,7 +31,7 @@ func FuzzCheck(f *testing.F) {
 		// Ambiguous-reading expansion. The bypasses TableVersion 4 closes,
 		// legitimate neighbors that must stay allowed, and inputs at and past
 		// the expansion bound so the fail-closed path is reachable from here.
-		"he1p", "1ogin", "bi11ing", "officia1", "nu11", "b1ll1ng", "heIp",
+		"he1p", "1ogin", "bi11ing", "officia1", "nu11", "b1l1ing", "heIp",
 		"heıp", "heιp", "he１p", "he¹p",
 		"lima", "mall", "kelly", "indivisibility", "helpful",
 		strings.Repeat("i", maxAmbiguousRunes),
