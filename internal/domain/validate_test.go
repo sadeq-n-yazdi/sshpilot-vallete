@@ -206,6 +206,17 @@ var rejectedFormatRunes = []struct {
 	{"U+2028 LINE SEPARATOR", '\u2028'},
 	{"U+2029 PARAGRAPH SEPARATOR", '\u2029'},
 	{"U+FEFF ZERO WIDTH NO-BREAK SPACE", '\uFEFF'},
+
+	// Reached by the category check rather than by name. These are exactly the
+	// characters an enumeration of the known bidi and zero-width attacks would
+	// have missed, which is why the check is category-based.
+	{"U+00AD SOFT HYPHEN", '\u00AD'},
+	{"U+206A INHIBIT SYMMETRIC SWAPPING", '\u206A'},
+	{"U+206F NOMINAL DIGIT SHAPES", '\u206F'},
+	{"U+180E MONGOLIAN VOWEL SEPARATOR", '\u180E'},
+	{"U+E0001 LANGUAGE TAG", '\U000E0001'},
+	{"U+E0020 TAG SPACE", '\U000E0020'},
+	{"U+E007F CANCEL TAG", '\U000E007F'},
 }
 
 // hardenedValidators are the free-text validators that must reject the runes
@@ -358,4 +369,55 @@ func FuzzValidateKeyComment(f *testing.F) {
 			t.Fatalf("accepted over-long string of %d runes", utf8.RuneCountInString(s))
 		}
 	})
+}
+
+// TestFormatCategoryRejectedExhaustively walks every codepoint in Cf, Zl and Zp
+// and asserts the rule holds across the whole category rather than only for the
+// runes named in rejectedFormatRunes. This is the guarantee a fixed enumeration
+// cannot give: it also fails if a future Unicode table revision introduces a
+// format character that slips through.
+func TestFormatCategoryRejectedExhaustively(t *testing.T) {
+	var checked int
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		if !unicode.Is(unicode.Cf, r) && !unicode.Is(unicode.Zl, r) && !unicode.Is(unicode.Zp, r) {
+			continue
+		}
+		checked++
+		err := ValidateKeyComment("prod" + string(r) + "server")
+		switch r {
+		case '\u200C', '\u200D':
+			// The two deliberate exceptions; see unicode.go.
+			if err != nil {
+				t.Errorf("%U must be accepted, got %v", r, err)
+			}
+		default:
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Errorf("%U must be rejected, got %v", r, err)
+			}
+		}
+	}
+	if checked < 100 {
+		t.Fatalf("only %d format codepoints examined; unicode tables look wrong", checked)
+	}
+	t.Logf("examined %d format/separator codepoints", checked)
+}
+
+// TestZWNJAndZWJAreTheOnlyExceptions pins the exception list itself. If someone
+// later widens the carve-out, this fails even though every other test passes.
+func TestZWNJAndZWJAreTheOnlyExceptions(t *testing.T) {
+	var accepted []rune
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		if unicode.Is(unicode.Cf, r) && ValidateKeyComment("a"+string(r)+"b") == nil {
+			accepted = append(accepted, r)
+		}
+	}
+	want := []rune{'\u200C', '\u200D'}
+	if len(accepted) != len(want) {
+		t.Fatalf("accepted Cf runes = %U, want exactly %U", accepted, want)
+	}
+	for i, r := range want {
+		if accepted[i] != r {
+			t.Fatalf("accepted Cf runes = %U, want exactly %U", accepted, want)
+		}
+	}
 }
