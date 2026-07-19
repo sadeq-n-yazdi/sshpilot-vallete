@@ -69,10 +69,12 @@ const TableVersion = 1
 //  2. Case folding, via unicode.ToLower, which applies the full Unicode simple
 //     lowercase mapping (Cyrillic А->а, Greek Α->α, fullwidth Ａ->ａ), not just
 //     ASCII. Folding here means every later table needs lowercase keys only,
-//     which halves them and halves what a reviewer must audit. Two cases the
-//     simple mapping does not cover are handled by table instead: dotless ı
-//     (U+0131) has no lowercase mapping to i, and İ (U+0130) lowercases to
-//     "i" plus a combining dot already removed by stage 1.
+//     which halves them and halves what a reviewer must audit. The case the
+//     simple mapping does not cover is handled by table instead: dotless ı
+//     (U+0131) has no lowercase mapping to i. Its companion İ (U+0130) does
+//     fold to a bare "i" under the per-rune simple mapping, so it needs no
+//     entry; note this differs from the full string-level Unicode mapping,
+//     which yields "i" plus a combining dot.
 //  3. Compatibility ranges: algorithmically contiguous blocks (fullwidth,
 //     mathematical alphanumerics, circled) are mapped by arithmetic to ASCII.
 //  4. Confusables: the arbitrary, non-algorithmic visual equivalences --

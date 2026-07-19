@@ -111,8 +111,9 @@ var confusables = map[rune]string{
 	//
 	// U+0131 DOTLESS I is the Turkish-locale trap ("admın"): unicode.ToLower
 	// leaves it unchanged, so without this entry it would slip through. Its
-	// companion İ (U+0130) needs no entry -- it lowercases to "i" plus a
-	// combining dot that the ignorable stage has already removed.
+	// companion İ (U+0130) needs no entry -- Go's per-rune simple lowercase
+	// mapping already yields a bare "i", never the "i" plus combining dot that
+	// the full string-level Unicode mapping produces.
 	'ı': "i",
 	'ł': "l",  // U+0142 LATIN SMALL L WITH STROKE
 	'đ': "d",  // U+0111 LATIN SMALL D WITH STROKE
