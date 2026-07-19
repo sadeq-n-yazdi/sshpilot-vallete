@@ -3,6 +3,8 @@ package httpserver
 import (
 	"log/slog"
 	"net/http"
+
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 )
 
 // NewHandler builds the complete HTTP handler: the route table wrapped in the
@@ -15,7 +17,12 @@ import (
 //
 // Routing uses the stdlib method-aware ServeMux patterns (Go 1.22+); no
 // third-party router is pulled in for two health routes.
-func NewHandler(logger *slog.Logger, pinger Pinger) http.Handler {
+//
+// cfg supplies transport policy — which peers may be believed about the client
+// scheme. It may be nil, which yields the strictest posture (HSTS only on
+// connections this process terminated); that is the right default for an
+// embedder who has not thought about proxy trust.
+func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
@@ -34,7 +41,7 @@ func NewHandler(logger *slog.Logger, pinger Pinger) http.Handler {
 	// panicking handler, which would otherwise be the one response that escapes
 	// without the policy.
 	return chain(mux,
-		hstsMiddleware,
+		hstsMiddleware(newHSTSPolicy(cfg)),
 		requestIDMiddleware,
 		loggingMiddleware(logger),
 		recoveryMiddleware(logger),

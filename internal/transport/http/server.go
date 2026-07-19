@@ -74,7 +74,7 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger) (*Server, error
 		addr:   cfg.Server.ListenAddr,
 		httpSrv: &http.Server{
 			Addr:              cfg.Server.ListenAddr,
-			Handler:           NewHandler(logger, pinger),
+			Handler:           NewHandler(cfg, logger, pinger),
 			TLSConfig:         tlsCfg,
 			ReadHeaderTimeout: readHeaderTimeout,
 			ReadTimeout:       readTimeout,

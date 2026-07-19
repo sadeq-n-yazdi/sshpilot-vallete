@@ -162,7 +162,7 @@ func TestLoggingMiddlewareRecordsRoutePattern(t *testing.T) {
 	t.Parallel()
 
 	logger, buf := newTestLogger()
-	h := NewHandler(logger, okPinger{})
+	h := NewHandler(nil, logger, okPinger{})
 
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
 

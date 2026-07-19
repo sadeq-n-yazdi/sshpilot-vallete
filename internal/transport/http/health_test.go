@@ -39,7 +39,7 @@ func TestHealthzIsLivenessOnly(t *testing.T) {
 	// A broken dependency must NOT affect liveness: restarting the process
 	// would not fix a database outage.
 	logger, _ := newTestLogger()
-	h := NewHandler(logger, errPinger{err: errors.New("database down")})
+	h := NewHandler(nil, logger, errPinger{err: errors.New("database down")})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -115,7 +115,7 @@ func TestReadyzReflectsDependencyHealth(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/readyz", nil).WithContext(ctx)
-			NewHandler(logger, tc.pinger).ServeHTTP(rec, req)
+			NewHandler(nil, logger, tc.pinger).ServeHTTP(rec, req)
 
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
@@ -139,7 +139,7 @@ func TestReadyzDoesNotDiscloseTheFailureReason(t *testing.T) {
 	logger, buf := newTestLogger()
 
 	rec := httptest.NewRecorder()
-	NewHandler(logger, errPinger{err: errors.New(detail)}).
+	NewHandler(nil, logger, errPinger{err: errors.New(detail)}).
 		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 
 	if strings.Contains(rec.Body.String(), detail) {
@@ -154,7 +154,7 @@ func TestRoutesRejectWrongMethodAndUnknownPaths(t *testing.T) {
 	t.Parallel()
 
 	logger, _ := newTestLogger()
-	h := NewHandler(logger, okPinger{})
+	h := NewHandler(nil, logger, okPinger{})
 
 	tests := []struct {
 		name       string
@@ -186,7 +186,7 @@ func TestNewHandlerToleratesNilLogger(t *testing.T) {
 	t.Parallel()
 
 	rec := httptest.NewRecorder()
-	NewHandler(nil, okPinger{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	NewHandler(nil, nil, okPinger{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", rec.Code)

@@ -11,7 +11,16 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 )
+
+// secureRequest builds a request carrying TLS connection state, as an https
+// target does in httptest. It stands for "this request reached us over a
+// connection this process terminated".
+func secureRequest(target string) *http.Request {
+	return httptest.NewRequest(http.MethodGet, "https://vallet.example.com"+target, nil)
+}
 
 // TestHSTSHeaderValue pins the exact policy string and the decisions behind it.
 // Each assertion below corresponds to a documented choice in hsts.go, so a
@@ -20,9 +29,9 @@ func TestHSTSHeaderValue(t *testing.T) {
 	t.Parallel()
 
 	rec := httptest.NewRecorder()
-	hstsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	hstsMiddleware(hstsPolicy{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	})).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	})).ServeHTTP(rec, secureRequest("/healthz"))
 
 	got := rec.Header().Get(StrictTransportSecurityHeader)
 	if got == "" {
@@ -121,7 +130,7 @@ func TestHSTSOnEveryResponse(t *testing.T) {
 			t.Parallel()
 
 			rec := httptest.NewRecorder()
-			hstsMiddleware(tc.handler).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+			hstsMiddleware(hstsPolicy{})(tc.handler).ServeHTTP(rec, secureRequest("/"))
 			if got := rec.Header().Get(StrictTransportSecurityHeader); got != hstsValue {
 				t.Errorf("HSTS = %q, want %q", got, hstsValue)
 			}
@@ -140,10 +149,10 @@ func TestHSTSSurvivesAPanickingHandler(t *testing.T) {
 	rec := httptest.NewRecorder()
 	chain(
 		http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { panic("boom") }),
-		hstsMiddleware,
+		hstsMiddleware(hstsPolicy{}),
 		requestIDMiddleware,
 		recoveryMiddleware(slog.New(slog.DiscardHandler)),
-	).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	).ServeHTTP(rec, secureRequest("/"))
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500", rec.Code)
@@ -245,5 +254,209 @@ func TestNoPlaintextListenerExists(t *testing.T) {
 	}
 	if strings.Contains(string(body), `"status":"ok"`) {
 		t.Errorf("health payload leaked over plaintext: %q", body)
+	}
+}
+
+// upstreamPolicy builds the policy for a deployment where TLS is terminated by
+// a reverse proxy at the given trusted addresses.
+func upstreamPolicy(trusted ...string) hstsPolicy {
+	cfg := config.Default()
+	cfg.TLS.Mode = "upstream"
+	cfg.Server.TrustedProxies = trusted
+	return newHSTSPolicy(&cfg)
+}
+
+// TestHSTSRequiresSecureTransport is the anti-spoofing suite.
+//
+// RFC 6797 §7.2 forbids sending HSTS over non-secure transport, so the header
+// must be withheld from a plaintext request. The critical cases are the ones
+// where a client SETS X-Forwarded-Proto itself: that header is ordinary
+// attacker-controlled input on a directly-exposed listener, and it may only be
+// believed when the immediate peer is a configured trusted proxy.
+func TestHSTSRequiresSecureTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		policy     hstsPolicy
+		tlsRequest bool
+		remoteAddr string
+		forwarded  string
+		wantHeader bool
+	}{
+		{
+			name:       "TLS terminated here",
+			policy:     hstsPolicy{},
+			tlsRequest: true,
+			wantHeader: true,
+		},
+		{
+			// The embedded-handler case: no TLS, no proxy trust configured.
+			name:       "plaintext request gets no HSTS",
+			policy:     hstsPolicy{},
+			remoteAddr: "203.0.113.9:44321",
+			wantHeader: false,
+		},
+		{
+			// THE anti-spoofing case. An arbitrary internet client claims https.
+			// No proxy is configured, so the header must not be believed.
+			name:       "spoofed X-Forwarded-Proto from untrusted peer is ignored",
+			policy:     hstsPolicy{},
+			remoteAddr: "203.0.113.9:44321",
+			forwarded:  "https",
+			wantHeader: false,
+		},
+		{
+			// Same spoof, but now proxies ARE configured — and the spoofer is
+			// not one of them. Trust is per-peer, not global.
+			name:       "spoofed X-Forwarded-Proto from a non-proxy peer is ignored",
+			policy:     upstreamPolicy("10.0.0.5", "192.168.1.0/24"),
+			remoteAddr: "203.0.113.9:44321",
+			forwarded:  "https",
+			wantHeader: false,
+		},
+		{
+			name:       "trusted proxy reporting https gets HSTS",
+			policy:     upstreamPolicy("10.0.0.5"),
+			remoteAddr: "10.0.0.5:9000",
+			forwarded:  "https",
+			wantHeader: true,
+		},
+		{
+			name:       "trusted proxy inside a CIDR gets HSTS",
+			policy:     upstreamPolicy("192.168.1.0/24"),
+			remoteAddr: "192.168.1.77:9000",
+			forwarded:  "https",
+			wantHeader: true,
+		},
+		{
+			// The proxy is trusted but reports the client arrived over plaintext.
+			// Believing the proxy means believing this too.
+			name:       "trusted proxy reporting http gets no HSTS",
+			policy:     upstreamPolicy("10.0.0.5"),
+			remoteAddr: "10.0.0.5:9000",
+			forwarded:  "http",
+			wantHeader: false,
+		},
+		{
+			name:       "trusted proxy sending no scheme header gets no HSTS",
+			policy:     upstreamPolicy("10.0.0.5"),
+			remoteAddr: "10.0.0.5:9000",
+			wantHeader: false,
+		},
+		{
+			// Case-insensitive per RFC 7230 token rules.
+			name:       "scheme comparison is case-insensitive",
+			policy:     upstreamPolicy("10.0.0.5"),
+			remoteAddr: "10.0.0.5:9000",
+			forwarded:  "HTTPS",
+			wantHeader: true,
+		},
+		{
+			// A comma list means unvetted hops contributed to the value; parsing
+			// an element out of it would trust their assembly of it.
+			name:       "comma-joined scheme list is refused",
+			policy:     upstreamPolicy("10.0.0.5"),
+			remoteAddr: "10.0.0.5:9000",
+			forwarded:  "https, http",
+			wantHeader: false,
+		},
+		{
+			// Trusted proxies configured, but the operator did NOT select
+			// upstream termination. The header is meaningless here.
+			name: "forwarded scheme ignored outside upstream mode",
+			policy: func() hstsPolicy {
+				cfg := config.Default()
+				cfg.TLS.Mode = "manual"
+				cfg.Server.TrustedProxies = []string{"10.0.0.5"}
+				return newHSTSPolicy(&cfg)
+			}(),
+			remoteAddr: "10.0.0.5:9000",
+			forwarded:  "https",
+			wantHeader: false,
+		},
+		{
+			name:       "unparseable RemoteAddr is untrusted",
+			policy:     upstreamPolicy("10.0.0.5"),
+			remoteAddr: "not-an-address",
+			forwarded:  "https",
+			wantHeader: false,
+		},
+		{
+			// Real TLS wins regardless of what any header claims.
+			name:       "TLS request is secure even with a contradicting header",
+			policy:     upstreamPolicy("10.0.0.5"),
+			tlsRequest: true,
+			remoteAddr: "203.0.113.9:44321",
+			forwarded:  "http",
+			wantHeader: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var req *http.Request
+			if tc.tlsRequest {
+				req = secureRequest("/")
+			} else {
+				req = httptest.NewRequest(http.MethodGet, "http://vallet.example.com/", nil)
+			}
+			if tc.remoteAddr != "" {
+				req.RemoteAddr = tc.remoteAddr
+			}
+			if tc.forwarded != "" {
+				req.Header.Set(forwardedProtoHeader, tc.forwarded)
+			}
+
+			rec := httptest.NewRecorder()
+			hstsMiddleware(tc.policy)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			})).ServeHTTP(rec, req)
+
+			got := rec.Header().Get(StrictTransportSecurityHeader)
+			if tc.wantHeader {
+				if got != hstsValue {
+					t.Errorf("HSTS = %q, want %q", got, hstsValue)
+				}
+				return
+			}
+			if got != "" {
+				t.Errorf("HSTS = %q, want no header: RFC 6797 §7.2 forbids sending it over non-secure transport", got)
+			}
+		})
+	}
+}
+
+// TestEmbeddedHandlerWithheldOverPlaintext exercises the exported entry point
+// the review was concerned with. NewHandler can be mounted anywhere, so the
+// no-HSTS-over-plaintext guarantee must hold for a caller who never went
+// through Server at all.
+func TestEmbeddedHandlerWithheldOverPlaintext(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(NewHandler(nil, nil, okPinger{}))
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/healthz", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	// A client claiming https over a plaintext connection must change nothing.
+	req.Header.Set(forwardedProtoHeader, "https")
+
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (the handler must still serve)", resp.StatusCode)
+	}
+	if got := resp.Header.Get(StrictTransportSecurityHeader); got != "" {
+		t.Errorf("HSTS = %q over a plaintext embedded handler, want no header", got)
 	}
 }
