@@ -35,6 +35,7 @@ consequences. They are the project's decision memory.
 | [0019](0019-publish-and-consume-semantics.md) | Publish/consume semantics | Accepted |
 | [0020](0020-testing-strategy.md) | Testing strategy: unit + e2e, happy/fail/gray | Accepted |
 | [0021](0021-openapi-docs-endpoints.md) | Self-served OpenAPI spec and docs endpoints | Accepted |
+| [0022](0022-configuration-and-secrets.md) | Configuration and secrets management | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.

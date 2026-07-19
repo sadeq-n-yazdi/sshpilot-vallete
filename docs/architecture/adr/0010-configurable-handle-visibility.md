@@ -21,10 +21,12 @@ Handle/key-set visibility is a **per key set** setting (originally per-owner):
 - **Public (default):** anyone with the handle can fetch the keys. Rationale:
   public keys are public by nature, and this preserves the zero-friction
   `curl` workflow.
-- **Protected:** fetching requires an **access key**. The exact presentation
-  mechanism (so plain `curl` still works) is an open question — candidates:
-  `Authorization` header, `?key=` query parameter, or HTTP basic auth — each with
-  different caching/logging/leak trade-offs.
+- **Protected:** fetching requires an **access key**, presented as an
+  **`Authorization: Bearer <key>`** header (e.g.
+  `curl -H 'Authorization: Bearer <key>' https://host/alice/prod`). The header is
+  used — not a query parameter — to keep keys out of URLs, access logs, proxies,
+  and browser history; it also works cleanly from `AuthorizedKeysCommand`.
+  Protected responses are never shared-cached (ADR-0019).
 
 Notes:
 

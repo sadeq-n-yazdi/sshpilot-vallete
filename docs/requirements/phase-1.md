@@ -70,6 +70,8 @@ CLI for managing keys.
 | 24 | Publish semantics: native `authorized_keys`, canonical/options-free, deterministic order; **short bounded TTL (~60s default) + ETag**; protected sets not shared-cached; revocation window bounded by TTL (AuthorizedKeysCommand is live). | 0019 |
 | 25 | **Testing**: all code covered by **unit + e2e** tests spanning **happy, fail, and gray** paths; positive *and* negative tests mandatory; CI-enforced coverage gate; run against SQLite and Postgres. | 0020 |
 | 26 | **Self-served API docs**: `GET /docs/` returns the OpenAPI document by requested type (rendered HTML / YAML / JSON), **default JSON**; `/docs/spec/` gives stable JSON/YAML URLs; assets bundled (no CDN); exposure deployer-configurable. | 0021 |
+| 27 | **Config**: structured file (YAML/TOML) + env overrides (env > file > defaults), validated fail-closed at startup. **Secrets** never in the file — via env/file refs behind a pluggable secret-provider interface (Vault/KMS later); never logged. | 0022 |
+| 28 | **Protected-set access** presented as an **`Authorization: Bearer`** header (never query string). | 0010 |
 
 ## 4. Phase-1 scope (as described so far)
 
@@ -159,15 +161,16 @@ store (→ SQLite + Postgres, decision 4), CA signing (→ deferred, decision 16
 
 Still open:
 
-1. **Protected-set access mechanism:** when a set requires a key, how is it
-   presented so plain `curl` still works? (`Authorization` header, `?key=` query,
-   basic-auth?) Each has caching/logging/leak trade-offs.
+1. ~~Protected-set access mechanism~~ — **resolved:** `Authorization: Bearer`
+   header (ADR-0010). Access-key issuance/rotation/revocation lifecycle remains
+   open (§5a).
 2. **Auth fine detail:** exact scope catalog, access/refresh token TTLs, and
    revocation propagation (short TTL vs revocation check). (Model set in ADR-0018.)
 3. **OIDC & WebAuthn specifics:** which OIDC providers, discovery/config,
    claim→owner mapping and account linking; WebAuthn RP configuration.
-4. **Instance config mechanism:** file/env schema for enabling auth providers,
-   onboarding mode, default handle visibility, and store selection.
+4. ~~Instance config mechanism~~ — **resolved:** file + env overrides, secrets
+   via env/file refs behind a pluggable provider (ADR-0022). Exact schema/field
+   names and YAML-vs-TOML remain implementation detail.
 5. **Handle claiming & uniqueness**, reservation, and change/rename rules
    (esp. across tenants).
 5a. **Key-set details:** set-name rules & reserved names; max sets per owner;
@@ -219,6 +222,9 @@ Still open:
 - 2026-07-19 (feature: API docs endpoints) — ADR-0021: `/docs/` content-
   negotiated OpenAPI (default JSON) + rendered UI, `/docs/spec/` stable URLs,
   bundled assets, deployer-configurable exposure (decision #26).
+- 2026-07-19 (gaps: access mechanism, config) — Protected-set access via
+  `Authorization: Bearer` (ADR-0010, decision #28); configuration = file + env
+  overrides with pluggable, never-logged secret providers (ADR-0022, #27).
 - 2026-07-19 (feature: reserved identifiers) — System-wide blocklist for handles
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system
