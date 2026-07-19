@@ -16,7 +16,8 @@ described in Termius's "SSH ID / passkeys for SSH".
 
 | Audience | Start here |
 | --- | --- |
-| **Everyone** | [Requirements — Phase 1](requirements/phase-1.md) — the single source of truth for scope, decisions, and open questions. |
+| **Everyone (quick review)** | [Spec Overview](spec-overview.md) — a one-page roll-up of all decisions grouped by theme. |
+| **Everyone (detail)** | [Requirements — Phase 1](requirements/phase-1.md) — the single source of truth for scope, decisions, and open questions. |
 | **Architects / reviewers** | [Architecture Decision Records](architecture/adr/README.md) — every significant decision, with status. |
 | **Security reviewers** | [Threat model](security/threat-model.md) — assets, trust boundaries, and the core risks. |
 | **Backend developers** | Requirements + ADRs today; a developer guide will be added when implementation starts. |
