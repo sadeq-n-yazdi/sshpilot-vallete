@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  build-test:
+    name: build & test (${{ matrix.engine }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [sqlite, postgres]
+
+    # A Postgres service backs the "postgres" matrix leg and any future
+    # storage tests. It also starts for the "sqlite" leg, which is harmless.
+    services:
+      postgres:
+        image: postgres:17.2
+        env:
+          POSTGRES_USER: vallet
+          POSTGRES_PASSWORD: vallet
+          POSTGRES_DB: vallet_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vallet -d vallet_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      VALLET_TEST_ENGINE: ${{ matrix.engine }}
+      VALLET_TEST_POSTGRES_DSN: postgres://vallet:vallet@localhost:5432/vallet_test?sslmode=disable
+
+    steps:
+      # Action versions are pinned to full release tags. SHA-pinning is a
+      # later supply-chain hardening step (see ADR-0027).
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5.2.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./... -race -coverprofile=coverage.out
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5.2.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: golangci-lint
+        # golangci-lint must be built with a Go toolchain >= the module's
+        # `go` directive (1.26); v2.12.2 ships on go1.26. The action major
+        # version is kept in step (v8 requires golangci-lint >= v2.1).
+        uses: golangci/golangci-lint-action@v8.0.0
+        with:
+          version: v2.12.2
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5.2.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+
+      - name: Run govulncheck
+        run: govulncheck ./...
