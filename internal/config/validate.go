@@ -77,6 +77,28 @@ func (c *Config) validateServer(v *validator, prod bool) {
 			v.add("server.public_base_url", "must use https:// in production, got %q", c.Server.PublicBaseURL)
 		}
 	}
+	c.validateTrustedProxies(v)
+}
+
+// validateTrustedProxies fails closed on malformed reverse-proxy trust entries:
+// every entry must parse as either a bare IP or a CIDR block, or a downstream
+// trust decision could be weakened by an entry that silently matches nothing (or
+// the wrong thing). The offending index and value are named; the value is
+// operator-supplied config, not a secret, so echoing it aids diagnosis.
+func (c *Config) validateTrustedProxies(v *validator) {
+	for i, entry := range c.Server.TrustedProxies {
+		field := fmt.Sprintf("server.trusted_proxies[%d]", i)
+		if entry == "" {
+			v.add(field, "must not be empty; want an IP or CIDR")
+			continue
+		}
+		if net.ParseIP(entry) != nil {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(entry); err != nil {
+			v.add(field, "must be an IP or CIDR, got %q", entry)
+		}
+	}
 }
 
 // tlsModes is the set of accepted TLS modes.

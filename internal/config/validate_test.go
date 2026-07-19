@@ -157,6 +157,41 @@ func TestValidateFailures(t *testing.T) {
 	}
 }
 
+func TestValidateTrustedProxies(t *testing.T) {
+	tests := []struct {
+		name    string
+		proxies []string
+		wantErr bool
+	}{
+		{"valid ip", []string{"10.0.0.1"}, false},
+		{"valid ipv6", []string{"2001:db8::1"}, false},
+		{"valid cidr", []string{"10.0.0.0/8"}, false},
+		{"valid cidr ipv6", []string{"2001:db8::/32"}, false},
+		{"mixed valid", []string{"10.0.0.1", "192.168.0.0/16"}, false},
+		{"invalid string", []string{"not-an-ip"}, true},
+		{"empty entry", []string{""}, true},
+		{"cidr missing mask", []string{"10.0.0.0/"}, true},
+		{"one bad among good", []string{"10.0.0.1", "garbage"}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.Server.TrustedProxies = tc.proxies
+			err := c.Validate()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected validation error for proxies %v", tc.proxies)
+				}
+				if !strings.Contains(err.Error(), "server.trusted_proxies") {
+					t.Errorf("error %q does not name server.trusted_proxies", err)
+				}
+			} else if err != nil {
+				t.Fatalf("proxies %v should be valid, got: %v", tc.proxies, err)
+			}
+		})
+	}
+}
+
 func TestValidateCollectsAllProblems(t *testing.T) {
 	c := validConfig()
 	c.Server.Environment = "staging"
