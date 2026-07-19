@@ -102,6 +102,18 @@ func TestHandleRegisterNilInvalidInput(t *testing.T) {
 	}
 }
 
+// TestHandleUpdateNilInvalidInput pins the nil guard on Update. Register was
+// already guarded; Update was not, so a nil entity panicked inside the
+// transaction instead of returning ErrInvalidInput like its sibling.
+func TestHandleUpdateNilInvalidInput(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	if err := s.Repos().Handles.Update(context.Background(), nil); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("Update(nil) error = %v, want ErrInvalidInput", err)
+	}
+}
+
 func TestHandleGetByNameResolves(t *testing.T) {
 	t.Parallel()
 	s := newStore(t)
