@@ -1,5 +1,7 @@
 package domain
 
+import "unicode"
+
 // Free-text identifier fields (device names, labels, key comments) are rendered
 // back to humans and, in the case of key comments, written into the published
 // authorized_keys file that operators read and AuthorizedKeysCommand consumers
@@ -17,7 +19,16 @@ package domain
 //     they break the one-record-per-line authorized_keys format.
 //
 // unicode.IsControl only covers category Cc, so none of the above are rejected
-// by it; they are Cf (format) and Zl/Zp (separator). Hence this explicit table.
+// by it; they are Cf (format) and Zl/Zp (separator).
+//
+// The check is category-based and therefore deny-by-default: every Cf format
+// character is rejected unless explicitly excepted below. This is deliberately
+// broader than enumerating the known bidi and zero-width attack codepoints. It
+// also covers U+00AD SOFT HYPHEN, the deprecated U+206A..U+206F format
+// controls, and the U+E0000..U+E007F tag characters — all invisible, all usable
+// to smuggle content past visual review — and it will cover any format
+// character a future Unicode revision introduces without this file changing.
+// An enumeration silently stops protecting against whatever it does not list.
 //
 // DELIBERATE EXCEPTIONS: U+200C ZERO WIDTH NON-JOINER and U+200D ZERO WIDTH
 // JOINER are permitted. Unlike the characters below they carry real linguistic
@@ -28,48 +39,34 @@ package domain
 // The characters below, by contrast, have no legitimate role in a short
 // identifier and are present only to deceive.
 //
-// Note that ZWNJ and ZWJ sit *between* rejected codepoints in the
-// U+200B..U+200F block, so this must stay an enumeration of individual runes:
-// a range check over that block would ban exactly the two that must be kept.
-// All codepoints are written as \u escapes so that no invisible character is
-// ever present literally in this source file.
+// The two exceptions are named individually rather than carved out by range,
+// because ZWNJ and ZWJ sit between rejected codepoints in the U+200B..U+200F
+// block: a range carve-out would readmit the attack characters around them.
+//
+// ACCEPTED COST: a handful of Cf characters with narrow legitimate uses are
+// also rejected — notably U+0600..U+0605 (Arabic number signs) and U+110BD
+// (Kaithi number sign). These are prefixes for numeric forms and have no role
+// in a device name, label, or key comment, so rejecting them is the right
+// trade against admitting every current and future invisible character.
+// Emoji are unaffected: sequences join with ZWJ, and variation selectors are
+// category Mn, not Cf. Emoji *tag* sequences (some regional flags) do use tag
+// characters and are rejected, which is intended — tag characters are a known
+// smuggling vector and have no place in an identifier.
+//
+// All literal codepoints in this package are written as \u escapes so that no
+// invisible character is ever present literally in the source.
 
 // isDisallowedFormatRune reports whether r is an invisible formatting or
 // separator character that is not permitted in free-text identifier fields.
+//
+// Cf (format) is rejected wholesale apart from the two linguistic exceptions;
+// Zl and Zp cover the line and paragraph separators that unicode.IsControl
+// misses. Do not narrow this to a fixed list of codepoints.
 func isDisallowedFormatRune(r rune) bool {
-	switch r {
-	// Bidirectional formatting, override and isolate controls. These reorder
-	// rendered text relative to the underlying bytes.
-	case '\u061C', // ARABIC LETTER MARK
-		'\u200E', // LEFT-TO-RIGHT MARK
-		'\u200F', // RIGHT-TO-LEFT MARK
-		'\u202A', // LEFT-TO-RIGHT EMBEDDING
-		'\u202B', // RIGHT-TO-LEFT EMBEDDING
-		'\u202C', // POP DIRECTIONAL FORMATTING
-		'\u202D', // LEFT-TO-RIGHT OVERRIDE
-		'\u202E', // RIGHT-TO-LEFT OVERRIDE
-		'\u2066', // LEFT-TO-RIGHT ISOLATE
-		'\u2067', // RIGHT-TO-LEFT ISOLATE
-		'\u2068', // FIRST STRONG ISOLATE
-		'\u2069': // POP DIRECTIONAL ISOLATE
-		return true
-
-	// Invisible and zero-width characters. These render as nothing, so they
-	// let visually identical strings differ.
-	case '\u200B', // ZERO WIDTH SPACE
-		'\u2060', // WORD JOINER
-		'\u2061', // FUNCTION APPLICATION
-		'\u2062', // INVISIBLE TIMES
-		'\u2063', // INVISIBLE SEPARATOR
-		'\u2064', // INVISIBLE PLUS
-		'\uFEFF': // ZERO WIDTH NO-BREAK SPACE (BOM)
-		return true
-
-	// Line and paragraph separators. Not category Cc, so unicode.IsControl
-	// misses them, but they still break a line-oriented file format.
-	case '\u2028', // LINE SEPARATOR
-		'\u2029': // PARAGRAPH SEPARATOR
-		return true
+	if unicode.Is(unicode.Cf, r) {
+		// ZERO WIDTH NON-JOINER and ZERO WIDTH JOINER: required by Persian,
+		// Arabic and Indic scripts, and by emoji sequences. See above.
+		return r != '\u200C' && r != '\u200D'
 	}
-	return false
+	return unicode.Is(unicode.Zl, r) || unicode.Is(unicode.Zp, r)
 }
