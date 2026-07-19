@@ -60,9 +60,9 @@ CLI for managing keys.
 | 14 | Owner onboarding: **deployer-configurable** — open self-signup or invite/admin-provisioned. | 0012 |
 | 15 | Key application: support **`curl`** and **`AuthorizedKeysCommand`**; ship a **managed-block helper** for the curl path. | 0013 |
 | 16 | Per-owner **CA signing**: **deferred** beyond phase 1. | 0014 |
-| 17 | Transport is **HTTPS-only**: no plaintext listener, plaintext **refused** (not redirected), HSTS, TLS ≥ 1.2. | 0015 |
-| 18 | **Certificate modes** (deployer selects): automatic ACME, operator-provided cert+key, generate CSR for external signing, TLS terminated upstream, or **ephemeral self-signed** (dev/install-bootstrap only; ≤ ~6h validity; refused in production without explicit override). | 0015 |
-| 19 | **ACME challenges**: TLS-ALPN-01 and DNS-01 (pluggable DNS providers, e.g. Cloudflare); HTTP-01 not used. | 0015 |
+| 17 | Transport is **HTTPS-only**: no plaintext listener, plaintext **refused** (not redirected), HSTS, **TLS 1.2+ with a strong-AEAD cipher allowlist, TLS 1.3 preferred**. Cert/key stored as **`0600` files**; renewal is **renew-ahead + backoff + alert** and **fail-closed on expiry** (never serve an expired cert). | 0015 |
+| 18 | **Certificate modes** (deployer selects): automatic **Let's Encrypt (ACME)** or **Cloudflare Origin CA** (the two selectable automatic providers in phase 1), operator-provided cert+key, generate CSR for external signing, TLS terminated upstream, or **ephemeral self-signed** (dev/install-bootstrap only; ≤ ~6h validity; refused in production without explicit override). Other ACME CAs (ZeroSSL/EAB) and other DNS providers are **deferred to later phases**. | 0015 |
+| 19 | **ACME (Let's Encrypt) supports both TLS-ALPN-01 and DNS-01**; HTTP-01 not used. **DNS-01** has a **manual mode** (emit `_acme-challenge` TXT, poll) and **automated provider APIs for at least the top-10 DNS providers + ArvanCloud** (Cloudflare, Route 53, Google, Azure, DigitalOcean, DNSimple, GoDaddy, Namecheap, Gandi, OVH, ArvanCloud, generic RFC 2136). Also **Cloudflare Origin CA** issuance. Creds from the **secret provider**. Additional ACME CAs (ZeroSSL/EAB) & DNS providers in later phases. | 0015 |
 | 20 | **Multiple named key sets** per owner (many-to-many key membership), addressed at `/{handle}/{set}`; bare `/{handle}` serves an owner-designated **default set**; **visibility is per set** (access keys per set). **Set names:** lowercase `a–z`/`0–9`/hyphen, 1–64 chars, blocklist applies. **Max sets default 100** (configurable). **Default set not deletable** (reassign first); **non-empty delete needs confirmation**; **freed set names quarantine**. | 0016, 0010 |
 | 21 | **Reserved-identifier blocklist** for handles, key-set names **and device names** (system/impersonation/offensive terms + confusable/leetspeak matching on a normalized **skeleton**; **system & impersonation = whole-token, offensive = substring**); built-in default, deployer-seedable, and **runtime-editable by a system administrator** (audited), with an **admin-editable allowlist** for false positives. Existing names newly blocked **keep working, are flagged, and quarantine-on-release**. Introduces an **administrator** role. | 0017 |
 | 22 | Management credentials: **refresh + short-lived access tokens** (individually revocable). **Access TTL 15m**; **refresh rotates on use** (reuse-theft detection) with a **90-day absolute cap**; revocation **hybrid** (TTL + small live denylist for immediate effect). Enrollment via **device-authorization grant, manual token paste, or in-client login** (deployer/owner choice). | 0009, 0018 |
@@ -213,10 +213,15 @@ Still open:
    open.
 7. **Managed-block helper form:** shell script shipped with releases vs an
    endpoint that serves the script vs both.
-8. **TLS specifics:** EAB handling for ZeroSSL-style CAs; which DNS-01 providers
-   ship first; storage location/format for cert, key, and DNS credentials;
-   renewal scheduling and failure alerting; min TLS version / cipher defaults;
-   fail-closed vs serve-last-good when a cert expires and renewal fails.
+8. ~~TLS specifics~~ — **resolved (ADR-0015):** phase 1 ships **two selectable
+   automatic providers — Let's Encrypt (ACME, with both TLS-ALPN-01 and DNS-01
+   solvers) and Cloudflare Origin CA**. **DNS-01** supports a **manual mode** and
+   **automated APIs for at least the top-10 DNS providers + ArvanCloud** (generic
+   RFC 2136 included). Other ACME CAs (ZeroSSL/EAB) and further DNS providers are
+   **deferred to later phases**. **Cert/key as `0600` files**, provider creds via
+   the **secret provider** (never file/DB/logs); **renew-ahead + backoff +
+   alert**; **TLS 1.2+ strong-AEAD allowlist, 1.3 preferred**; **fail-closed on
+   expiry** (no serve-last-good).
 
 ## 9. Change log
 
@@ -273,6 +278,15 @@ Still open:
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system
   administrator** role (audited). Added ADR-0017.
+- 2026-07-19 (open items: TLS detail) — Fixed TLS tuning in ADR-0015: phase 1
+  ships **two selectable automatic cert providers — Let's Encrypt (ACME, with
+  both TLS-ALPN-01 and DNS-01 solvers) and Cloudflare Origin CA**. **DNS-01** has
+  a **manual mode** plus **automated APIs for at least the top-10 DNS providers +
+  ArvanCloud** (generic RFC 2136 included); other ACME CAs (ZeroSSL/EAB) and
+  further DNS providers deferred to later phases. Cert/key as **`0600` files**
+  with provider creds via the secret provider, **renew-ahead + backoff +
+  alert**, **TLS 1.2+ strong-AEAD allowlist (1.3 preferred)**, and **fail-closed
+  on expiry** (decisions #17–#19).
 - 2026-07-19 (open items: blocklist detail) — Fixed blocklist tuning in ADR-0017:
   skeleton-based matching with **whole-token** for system/impersonation and
   **substring** for offensive terms; **admin-editable allowlist**; existing names

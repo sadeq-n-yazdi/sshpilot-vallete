@@ -81,13 +81,18 @@ first priority throughout.
 ## E. Transport & TLS
 
 - **HTTPS-only** — no plaintext listener; plaintext **refused** (not redirected);
-  HSTS; TLS ≥ 1.2 (#17 · ADR-0015).
-- **Cert modes (deployer picks):** automatic **ACME**, operator-provided cert+key,
-  **CSR for external signing**, **TLS terminated upstream**, or **ephemeral
-  self-signed** for dev/install-bootstrap (≤ ~6h, production-refused w/o override)
-  (#18 · ADR-0015).
-- **ACME challenges: TLS-ALPN-01 and DNS-01** (pluggable DNS providers, e.g.
-  Cloudflare); no HTTP-01 (#19 · ADR-0015).
+  HSTS; **TLS 1.2+ strong-AEAD allowlist, 1.3 preferred**. Cert/key as **`0600`
+  files**; renewal is **renew-ahead + backoff + alert**, **fail-closed on expiry**
+  (#17 · ADR-0015).
+- **Cert modes (deployer picks):** two selectable automatic providers —
+  **Let's Encrypt (ACME)** and **Cloudflare Origin CA** — plus operator-provided
+  cert+key, **CSR for external signing**, **TLS terminated upstream**, or
+  **ephemeral self-signed** for dev/install-bootstrap (≤ ~6h, production-refused
+  w/o override) (#18 · ADR-0015).
+- **ACME (Let's Encrypt) supports both TLS-ALPN-01 and DNS-01**; no HTTP-01.
+  **DNS-01** = **manual mode** + automated APIs for **≥ top-10 DNS providers +
+  ArvanCloud** (RFC 2136 included); creds via the secret provider. Other ACME CAs
+  (ZeroSSL/EAB) & further DNS providers deferred to later phases (#19 · ADR-0015).
 
 ## F. Security controls (cross-cutting)
 
@@ -158,8 +163,11 @@ Per-owner CA signing (ADR-0014); web/TUI/CLI management clients; teams/orgs/RBAC
   system/impersonation, substring offensive), admin allowlist, existing-name
   flag+quarantine-on-release, device names covered. Remaining as curated data:
   exact word lists & folding tables.
-- **TLS detail:** EAB for ZeroSSL, first DNS-01 providers, cert/key/cred storage,
-  renewal scheduling/alerting, min TLS/cipher defaults, fail-closed vs last-good.
+- ~~**TLS detail:**~~ **resolved (ADR-0015):** two selectable providers —
+  Let's Encrypt (ACME, TLS-ALPN-01 **and** DNS-01) + Cloudflare Origin CA; DNS-01
+  manual + APIs for ≥ top-10 providers + ArvanCloud (others later phases); `0600`
+  files + secret-provider creds, renew-ahead + alert, TLS 1.2+ AEAD allowlist,
+  **fail-closed on expiry**.
 - **Ops detail:** default rate limits + multi-instance counter store; audit
   retention duration + pseudonymization technique; metric/span catalog; migration
   tooling + dependency-declaration format; quarantine duration.
