@@ -142,15 +142,15 @@ func mustCreateOwner(t *testing.T, s *Store, id string) *domain.Owner {
 }
 
 // TestReposPopulatesImplementedRepositories pins the slice boundary: this
-// adapter implements the owner, handle and device repositories, and the
+// adapter implements the owner, handle, device and public key repositories, and the
 // remaining fields are expected to stay nil until later slices fill them.
 func TestReposPopulatesImplementedRepositories(t *testing.T) {
 	t.Parallel()
 	r := reposFor((*sql.DB)(nil))
-	if r.Owners == nil || r.Handles == nil || r.Devices == nil {
+	if r.Owners == nil || r.Handles == nil || r.Devices == nil || r.PublicKeys == nil {
 		t.Fatalf("Repos left an implemented repository nil: %+v", r)
 	}
-	if r.PublicKeys != nil || r.KeySets != nil {
+	if r.KeySets != nil {
 		t.Errorf("Repos populated a repository this slice does not implement: %+v", r)
 	}
 }
