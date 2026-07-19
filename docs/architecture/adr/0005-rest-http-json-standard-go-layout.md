@@ -16,9 +16,8 @@ contract. A layout is needed that stays maintainable as the project grows.
 - **Layout:** standard Go project layout (`cmd/`, `internal/`, `pkg/`) with clean
   layered/hexagonal separation — domain, service, repository, transport — placed
   at the repository root (idiomatic Go).
-- **Data store:** not selected yet; accessed only through repository interfaces
-  so the concrete store is a late, swappable decision. Docs default to
-  PostgreSQL for examples.
+- **Data store:** accessed only through repository interfaces so the concrete
+  engine is swappable; SQLite and PostgreSQL are both supported (see ADR-0011).
 
 ## Consequences
 

@@ -24,6 +24,10 @@ consequences. They are the project's decision memory.
 | [0008](0008-deployment-model-multi-tenant-self-hosted-saas-ready.md) | Deployment: multi-tenant, self-hosted first, SaaS-ready | Accepted |
 | [0009](0009-pluggable-management-authentication.md) | Pluggable management authentication | Accepted |
 | [0010](0010-configurable-handle-visibility.md) | Configurable handle visibility | Accepted |
+| [0011](0011-datastore-sqlite-and-postgresql.md) | Data store: SQLite and PostgreSQL behind a repository interface | Accepted |
+| [0012](0012-configurable-owner-onboarding.md) | Configurable owner onboarding | Accepted |
+| [0013](0013-key-application-methods.md) | Key application methods and managed-block helper | Accepted |
+| [0014](0014-ca-signing-deferred.md) | Per-owner CA signing deferred beyond phase 1 | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.

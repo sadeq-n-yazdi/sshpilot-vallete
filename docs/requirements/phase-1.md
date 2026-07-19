@@ -40,7 +40,7 @@ CLI for managing keys.
 | 1 | Implementation language: **Go**. | — |
 | 2 | API style: **REST over HTTP+JSON**, OpenAPI as the contract. | 0005 |
 | 3 | Architecture: **standard Go layout** + clean layered/hexagonal separation. | 0005 |
-| 4 | Data store: **not chosen yet**; abstracted behind repository interfaces; docs default to PostgreSQL. | 0005 |
+| 4 | Data store: **SQLite and PostgreSQL** behind a repository interface (SQLite for zero-ops self-host, Postgres for SaaS/teams). | 0005, 0011 |
 | 5 | Key material: **public keys only** — private keys never touch the backend. | 0002 |
 | 6 | Phase-1 distribution: **clientless** — a server populates `authorized_keys` via stock `curl`/`AuthorizedKeysCommand`, no agent required. | 0003 |
 | 7 | Tenancy: **owner abstraction now**; **multi-tenant-capable, self-hosted first, SaaS-ready later** (both, phased). | 0004, 0008 |
@@ -50,6 +50,9 @@ CLI for managing keys.
 | 11 | Publish access: **per-owner configurable** — public by default; optionally requires an access key. | 0010 |
 | 12 | Ingest security: **forbid `authorized_keys` options**; **canonical storage**; **reject weak keys** (DSA, RSA < 3072). | 0006 |
 | 13 | **Append-only audit log** of every access-affecting change. | 0007 |
+| 14 | Owner onboarding: **deployer-configurable** — open self-signup or invite/admin-provisioned. | 0012 |
+| 15 | Key application: support **`curl`** and **`AuthorizedKeysCommand`**; ship a **managed-block helper** for the curl path. | 0013 |
+| 16 | Per-owner **CA signing**: **deferred** beyond phase 1. | 0014 |
 
 ## 4. Phase-1 scope (as described so far)
 
@@ -60,8 +63,14 @@ Captured from the requirements given to date. **Incomplete — will grow.**
 - **Clientless consumption.** `curl https://<host>/<handle> >> ~/.ssh/authorized_keys`
   (or via `AuthorizedKeysCommand`) works with no proprietary client on the
   consuming server.
+- **Idempotent application helper.** Ship a small **managed-block helper** so the
+  curl path can update keys inside marked BEGIN/END blocks without duplicating or
+  clobbering unmanaged lines; document `AuthorizedKeysCommand` as the recommended
+  always-current option. (ADR-0013)
 - **Sync across machines.** The same published set can be applied to all of the
   owner's machines, keeping them consistent.
+- **Configurable onboarding.** The deployer chooses how owners are created —
+  open self-signup or invite/admin-provisioned. (ADR-0012)
 - **Key management surface.** The backend exposes management operations (register
   device, add/list/revoke keys, set handle, set handle visibility) for a
   separate client (sshpilot desktop first; web/TUI/CLI later). *Management client
@@ -88,7 +97,8 @@ Captured from the requirements given to date. **Incomplete — will grow.**
 ## 6. Deferred / future (noted, not phase 1)
 
 - **Per-owner CA signing** of published keys for third-party verifiability
-  (Termius "SSH ID" parity). *(in/out of phase 1 still to confirm — see §8)*
+  (Termius "SSH ID" parity). **Confirmed out of phase 1** (ADR-0014); the data
+  model must not preclude adding it later.
 - **Web UI / TUI / CLI** management clients.
 - **Teams / orgs / RBAC** (owner abstraction already leaves room).
 - **Pull-agent** distribution mode (superseded for phase 1 by clientless curl).
@@ -104,9 +114,11 @@ Captured from the requirements given to date. **Incomplete — will grow.**
 
 ## 8. Open questions (resolve before finalizing phase 1)
 
-Resolved since round 1: management-auth model (→ pluggable, decision 10), handle
+Resolved in round 1: management-auth model (→ pluggable, decision 10), handle
 exposure (→ per-owner configurable, decision 11), key-options & audit policy
-(→ decisions 12–13).
+(→ decisions 12–13). Resolved in round 2: onboarding (→ configurable, decision
+14), key application (→ curl + AuthorizedKeysCommand + helper, decision 15), data
+store (→ SQLite + Postgres, decision 4), CA signing (→ deferred, decision 16).
 
 Still open:
 
@@ -115,20 +127,14 @@ Still open:
    basic-auth?) Each has caching/logging/leak trade-offs.
 2. **Token model:** scope, lifetime, rotation, and revocation for API tokens and
    device-pairing credentials.
-3. **Owner onboarding/registration** per deployment: self-signup vs
-   admin-provisioned, and how it differs by enabled auth provider and by
-   self-hosted vs SaaS.
-4. **OIDC specifics:** which providers, discovery/config, claim→owner mapping.
-5. **Instance config mechanism:** file/env schema for enabling auth providers and
-   setting defaults.
-6. **Idempotent application:** plain `>> authorized_keys` duplicates on re-run
-   and can clobber unmanaged lines. Recommend `AuthorizedKeysCommand`? Ship a
-   managed-block helper?
-7. **Handle claiming & uniqueness**, reservation, and change/rename rules
+3. **OIDC specifics:** which providers, discovery/config, claim→owner mapping.
+4. **Instance config mechanism:** file/env schema for enabling auth providers,
+   onboarding mode, default handle visibility, and store selection.
+5. **Handle claiming & uniqueness**, reservation, and change/rename rules
    (esp. across tenants).
-8. **Rate limiting / abuse** on the public endpoint (more pressing for SaaS).
-9. **Data store selection** and when to commit to it.
-10. **CA signing** — in or out of phase 1?
+6. **Rate limiting / abuse** on the public endpoint (more pressing for SaaS).
+7. **Managed-block helper form:** shell script shipped with releases vs an
+   endpoint that serves the script vs both.
 
 ## 9. Change log
 
@@ -137,3 +143,6 @@ Still open:
 - 2026-07-19 (round 1 answers) — Added deployment model (both, phased),
   pluggable management auth, per-owner handle visibility; promoted key-ingest
   controls and audit log from Proposed to Confirmed; refreshed open questions.
+- 2026-07-19 (round 2 answers) — Data store = SQLite + PostgreSQL; onboarding
+  deployer-configurable; key application via curl + AuthorizedKeysCommand with a
+  managed-block helper; CA signing confirmed deferred. Refreshed open questions.
