@@ -56,14 +56,14 @@ func publishHandler(p Publisher, logger *slog.Logger) http.HandlerFunc {
 				slog.String("request_id", RequestIDFromContext(r.Context())),
 				slog.String("error", ErrNilPublisher.Error()),
 			)
-			writePublishError(w)
+			writePublishError(w, r)
 			return
 		}
 
 		body, err := p.Resolve(r.Context(), r.PathValue("handle"), r.PathValue("set"))
 		if err != nil {
 			if errors.Is(err, publish.ErrNotFound) {
-				writePublishNotFound(w)
+				writePublishNotFound(w, r)
 				return
 			}
 			// The reason is logged, never returned. Resolve's non-404 errors
@@ -73,7 +73,7 @@ func publishHandler(p Publisher, logger *slog.Logger) http.HandlerFunc {
 				slog.String("request_id", RequestIDFromContext(r.Context())),
 				slog.String("error", err.Error()),
 			)
-			writePublishError(w)
+			writePublishError(w, r)
 			return
 		}
 
@@ -90,10 +90,11 @@ func publishHandler(p Publisher, logger *slog.Logger) http.HandlerFunc {
 // against next time, silently degrading every subsequent request to a full
 // fetch.
 //
-// HEAD needs no special casing beyond that: net/http discards the body of a
-// HEAD response by itself, and because Content-Length is set explicitly rather
-// than inferred from what was written, a HEAD response carries exactly the same
-// headers as the GET it stands in for.
+// HEAD parity comes from two things. Content-Length is set explicitly rather
+// than inferred from what was written, so it survives a response with no body;
+// and the body write is skipped by an explicit method check rather than left to
+// net/http's own HEAD handling, so the parity holds under any writer this
+// handler is composed with, not only under the standard server.
 func writePublishBody(w http.ResponseWriter, r *http.Request, body []byte) {
 	etag := entityTag(body)
 	h := w.Header()
@@ -169,26 +170,33 @@ func matchesETag(header, etag string) bool {
 // The body is a fixed string that reflects nothing about the request. It
 // deliberately carries no ETag and no cacheability: a cached negative would
 // keep answering 404 after the owner published the set.
-func writePublishNotFound(w http.ResponseWriter) {
-	writePublishStatus(w, http.StatusNotFound, "not found\n")
+func writePublishNotFound(w http.ResponseWriter, r *http.Request) {
+	writePublishStatus(w, r, http.StatusNotFound, "not found\n")
 }
 
 // writePublishError writes the generic 500 for an internal fault. Like the 404
 // it is fixed text: the cause is in the log, never on the wire.
-func writePublishError(w http.ResponseWriter) {
-	writePublishStatus(w, http.StatusInternalServerError, "internal server error\n")
+func writePublishError(w http.ResponseWriter, r *http.Request) {
+	writePublishStatus(w, r, http.StatusInternalServerError, "internal server error\n")
 }
 
 // writePublishStatus writes a fixed-text response with no cache validators, the
 // single writer shared by the failure paths.
-func writePublishStatus(w http.ResponseWriter, status int, body string) {
+func writePublishStatus(w http.ResponseWriter, r *http.Request, status int, body string) {
 	h := w.Header()
 	h.Set("Content-Type", publishContentType)
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
-	// net/http suppresses this for HEAD, so a HEAD failure response matches its
-	// GET counterpart header-for-header without a method check here.
+	// The HEAD check is explicit rather than left to net/http, which drops a
+	// HEAD body itself. Relying on that would make correctness a property of
+	// who happens to be serving this handler: under any other writer — a test
+	// recorder, an in-process wrapper, a future embedding — the body would
+	// escape. The failure paths suppress it here for the same reason the
+	// success path does, so the two behave alike wherever they run.
+	if r.Method == http.MethodHead {
+		return
+	}
 	_, _ = w.Write([]byte(body))
 }
