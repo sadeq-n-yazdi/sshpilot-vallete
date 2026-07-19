@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
 )
 
 // newKeySet returns a fully populated active, public, non-default key set owned
@@ -866,5 +867,162 @@ func TestKeySetDeleteRemovesMembershipButKeepsKeys(t *testing.T) {
 	}
 	if _, err := s.Repos().PublicKeys.Get(ctx, "o-delmem", key.ID); err != nil {
 		t.Fatalf("public key deleted along with its set: %v", err)
+	}
+}
+
+// TestKeySetQueryErrorsMapped drives the driver-error branches of every read
+// and write path with an already-canceled context: each method must surface an
+// error through mapError rather than a nil error with partial data.
+func TestKeySetQueryErrorsMapped(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	key := seedOwnerWithKey(t, s, "o-cancel", "pk-cancel")
+	mustCreateKeySet(t, s, newKeySet("ks-cancel", "o-cancel", "set"))
+	if err := s.Repos().KeySets.AddMember(context.Background(), "o-cancel", "ks-cancel", key.ID, testClock); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	repos := s.Repos()
+
+	checks := []struct {
+		name string
+		err  error
+	}{
+		{"Create", repos.KeySets.Create(ctx, newKeySet("ks-x", "o-cancel", "x"))},
+		{"Update", repos.KeySets.Update(ctx, newKeySet("ks-cancel", "o-cancel", "set"))},
+		{"SetDefault", repos.KeySets.SetDefault(ctx, "o-cancel", "ks-cancel")},
+		{"Delete", repos.KeySets.Delete(ctx, "o-cancel", "ks-cancel")},
+		{"AddMember", repos.KeySets.AddMember(ctx, "o-cancel", "ks-cancel", key.ID, testClock)},
+		{"RemoveMember", repos.KeySets.RemoveMember(ctx, "o-cancel", "ks-cancel", key.ID)},
+	}
+	for _, c := range checks {
+		if c.err == nil {
+			t.Errorf("%s on canceled ctx: nil error", c.name)
+		}
+	}
+
+	if _, err := repos.KeySets.Get(ctx, "o-cancel", "ks-cancel"); err == nil {
+		t.Error("Get on canceled ctx: nil error")
+	}
+	if _, err := repos.KeySets.GetByName(ctx, "o-cancel", "set"); err == nil {
+		t.Error("GetByName on canceled ctx: nil error")
+	}
+	if _, err := repos.KeySets.GetDefault(ctx, "o-cancel"); err == nil {
+		t.Error("GetDefault on canceled ctx: nil error")
+	}
+	if _, err := repos.KeySets.ListByOwner(ctx, "o-cancel"); err == nil {
+		t.Error("ListByOwner on canceled ctx: nil error")
+	}
+	if _, err := repos.KeySets.CountByOwner(ctx, "o-cancel"); err == nil {
+		t.Error("CountByOwner on canceled ctx: nil error")
+	}
+	if _, err := repos.KeySets.ListMembers(ctx, "o-cancel", "ks-cancel"); err == nil {
+		t.Error("ListMembers on canceled ctx: nil error")
+	}
+	if _, err := repos.KeySets.ListSetsForKey(ctx, "o-cancel", key.ID); err == nil {
+		t.Error("ListSetsForKey on canceled ctx: nil error")
+	}
+	if _, err := repos.KeySets.ListExpiredQuarantine(ctx, testClock, 10); err == nil {
+		t.Error("ListExpiredQuarantine on canceled ctx: nil error")
+	}
+}
+
+// TestKeySetDecodeErrorsSurface drives the timestamp-decode failure branches in
+// scanKeySet, collectKeySets, and ListMembers by planting rows with malformed
+// timestamps directly, bypassing encTime. Both the single-row read and the
+// iteration reads must surface the decode error rather than silently succeed.
+func TestKeySetDecodeErrorsSurface(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	mustCreateOwner(t, s, "o-decode")
+	const ins = `INSERT INTO key_sets (id, owner_id, name, visibility, is_default, state,
+quarantine_until, flagged_for_review, quarantine_on_release, created_at, updated_at)
+VALUES (?, ?, ?, 'public', 0, 'quarantined', ?, 0, 0, ?, ?)`
+	good := encTime(testClock)
+	// Each row corrupts exactly one timestamp column so every decode branch in
+	// scanKeySet (quarantine_until, then created_at, then updated_at) is hit.
+	rows := []struct {
+		id                                  string
+		quarantineUntil, createdAt, updated any
+	}{
+		{"ks-bad-quarantine", "not-a-timestamp", good, good},
+		{"ks-bad-created", good, "not-a-timestamp", good},
+		{"ks-bad-updated", good, good, "not-a-timestamp"},
+	}
+	for _, r := range rows {
+		if _, err := s.db.ExecContext(ctx, ins,
+			r.id, "o-decode", "corrupt-"+r.id, r.quarantineUntil, r.createdAt, r.updated,
+		); err != nil {
+			t.Fatalf("plant malformed row %q: %v", r.id, err)
+		}
+		if _, err := s.Repos().KeySets.Get(ctx, "o-decode", domain.KeySetID(r.id)); err == nil {
+			t.Errorf("Get on malformed row %q: nil error", r.id)
+		}
+	}
+
+	// The iteration paths (collectKeySets) must also surface a decode error.
+	if _, err := s.Repos().KeySets.ListByOwner(ctx, "o-decode"); err == nil {
+		t.Error("ListByOwner over malformed rows: nil error")
+	}
+	if _, err := s.Repos().KeySets.ListExpiredQuarantine(ctx, testClock.Add(time.Hour), 10); err == nil {
+		t.Error("ListExpiredQuarantine over malformed rows: nil error")
+	}
+
+	// A malformed added_at must surface from the membership iteration too.
+	mustCreatePublicKey(t, s, newPublicKey("pk-decode", "o-decode", "dev-o-decode"))
+	mustCreateKeySet(t, s, newKeySet("ks-decode-ok", "o-decode", "ok"))
+	const insMember = `INSERT INTO key_set_members (key_set_id, public_key_id, added_at) VALUES (?, ?, ?)`
+	if _, err := s.db.ExecContext(ctx, insMember, "ks-decode-ok", "pk-decode", "not-a-timestamp"); err != nil {
+		t.Fatalf("plant malformed membership: %v", err)
+	}
+	if _, err := s.Repos().KeySets.ListMembers(ctx, "o-decode", "ks-decode-ok"); err == nil {
+		t.Error("ListMembers over malformed membership: nil error")
+	}
+	// ListSetsForKey does not scan added_at, so the same planted row decodes
+	// cleanly there: the set is returned rather than erroring.
+	sets, err := s.Repos().KeySets.ListSetsForKey(ctx, "o-decode", "pk-decode")
+	if err != nil {
+		t.Fatalf("ListSetsForKey: %v", err)
+	}
+	if len(sets) != 1 || sets[0].ID != "ks-decode-ok" {
+		t.Fatalf("ListSetsForKey = %+v, want just ks-decode-ok", sets)
+	}
+}
+
+// TestKeySetTxScopedErrorsMapped drives the error branches inside the
+// multi-statement methods' transaction bodies. Running them against a repos set
+// backed by an in-flight *sql.Tx makes withLocalTx execute the body inline, so a
+// canceled context fails the individual statements rather than the BeginTx that
+// would otherwise short-circuit them.
+func TestKeySetTxScopedErrorsMapped(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	key := seedOwnerWithKey(t, s, "o-txerr", "pk-txerr")
+	mustCreateKeySet(t, s, newKeySet("ks-txerr", "o-txerr", "set"))
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+
+	err := s.WithTx(ctx, func(_ context.Context, r repository.Repos) error {
+		if e := r.KeySets.SetDefault(canceled, "o-txerr", "ks-txerr"); e == nil {
+			t.Error("SetDefault inside tx on canceled ctx: nil error")
+		}
+		if e := r.KeySets.Delete(canceled, "o-txerr", "ks-txerr"); e == nil {
+			t.Error("Delete inside tx on canceled ctx: nil error")
+		}
+		if e := r.KeySets.AddMember(canceled, "o-txerr", "ks-txerr", key.ID, testClock); e == nil {
+			t.Error("AddMember inside tx on canceled ctx: nil error")
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		t.Logf("WithTx returned %v", err)
 	}
 }
