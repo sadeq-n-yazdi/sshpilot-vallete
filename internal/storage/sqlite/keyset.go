@@ -210,30 +210,30 @@ func (r *keySetRepo) Delete(ctx context.Context, ownerID domain.OwnerID, id doma
 // to another owner's key. The database therefore cannot stop that
 // confused-deputy write; this repository must.
 //
-// Both existence checks are owner-scoped SELECTs run inside the same
-// transaction as the INSERT, so the membership row is written only once BOTH
-// the set and the key have been proven to belong to ownerID. A miss on either
-// check maps identically to domain.ErrNotFound: "the set/key does not exist"
-// and "it belongs to another owner" are never distinguished, so the error can
-// leak no cross-owner existence information. An already-present member trips
-// the composite primary key and maps to domain.ErrConflict.
+// The two EXISTS clauses below ARE that enforcement — do not remove them or
+// hoist them into the caller. Both are owner-scoped, and the INSERT writes a
+// row only when BOTH hold, so the statement can never link one owner's set to
+// another owner's key. A miss on either maps identically to domain.ErrNotFound
+// via requireAffected: "the set/key does not exist" and "it belongs to another
+// owner" are never distinguished, so the error leaks no cross-owner existence
+// information.
+//
+// The INSERT is deliberately plain — NOT "INSERT OR IGNORE". An already-present
+// member must trip the composite primary key and map to domain.ErrConflict;
+// ignoring the conflict would silently downgrade a duplicate to ErrNotFound.
 func (r *keySetRepo) AddMember(ctx context.Context, ownerID domain.OwnerID, setID domain.KeySetID, keyID domain.PublicKeyID, now time.Time) error {
-	return withLocalTx(ctx, r.e, func(ex execer) error {
-		const selSet = `SELECT 1 FROM key_sets WHERE id = ? AND owner_id = ?`
-		var found int64
-		if err := ex.QueryRowContext(ctx, selSet, string(setID), string(ownerID)).Scan(&found); err != nil {
-			return mapError(err)
-		}
-
-		const selKey = `SELECT 1 FROM public_keys WHERE id = ? AND owner_id = ?`
-		if err := ex.QueryRowContext(ctx, selKey, string(keyID), string(ownerID)).Scan(&found); err != nil {
-			return mapError(err)
-		}
-
-		const ins = `INSERT INTO key_set_members (key_set_id, public_key_id, added_at) VALUES (?, ?, ?)`
-		_, err := ex.ExecContext(ctx, ins, string(setID), string(keyID), encTime(now))
+	const q = `INSERT INTO key_set_members (key_set_id, public_key_id, added_at)
+SELECT ?, ?, ?
+WHERE EXISTS (SELECT 1 FROM key_sets WHERE id = ? AND owner_id = ?)
+AND EXISTS (SELECT 1 FROM public_keys WHERE id = ? AND owner_id = ?)`
+	res, err := r.e.ExecContext(ctx, q,
+		string(setID), string(keyID), encTime(now),
+		string(setID), string(ownerID),
+		string(keyID), string(ownerID))
+	if err != nil {
 		return mapError(err)
-	})
+	}
+	return requireAffected(res)
 }
 
 // RemoveMember removes the key from the owner's set. key_set_members has no
