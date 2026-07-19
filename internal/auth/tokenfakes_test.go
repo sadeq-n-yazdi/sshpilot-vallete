@@ -46,6 +46,10 @@ type fakeStore struct {
 	// override replaces the row GetByID returns, so a test can simulate a store
 	// that hands back a credential other than the one asked for.
 	override *domain.RefreshCredential
+
+	// rolledBack records whether the last WithTx ended in a rollback, so a test
+	// can tell a denial (which commits) from a storage fault (which must not).
+	rolledBack bool
 }
 
 var _ repository.Store = (*fakeStore)(nil)
@@ -80,6 +84,7 @@ func (f *fakeStore) WithTx(ctx context.Context, fn func(context.Context, reposit
 		RefreshCredentials: &fakeCreds{store: f},
 		Owners:             f.owners,
 	})
+	f.rolledBack = err != nil
 	if err != nil {
 		f.creds = snapshot
 	}

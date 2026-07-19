@@ -198,9 +198,23 @@ func (s *TokenService) Exchange(ctx context.Context, presented secrets.Redacted,
 	// nil out means ErrAuthFailed.
 	txErr := s.store.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
 		cred, err := r.RefreshCredentials.GetByID(ctx, id)
-		if err != nil || cred == nil {
-			// Covers domain.ErrNotFound and any storage fault alike, and the
-			// (nil, nil) port violation, which is read as "denied" rather than
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				// No such credential: a denial, and nothing has been written,
+				// so let the transaction close normally.
+				return nil
+			}
+			// A storage fault is not a denial. Propagating it rolls the
+			// transaction back and lets the fault reach logs and monitoring,
+			// matching how MarkRotated, Create and mint below already treat
+			// one. Swallowing it here made a database outage indistinguishable
+			// from an unknown token in the operator's view -- while remaining
+			// indistinguishable to the caller either way, since Exchange maps
+			// any transaction error to ErrAuthFailed.
+			return err
+		}
+		if cred == nil {
+			// The (nil, nil) port violation, read as "denied" rather than
 			// dereferenced.
 			return nil
 		}
@@ -234,7 +248,14 @@ func (s *TokenService) Exchange(ctx context.Context, presented secrets.Redacted,
 		// The credential outlives the account's good standing, so the owner's
 		// own status is authoritative and is re-checked on every exchange.
 		owner, err := r.Owners.Get(ctx, cred.OwnerID)
-		if err != nil || owner == nil || owner.ID != cred.OwnerID {
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return nil
+			}
+			// A storage fault, not a denial; see GetByID above.
+			return err
+		}
+		if owner == nil || owner.ID != cred.OwnerID {
 			return nil
 		}
 		if owner.Status != domain.OwnerStatusActive || owner.DeletedAt != nil {

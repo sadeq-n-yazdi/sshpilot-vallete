@@ -512,3 +512,57 @@ func TestConsumeConflictRevocationFailureStillDenies(t *testing.T) {
 	got, err := svc.Exchange(context.Background(), first.RefreshToken, baseTime.Add(time.Hour))
 	denied(t, got, err)
 }
+
+// TestExchangeSeparatesDenialFromStorageFault pins a distinction that is
+// invisible from outside and must stay that way.
+//
+// A denial and a storage fault give the caller the same answer -- both are
+// ErrAuthFailed, because a client must never learn whether a credential
+// exists. They are not the same event to an operator. A denial has written
+// nothing and lets the transaction close; a fault must roll back and reach
+// logs and monitoring, exactly as the MarkRotated, Create and mint paths in
+// the same function already do. Swallowing it made a database outage read as
+// a flood of unknown tokens.
+func TestExchangeSeparatesDenialFromStorageFault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		injected     error
+		wantRollback bool
+	}{
+		{
+			name:         "unknown credential is a denial",
+			injected:     domain.ErrNotFound,
+			wantRollback: false,
+		},
+		{
+			name:         "storage fault must not be swallowed",
+			injected:     errors.New("dial tcp: connection refused"),
+			wantRollback: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, svc := newService(t)
+			first := issue(t, svc, baseTime)
+			store.getByIDErr = tc.injected
+
+			got, err := svc.Exchange(context.Background(), first.RefreshToken, baseTime.Add(time.Minute))
+			if got != nil {
+				t.Fatalf("Exchange returned %v, want nil", got)
+			}
+			// The caller half must not regress while the operator half is
+			// being improved.
+			if !errors.Is(err, auth.ErrAuthFailed) {
+				t.Fatalf("error = %v, want auth.ErrAuthFailed", err)
+			}
+			if store.rolledBack != tc.wantRollback {
+				t.Errorf("rolledBack = %v, want %v", store.rolledBack, tc.wantRollback)
+			}
+		})
+	}
+}
