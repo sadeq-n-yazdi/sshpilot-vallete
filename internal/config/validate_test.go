@@ -169,6 +169,48 @@ func TestValidateFailures(t *testing.T) {
 	}
 }
 
+// TestValidateRefErrorDoesNotLeakValue guards the one validation path that
+// handles fields an operator may have mistakenly filled with a secret instead
+// of a reference to one. The error must name the field so the mistake is
+// fixable, and must not reproduce the value, which would land in startup logs.
+func TestValidateRefErrorDoesNotLeakValue(t *testing.T) {
+	const secretish = "sup3rs3cr3t-password-value"
+
+	tests := []struct {
+		name  string
+		mut   func(c *Config)
+		field string
+	}{
+		{"postgres dsn", func(c *Config) {
+			c.Database.Driver = "postgres"
+			c.Database.Postgres.DSNRef = secretish
+		}, "database.postgres.dsn_ref"},
+		{"signing key", func(c *Config) {
+			c.Auth.TokenSigningKeyRef = secretish
+		}, "auth.token_signing_key_ref"},
+		{"rate limit password", func(c *Config) {
+			c.RateLimit.Shared.PasswordRef = secretish
+		}, "rate_limit.shared.password_ref"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			tc.mut(&c)
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("expected a malformed-reference error for %s", tc.field)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.field) {
+				t.Errorf("error %q does not name the offending field %s", msg, tc.field)
+			}
+			if strings.Contains(msg, secretish) {
+				t.Errorf("error leaks the offending value: %q", msg)
+			}
+		})
+	}
+}
+
 func TestValidateTLSMinVersionAccepted(t *testing.T) {
 	for _, ver := range []string{"1.2", "1.3"} {
 		t.Run(ver, func(t *testing.T) {

@@ -300,13 +300,21 @@ func (c *Config) validateRetention(v *validator) {
 // validateRefs checks that every non-empty secret reference in the config is
 // syntactically well-formed (scheme:opaque). Empty refs are allowed here;
 // mode-specific requiredness is enforced by the per-section validators above.
+//
+// The error deliberately does NOT include the offending value, and does not
+// wrap the underlying secrets error, which quotes it. A reference is normally
+// not sensitive, but the branch that reports one as malformed is exactly the
+// branch an operator reaches by pasting the secret itself into a *_ref field
+// (a raw DSN into database.postgres.dsn_ref, a token into a token ref). Echoing
+// the value there would copy credential material into startup logs, so the
+// message names the field and the expected shape instead.
 func (c *Config) validateRefs(v *validator) {
 	for _, r := range c.allRefs() {
 		if r.ref.IsZero() {
 			continue
 		}
 		if err := r.ref.Validate(); err != nil {
-			v.add(r.field, "malformed secret reference: %v", err)
+			v.add(r.field, "malformed secret reference: want scheme:opaque (for example env:VAR or file:/path)")
 		}
 	}
 }
