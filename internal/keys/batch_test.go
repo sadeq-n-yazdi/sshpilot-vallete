@@ -74,6 +74,22 @@ func TestParseAuthorizedKeysLineNumbers(t *testing.T) {
 	}
 }
 
+func TestParseAuthorizedKeysPerLineSizeCap(t *testing.T) {
+	a := ed25519Fixture(t)
+	// One oversized line (> MaxLineBytes) sits between two valid keys while the
+	// whole submission stays under MaxFileBytes, so only the per-line cap can
+	// reject it.
+	big := bytes.Repeat([]byte("A"), MaxLineBytes+1)
+	raw := joinLines(a.line("first"), big, ecdsaFixtureP256(t).line("second"))
+	keys, errs := ParseAuthorizedKeys(raw)
+	if len(keys) != 2 {
+		t.Fatalf("got %d keys, want 2", len(keys))
+	}
+	if len(errs) != 1 || errs[0].Line != 2 || !errors.Is(errs[0].Err, ErrTooLarge) {
+		t.Fatalf("errs = %v, want single line-2 ErrTooLarge", errs)
+	}
+}
+
 func TestParseAuthorizedKeysDuplicate(t *testing.T) {
 	a := ed25519Fixture(t)
 	raw := joinLines(a.line("original"), a.line("copy"))

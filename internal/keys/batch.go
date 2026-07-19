@@ -49,13 +49,29 @@ func ParseAuthorizedKeys(raw []byte) ([]ParsedKey, []LineError) {
 		errs []LineError
 		seen = make(map[string]struct{})
 	)
-	for i, line := range bytes.Split(raw, []byte("\n")) {
-		lineNo := i + 1
+	// Iterate line by line with IndexByte rather than bytes.Split: a 1MB input
+	// of mostly newlines would otherwise allocate up to ~1M sub-slices at once.
+	lineNo := 0
+	for rest := raw; len(rest) > 0; {
+		lineNo++
+		var line []byte
+		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+			line, rest = rest[:i], rest[i+1:]
+		} else {
+			line, rest = rest, nil
+		}
 		line = bytes.TrimRight(line, "\r")
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		if t := bytes.TrimLeft(line, " \t"); t[0] == '#' {
+			continue
+		}
+		// Enforce the per-line size cap here too: MaxFileBytes bounds the whole
+		// submission, but without this a single line could still reach that
+		// size and bypass the MaxLineBytes limit that Parse applies.
+		if len(line) > MaxLineBytes {
+			errs = append(errs, LineError{Line: lineNo, Err: ErrTooLarge})
 			continue
 		}
 
