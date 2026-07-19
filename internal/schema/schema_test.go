@@ -32,6 +32,7 @@ var namedIndexes = []string{
 	"ix_public_keys_owner_id",
 	"ix_public_keys_device_id",
 	"ux_key_sets_owner_name",
+	"ux_key_sets_owner_default",
 	"ix_key_sets_owner_id",
 	"ix_key_set_members_public_key_id",
 }
@@ -295,6 +296,215 @@ func TestOwnerScopedInsertsSucceed(t *testing.T) {
 		fp, 256, "active", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z")
 	if err == nil {
 		t.Error("duplicate fingerprint for same owner accepted, want unique-index violation")
+	}
+}
+
+// TestCrossOwnerDeviceAttachmentRejected confirms the composite (device_id,
+// owner_id) FOREIGN KEY blocks the cross-tenant attachment a single-column
+// device_id reference would allow: a public key of owner B cannot point at a
+// device of owner A even though that device id exists.
+func TestCrossOwnerDeviceAttachmentRejected(t *testing.T) {
+	t.Parallel()
+	raw, runner := newRunner(t)
+	ctx := context.Background()
+
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	exec := func(query string, args ...any) error {
+		_, err := raw.ExecContext(ctx, query, args...)
+		return err
+	}
+
+	// Two owners; a device owned by A.
+	for _, id := range []string{"own-a", "own-b"} {
+		if err := exec(
+			`INSERT INTO owners (id, status, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+			id, "active", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("insert owner %s: %v", id, err)
+		}
+	}
+	if err := exec(
+		`INSERT INTO devices (id, owner_id, name, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		"dev-a", "own-a", "laptop", "active", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("insert device: %v", err)
+	}
+
+	fp := "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	// Owner B attaching a key to owner A's device must be rejected by the
+	// composite FK, even though both dev-a and own-b exist individually.
+	err := exec(
+		`INSERT INTO public_keys
+		 (id, owner_id, device_id, algorithm, blob, comment, fingerprint, bit_len, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"key-x", "own-b", "dev-a", "ssh-ed25519", []byte{0x01}, "",
+		fp, 256, "active", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z")
+	if err == nil {
+		t.Fatal("owner B attached a key to owner A's device, want composite FK violation")
+	}
+
+	// The same key attached to A's own device (matching owner) is accepted,
+	// proving the rejection above is about ownership, not a malformed insert.
+	if err := exec(
+		`INSERT INTO public_keys
+		 (id, owner_id, device_id, algorithm, blob, comment, fingerprint, bit_len, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"key-a", "own-a", "dev-a", "ssh-ed25519", []byte{0x01}, "",
+		fp, 256, "active", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("same-owner key attach rejected, want accepted: %v", err)
+	}
+}
+
+// TestSingleDefaultKeySetPerOwner confirms ux_key_sets_owner_default allows at
+// most one default set per owner while leaving non-default sets unconstrained and
+// permitting each owner their own default.
+func TestSingleDefaultKeySetPerOwner(t *testing.T) {
+	t.Parallel()
+	raw, runner := newRunner(t)
+	ctx := context.Background()
+
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	exec := func(query string, args ...any) error {
+		_, err := raw.ExecContext(ctx, query, args...)
+		return err
+	}
+
+	for _, id := range []string{"own-a", "own-b"} {
+		if err := exec(
+			`INSERT INTO owners (id, status, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+			id, "active", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("insert owner %s: %v", id, err)
+		}
+	}
+
+	insertSet := func(id, owner, name string, isDefault int) error {
+		return exec(
+			`INSERT INTO key_sets (id, owner_id, name, visibility, is_default, state, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, owner, name, "public", isDefault, "active",
+			"2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z")
+	}
+
+	if err := insertSet("set-a1", "own-a", "default", 1); err != nil {
+		t.Fatalf("first default for own-a: %v", err)
+	}
+	// A second default for the same owner violates the partial unique index.
+	if err := insertSet("set-a2", "own-a", "other", 1); err == nil {
+		t.Error("second default set for own-a accepted, want unique-index violation")
+	}
+	// Non-default sets are unconstrained: two are fine.
+	if err := insertSet("set-a3", "own-a", "work", 0); err != nil {
+		t.Fatalf("first non-default for own-a: %v", err)
+	}
+	if err := insertSet("set-a4", "own-a", "play", 0); err != nil {
+		t.Fatalf("second non-default for own-a rejected, want accepted: %v", err)
+	}
+	// A different owner may have their own default.
+	if err := insertSet("set-b1", "own-b", "default", 1); err != nil {
+		t.Fatalf("default for own-b rejected, want accepted: %v", err)
+	}
+}
+
+// TestEnumCheckConstraintsReject confirms the lifecycle-enum CHECK constraints
+// reject out-of-domain values the repository must never write.
+func TestEnumCheckConstraintsReject(t *testing.T) {
+	t.Parallel()
+	raw, runner := newRunner(t)
+	ctx := context.Background()
+
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	exec := func(query string, args ...any) error {
+		_, err := raw.ExecContext(ctx, query, args...)
+		return err
+	}
+
+	// An owner with a status outside {active, suspended, deleted} is rejected.
+	if err := exec(
+		`INSERT INTO owners (id, status, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		"own-bad", "bogus", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err == nil {
+		t.Error("owner with out-of-range status accepted, want CHECK violation")
+	}
+
+	// Seed a valid owner, then reject an out-of-range key set visibility.
+	if err := exec(
+		`INSERT INTO owners (id, status, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		"own-ok", "active", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("insert owner: %v", err)
+	}
+	if err := exec(
+		`INSERT INTO key_sets (id, owner_id, name, visibility, is_default, state, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"set-bad", "own-ok", "s", "world-readable", 0, "active",
+		"2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"); err == nil {
+		t.Error("key set with out-of-range visibility accepted, want CHECK violation")
+	}
+}
+
+// TestDownWithDataRemovesDomainTables exercises the DROP-with-live-data path:
+// after seeding a full owner→device→key→set→membership chain, Down to empty must
+// still succeed and remove every domain table (no rows block the teardown).
+func TestDownWithDataRemovesDomainTables(t *testing.T) {
+	t.Parallel()
+	raw, runner := newRunner(t)
+	ctx := context.Background()
+
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	exec := func(query string, args ...any) error {
+		_, err := raw.ExecContext(ctx, query, args...)
+		return err
+	}
+
+	ts := "2026-01-01T00:00:00Z"
+	if err := exec(`INSERT INTO owners (id, status, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		"own-1", "active", ts, ts); err != nil {
+		t.Fatalf("seed owner: %v", err)
+	}
+	if err := exec(`INSERT INTO handles (id, owner_id, name, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		"h-1", "own-1", "alice", "active", ts, ts); err != nil {
+		t.Fatalf("seed handle: %v", err)
+	}
+	if err := exec(`INSERT INTO devices (id, owner_id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		"dev-1", "own-1", "laptop", "active", ts, ts); err != nil {
+		t.Fatalf("seed device: %v", err)
+	}
+	if err := exec(
+		`INSERT INTO public_keys (id, owner_id, device_id, algorithm, blob, comment, fingerprint, bit_len, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"key-1", "own-1", "dev-1", "ssh-ed25519", []byte{0x01}, "",
+		"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 256, "active", ts, ts); err != nil {
+		t.Fatalf("seed public key: %v", err)
+	}
+	if err := exec(
+		`INSERT INTO key_sets (id, owner_id, name, visibility, is_default, state, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		"set-1", "own-1", "default", "public", 1, "active", ts, ts); err != nil {
+		t.Fatalf("seed key set: %v", err)
+	}
+	if err := exec(`INSERT INTO key_set_members (key_set_id, public_key_id, added_at) VALUES (?, ?, ?)`,
+		"set-1", "key-1", ts); err != nil {
+		t.Fatalf("seed membership: %v", err)
+	}
+
+	if _, err := runner.Down(ctx, ""); err != nil {
+		t.Fatalf("Down with data present: %v", err)
+	}
+
+	tables := names(t, raw, "table")
+	for _, gone := range domainTables {
+		if tables[gone] {
+			t.Errorf("table %q still present after Down with data", gone)
+		}
 	}
 }
 
