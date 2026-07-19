@@ -30,7 +30,7 @@ const worldReadableBits = os.FileMode(0o077)
 
 // FileOptions configures a FileProvider.
 type FileOptions struct {
-	// PermMode selects error-vs-warn behaviour for world-readable files. The
+	// PermMode selects error-vs-warn behavior for world-readable files. The
 	// caller (config layer) chooses this based on environment; the secrets
 	// package never imports config to make this decision itself.
 	PermMode PermMode
@@ -96,7 +96,7 @@ func (p *FileProvider) Resolve(_ context.Context, opaque string) (Redacted, erro
 }
 
 // stripOneTrailingNewline removes a single trailing "\n" (and a preceding "\r"
-// if present), which is the common artefact of writing a secret to a file.
+// if present), which is the common artifact of writing a secret to a file.
 func stripOneTrailingNewline(s string) string {
 	s = strings.TrimSuffix(s, "\n")
 	s = strings.TrimSuffix(s, "\r")

@@ -54,7 +54,7 @@ func TestDurationYAMLRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	// Day form re-serialises as hours and must re-parse to the same value.
+	// Day form re-serializes as hours and must re-parse to the same value.
 	var back wrap
 	if err := yaml.Unmarshal(out, &back); err != nil {
 		t.Fatalf("re-unmarshal %q: %v", out, err)

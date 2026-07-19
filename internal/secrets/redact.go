@@ -7,7 +7,7 @@ import (
 
 // redactedMarker is the single string every redaction path emits. A secret
 // value is never rendered by any of the standard formatting, logging, or
-// marshalling interfaces below; the only way to obtain the underlying value is
+// marshaling interfaces below; the only way to obtain the underlying value is
 // the explicit Reveal method.
 const redactedMarker = "[REDACTED]"
 
