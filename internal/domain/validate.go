@@ -3,6 +3,7 @@ package domain
 import (
 	"fmt"
 	"regexp"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -81,7 +82,7 @@ func validatePrintable(field, s string, maxLen int) error {
 	}
 	n := 0
 	for _, r := range s {
-		if isControl(r) {
+		if unicode.IsControl(r) {
 			return fmt.Errorf("domain: %s must not contain control characters: %w", field, ErrInvalidInput)
 		}
 		n++
@@ -104,7 +105,7 @@ func ValidateKeyComment(comment string) error {
 	}
 	n := 0
 	for _, r := range comment {
-		if isControl(r) {
+		if unicode.IsControl(r) {
 			return fmt.Errorf("domain: key comment must not contain control characters: %w", ErrInvalidInput)
 		}
 		n++
@@ -122,10 +123,4 @@ func ValidateFingerprint(fp string) error {
 		return fmt.Errorf("domain: fingerprint must be \"SHA256:\" followed by 43 unpadded base64 characters: %w", ErrInvalidInput)
 	}
 	return nil
-}
-
-// isControl reports whether r is an ASCII or Unicode control character. DEL
-// (0x7f) and the C1 range are treated as control characters.
-func isControl(r rune) bool {
-	return r < 0x20 || (r >= 0x7f && r <= 0x9f)
 }
