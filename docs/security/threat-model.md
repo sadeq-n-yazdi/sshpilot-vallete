@@ -49,6 +49,7 @@
 | Weak-key acceptance | DSA / short RSA | Algorithm + size floors at ingest | Confirmed (0006) |
 | Cross-tenant access | Missing owner scoping | Owner-scoping enforced in repository | Confirmed (0004, 0008) |
 | Duplicate/clobbered host files | Non-idempotent `>>` append | Managed-block helper (atomic, 0600, marked block) / AuthorizedKeysCommand | Confirmed (0013); helper form TBD |
+| Identifier impersonation | Claiming `admin`/`root`/homoglyph handles | Reserved-identifier blocklist w/ confusable-aware matching | Confirmed (0017); folding tables TBD |
 | Handle/set enumeration / metadata leak | Public endpoint | Per-set visibility + access key; rate limiting | Partly (0010, 0016); limiting TBD |
 | Access-key leakage (protected sets) | Key in URL/logs/caches | Presentation mechanism choice; per-set keys | Open question |
 | MITM / tampering on key fetch | Plaintext or downgraded transport | HTTPS-only, refuse plaintext, HSTS, TLS ≥ 1.2 | Confirmed (0015) |

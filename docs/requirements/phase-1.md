@@ -33,7 +33,12 @@ CLI for managing keys.
 - **Consuming server** — a host whose `authorized_keys` is populated from a
   handle.
 - **Deployer / operator** — whoever runs an instance; chooses which auth
-  providers are enabled and other instance policy.
+  providers are enabled and other instance policy (deploy-time config).
+- **System administrator** — an authenticated role (distinct from an owner) that
+  manages system-wide policy at runtime, e.g. editing the reserved-identifier
+  blocklist. Actions are audited.
+- **Reserved-identifier blocklist** — the system-wide list of words/patterns that
+  may not be used as handles or key-set names (ADR-0017).
 
 ## 3. Confirmed decisions (see ADRs for detail)
 
@@ -59,6 +64,8 @@ CLI for managing keys.
 | 18 | **Certificate modes** (deployer selects): automatic ACME, operator-provided cert+key, generate CSR for external signing, TLS terminated upstream, or **ephemeral self-signed** (dev/install-bootstrap only; ≤ ~6h validity; refused in production without explicit override). | 0015 |
 | 19 | **ACME challenges**: TLS-ALPN-01 and DNS-01 (pluggable DNS providers, e.g. Cloudflare); HTTP-01 not used. | 0015 |
 | 20 | **Multiple named key sets** per owner (many-to-many key membership), addressed at `/{handle}/{set}`; bare `/{handle}` serves an owner-designated **default set**; **visibility is per set** (access keys per set). | 0016, 0010 |
+| 21 | **Reserved-identifier blocklist** for handles & key-set names (system/impersonation/offensive terms + confusable/leetspeak matching); built-in default, deployer-seedable, and **runtime-editable by a system administrator** (audited). Introduces an **administrator** role. | 0017 |
+| 22 | Management credentials: **refresh + short-lived access tokens**; enrollment via **device-authorization grant, manual token paste, or in-client login** (deployer/owner choice). | 0009 (+ auth ADR TBD) |
 
 ## 4. Phase-1 scope (as described so far)
 
@@ -79,6 +86,10 @@ Captured from the requirements given to date. **Incomplete — will grow.**
   owner's machines, keeping them consistent.
 - **Configurable onboarding.** The deployer chooses how owners are created —
   open self-signup or invite/admin-provisioned. (ADR-0012)
+- **Reserved-identifier blocklist.** Enforce a system-wide blocklist on handles
+  and key-set names (with confusable/leetspeak-aware matching); ship a default,
+  allow deploy-time seeding, and let a **system administrator** edit it at
+  runtime (audited). (ADR-0017)
 - **HTTPS-only transport with certificate provisioning.** Serve only over TLS
   (no plaintext listener); obtain certs via automatic ACME (TLS-ALPN-01 / DNS-01,
   incl. Let's Encrypt / ZeroSSL / Cloudflare-DNS), or use an operator-provided
@@ -148,6 +159,9 @@ Still open:
    (esp. across tenants).
 5a. **Key-set details:** set-name rules & reserved names; max sets per owner;
    deleting a non-empty or default set; per-set access-key lifecycle.
+5b. **Blocklist details:** confusable/leetspeak folding tables and per-category
+   match mode; false-positive handling / allowlist; treatment of existing
+   identifiers that later become blocked; whether device names are covered.
 6. **Rate limiting / abuse** on the public endpoint (more pressing for SaaS).
 7. **Managed-block helper form:** shell script shipped with releases vs an
    endpoint that serves the script vs both.
@@ -178,3 +192,10 @@ Still open:
   (many-to-many key membership), addressed at `/{handle}/{set}` with a default
   set at `/{handle}`; visibility and access keys are per set. Added ADR-0016;
   refined ADR-0004 and ADR-0010.
+- 2026-07-19 (auth cluster, partial) — Management credentials = refresh +
+  short-lived access tokens; enrollment supports device-authorization grant,
+  manual token paste, and in-client login (decision #22). Full auth ADR pending.
+- 2026-07-19 (feature: reserved identifiers) — System-wide blocklist for handles
+  and key-set names across four categories with confusable/leetspeak-aware
+  matching; default + deploy-time seed + runtime-editable by a new **system
+  administrator** role (audited). Added ADR-0017.
