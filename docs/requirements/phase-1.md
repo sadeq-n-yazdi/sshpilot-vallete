@@ -64,7 +64,7 @@ CLI for managing keys.
 | 18 | **Certificate modes** (deployer selects): automatic ACME, operator-provided cert+key, generate CSR for external signing, TLS terminated upstream, or **ephemeral self-signed** (dev/install-bootstrap only; ≤ ~6h validity; refused in production without explicit override). | 0015 |
 | 19 | **ACME challenges**: TLS-ALPN-01 and DNS-01 (pluggable DNS providers, e.g. Cloudflare); HTTP-01 not used. | 0015 |
 | 20 | **Multiple named key sets** per owner (many-to-many key membership), addressed at `/{handle}/{set}`; bare `/{handle}` serves an owner-designated **default set**; **visibility is per set** (access keys per set). **Set names:** lowercase `a–z`/`0–9`/hyphen, 1–64 chars, blocklist applies. **Max sets default 100** (configurable). **Default set not deletable** (reassign first); **non-empty delete needs confirmation**; **freed set names quarantine**. | 0016, 0010 |
-| 21 | **Reserved-identifier blocklist** for handles & key-set names (system/impersonation/offensive terms + confusable/leetspeak matching); built-in default, deployer-seedable, and **runtime-editable by a system administrator** (audited). Introduces an **administrator** role. | 0017 |
+| 21 | **Reserved-identifier blocklist** for handles, key-set names **and device names** (system/impersonation/offensive terms + confusable/leetspeak matching on a normalized **skeleton**; **system & impersonation = whole-token, offensive = substring**); built-in default, deployer-seedable, and **runtime-editable by a system administrator** (audited), with an **admin-editable allowlist** for false positives. Existing names newly blocked **keep working, are flagged, and quarantine-on-release**. Introduces an **administrator** role. | 0017 |
 | 22 | Management credentials: **refresh + short-lived access tokens** (individually revocable). **Access TTL 15m**; **refresh rotates on use** (reuse-theft detection) with a **90-day absolute cap**; revocation **hybrid** (TTL + small live denylist for immediate effect). Enrollment via **device-authorization grant, manual token paste, or in-client login** (deployer/owner choice). | 0009, 0018 |
 | 23 | Authorization: tokens carry **scopes** — default **full owner authority**, with mintable narrower scopes (**read-only, single-set, single-device**, each bound to exactly one resource). Admin authority is a separate axis. **OIDC** provider-agnostic via discovery + configurable claim mapping; documented/tested for Keycloak/Authentik, Google, Microsoft Entra, Auth0, GitHub. | 0018 |
 | 24 | Publish semantics: native `authorized_keys`, canonical/options-free, deterministic order; **short bounded TTL (~60s default) + ETag**; protected sets not shared-cached; revocation window bounded by TTL (AuthorizedKeysCommand is live). | 0019 |
@@ -202,9 +202,12 @@ Still open:
    delete needs confirmation**; **freed set names quarantine**. Per-set access
    keys: **multiple named, independently revocable, rotate-with-grace, stored
    hashed, shown once** (ADR-0010).
-5b. **Blocklist details:** confusable/leetspeak folding tables and per-category
-   match mode; false-positive handling / allowlist; treatment of existing
-   identifiers that later become blocked; whether device names are covered.
+5b. ~~Blocklist details~~ — **resolved (ADR-0017):** match on a normalized
+   **skeleton** (casefold/NFKC/confusable/leetspeak fold); **system &
+   impersonation = whole-token**, **offensive = substring**; **admin-editable
+   allowlist** overrides false positives; **existing names newly blocked keep
+   working, are flagged, and quarantine-on-release**; **device names are
+   covered** too. Remaining as curated data: exact word lists & folding tables.
 6. ~~Rate limiting / abuse~~ — **resolved:** built-in tiered + external-friendly
    (ADR-0023). Default values and the multi-instance shared counter store remain
    open.
@@ -270,6 +273,12 @@ Still open:
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system
   administrator** role (audited). Added ADR-0017.
+- 2026-07-19 (open items: blocklist detail) — Fixed blocklist tuning in ADR-0017:
+  skeleton-based matching with **whole-token** for system/impersonation and
+  **substring** for offensive terms; **admin-editable allowlist**; existing names
+  newly blocked **keep working, are flagged, quarantine-on-release**; **device
+  names covered**. Exact word lists & folding tables remain curated data
+  (decision #21).
 - 2026-07-19 (open items: key-set detail) — Fixed key-set tuning in ADR-0016 /
   ADR-0010: set-name rules (lowercase/`0-9`/hyphen, 1–64, blocklist applies),
   **max sets default 100** (configurable), **default set not deletable**,

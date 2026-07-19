@@ -38,9 +38,12 @@ first priority throughout.
   **non-empty delete confirmed**, **freed names quarantine** (#20 · ADR-0016).
 - **Handle lifecycle:** globally unique; **rename allowed with quarantine** so a
   freed handle never serves another owner's keys (old URL 404/410) (#32 · ADR-0026).
-- **Reserved-identifier blocklist** (system/impersonation/offensive +
-  confusable/leetspeak matching); default + deploy-seed + **runtime-editable by a
-  system administrator** (audited). New **administrator** role (#21 · ADR-0017).
+- **Reserved-identifier blocklist** for handles, set names **and device names**
+  (skeleton match: **whole-token** system/impersonation, **substring** offensive);
+  default + deploy-seed + **runtime-editable by a system administrator** (audited),
+  with an **admin allowlist** for false positives; existing names newly blocked
+  **keep working, flagged, quarantine-on-release**. New **administrator** role
+  (#21 · ADR-0017).
 - **Onboarding: deployer-configurable** — open self-signup or invite/admin (#14 ·
   ADR-0012).
 
@@ -151,8 +154,10 @@ Per-owner CA signing (ADR-0014); web/TUI/CLI management clients; teams/orgs/RBAC
 - ~~**Key-set detail:**~~ **resolved (ADR-0016/0010):** set-name rules, max 100,
   delete rules (default protected / non-empty confirmed / freed names quarantine),
   access-key lifecycle (multiple named, rotate-with-grace, hashed, shown once).
-- **Blocklist detail:** confusable/leetspeak folding tables, per-category match
-  mode, false-positive allowlist, treatment of already-existing-now-blocked names.
+- ~~**Blocklist detail:**~~ **resolved (ADR-0017):** skeleton match (whole-token
+  system/impersonation, substring offensive), admin allowlist, existing-name
+  flag+quarantine-on-release, device names covered. Remaining as curated data:
+  exact word lists & folding tables.
 - **TLS detail:** EAB for ZeroSSL, first DNS-01 providers, cert/key/cred storage,
   renewal scheduling/alerting, min TLS/cipher defaults, fail-closed vs last-good.
 - **Ops detail:** default rate limits + multi-instance counter store; audit

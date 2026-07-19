@@ -30,9 +30,21 @@ and key-set names; extendable to device names).
 
 Blocking is done on a **normalized form**, not raw string equality: case-fold,
 trim, NFKC Unicode normalization, homoglyph/confusable folding, leetspeak
-folding, and separator stripping, then match against normalized blocklist
-entries. This is what catches category 4. Per-category match mode (exact vs
-substring) is a tunable detail.
+folding (e.g. `1→i`, `0→o`, `3→e`, `$→s`, `@→a`), and separator stripping,
+producing a **skeleton** that is matched against the equally-skeletonized
+blocklist entries. This is what catches category 4.
+
+**Per-category match mode:**
+
+- **Routing/system** and **authority/impersonation** terms match as
+  **whole-token** on the skeleton (so `root` blocks `root`/`r00t` but not
+  `roots`), preventing route collisions and impersonation without over-blocking.
+- **Offensive/abusive** terms match as **substring** on the skeleton (profanity
+  hidden inside a longer name is still caught).
+
+The confusable/leetspeak **folding tables are data**, versioned alongside the
+default word lists, so they can be extended without code changes; the folding is
+deterministic and shared with identifier validation (see Consequences).
 
 ### Management (two levels)
 
@@ -40,6 +52,10 @@ substring) is a tunable detail.
 - **System administrator at runtime:** an authenticated **administrator** can
   add/remove entries via an admin operation. All changes are **audited**
   (ADR-0007).
+- **Admin-editable allowlist (false-positive override).** Because folding can
+  over-block legitimate names (the "Scunthorpe problem"), an administrator can
+  add specific normalized names to an **allowlist** that takes precedence over
+  the blocklist. Allowlist edits are audited exactly like blocklist edits.
 
 The **system administrator** is a new actor/role, distinct from an owner; its
 authorization is part of the auth model (see ADR-0009 and the forthcoming auth
@@ -47,8 +63,21 @@ ADR). The blocklist is **system-wide/global** (handles are global).
 
 ### Enforcement points
 
-Checked at identifier **creation and rename**. Policy for an existing identifier
-that later becomes blocked (grandfather vs force-rename) is an open item.
+Checked at identifier **creation and rename**, applied to **handles, key-set
+names, and device names** (device names too, for consistency, even though they
+are private labels — only length/charset validation is otherwise applied there).
+
+### Existing identifiers newly blocked
+
+When an administrator adds an entry that would block an **already-existing**
+identifier, that identifier **keeps working** — it is not yanked out from under
+the owner. Instead it is **flagged for admin review** and marked
+**quarantine-on-release**: the owner may keep using it, but once the identifier
+is freed (rename/delete) it **cannot be re-claimed** and enters the normal
+quarantine (ADR-0026). Administrators get a report of currently-flagged
+identifiers. (Immediate suspension and permanent grandfathering were both
+rejected — the former breaks live URLs without warning; the latter lets
+offensive/impersonation names persist forever.)
 
 ## Consequences
 
@@ -59,11 +88,14 @@ that later becomes blocked (grandfather vs force-rename) is an open item.
 - Normalization must be deterministic and **shared** with identifier validation
   so "valid" and "not blocked" agree.
 
-## Open items (tracked in requirements §8)
+## Open items
 
-Confusable/leetspeak folding tables and per-category match mode; false-positive
-handling / allowlist; behavior for already-existing identifiers that become
-blocked; whether device names are also covered; exact default word lists.
+Resolved: per-category match mode (whole-token for system/impersonation,
+substring for offensive), admin-editable allowlist, existing-name handling
+(flag + quarantine-on-release), and device-name coverage (included). Remaining
+as **data to curate at implementation:** the exact default word lists and the
+initial confusable/leetspeak folding tables (versioned data, not a design
+decision).
 
 ## Alternatives considered
 
