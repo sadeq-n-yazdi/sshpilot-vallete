@@ -1,0 +1,10 @@
+# Minimal valid production config: just enough to pass validation.
+# TLS is terminated upstream, so at least one trusted proxy is required.
+server:
+  public_base_url: https://vallet.example.com
+  trusted_proxies:
+    - 10.0.0.1
+tls:
+  mode: upstream
+auth:
+  token_signing_key_ref: env:VALLET_TOKEN_SIGNING_KEY
