@@ -22,7 +22,8 @@ described in Termius's "SSH ID / passkeys for SSH".
 | **Security reviewers** | [Threat model](security/threat-model.md) — assets, trust boundaries, and the core risks. |
 | **Backend developers** | Requirements + ADRs today; a developer guide will be added when implementation starts. |
 | **Frontend / client developers (human + AI)** | Requirements today; an API contract (OpenAPI) and client guide will be added once the API surface is agreed. |
-| **Contributors** | The ADR process below, plus a CONTRIBUTING guide (to be added). |
+| **Contributors** | The ADR process below, plus [CONTRIBUTING.md](../CONTRIBUTING.md) and the [Code of Conduct](../CODE_OF_CONDUCT.md). |
+| **Security researchers** | [SECURITY.md](../SECURITY.md) — private disclosure policy. |
 
 ## How decisions are recorded
 

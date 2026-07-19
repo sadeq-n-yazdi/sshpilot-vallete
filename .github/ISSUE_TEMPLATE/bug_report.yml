@@ -1,0 +1,95 @@
+name: Bug report
+description: Report a defect in sshpilot-vallet
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug!
+
+        **Do not report security vulnerabilities here.** Follow our
+        [Security Policy](../blob/HEAD/SECURITY.md) instead — use private
+        vulnerability reporting or email.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: This is **not** a security vulnerability (those go through SECURITY.md).
+          required: true
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I checked the docs (requirements, ADRs, threat model) and this still looks like a bug.
+          required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and its impact.
+      placeholder: Describe the actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, exact steps. Redact any secrets, tokens, or private data.
+      placeholder: |
+        1. Configure ...
+        2. Request `GET /{handle}/{set}` ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Release tag or commit SHA you are running.
+    validations:
+      required: true
+  - type: dropdown
+    id: datastore
+    attributes:
+      label: Data store
+      options:
+        - SQLite
+        - PostgreSQL
+        - Not applicable / unknown
+    validations:
+      required: false
+  - type: dropdown
+    id: tls-mode
+    attributes:
+      label: TLS mode
+      options:
+        - Let's Encrypt (ACME)
+        - Cloudflare Origin CA
+        - Operator-provided cert
+        - Terminated upstream (proxy/CDN)
+        - Self-signed (dev)
+        - Not applicable / unknown
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, deployment shape, auth provider(s) enabled, and anything else relevant.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      description: Paste logs or error output. **Redact secrets and private keys.**
+      render: shell
+    validations:
+      required: false

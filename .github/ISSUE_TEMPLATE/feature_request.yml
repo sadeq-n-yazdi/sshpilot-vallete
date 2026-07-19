@@ -1,0 +1,63 @@
+name: Feature request
+description: Suggest an idea or enhancement for sshpilot-vallet
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Please check the
+        [requirements outline](../blob/HEAD/docs/requirements/phase-1.md),
+        the [ADR log](../blob/HEAD/docs/architecture/adr/README.md), and the
+        [roadmap](../blob/HEAD/docs/spec-overview.md) first — the phase-1 scope
+        and several deferrals (orgs → phase 2, scaling → phase 3) are already
+        documented.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I checked the roadmap/ADRs and this isn't already decided or deferred.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and why is it hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about and why you set them aside.
+    validations:
+      required: false
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Which phase does this fit?
+      description: Best guess — maintainers will confirm during triage.
+      options:
+        - Phase 1 (single-owner vallet)
+        - Phase 2 (groups / organizations)
+        - Phase 3 (scaling)
+        - Not sure
+    validations:
+      required: false
+  - type: textarea
+    id: security
+    attributes:
+      label: Security considerations
+      description: Any impact on auth, owner isolation, key handling, TLS, or secrets?
+    validations:
+      required: false
