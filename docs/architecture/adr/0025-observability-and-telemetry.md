@@ -41,5 +41,8 @@ endpoint** alongside it:
 
 ## Open items
 
-Exact metric/span catalog, exporter defaults and sampling, and whether
-Prometheus and OTLP metrics run concurrently by default or one is opt-in.
+The **exact metric/span catalog is a documented artifact delivered with the
+code** (a named list of metrics/spans/labels, versioned alongside the API), not a
+design decision — deferred to implementation. Remaining tuning: exporter defaults
+and sampling, and whether Prometheus and OTLP metrics run concurrently by default
+or one is opt-in (config defaults).

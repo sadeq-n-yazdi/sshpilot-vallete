@@ -16,17 +16,21 @@ access-hijack. Handles are also the global namespace subject to the blocklist
 - **Globally unique**, compared on the normalized form (ADR-0017 normalization),
   and validated against the reserved-identifier blocklist.
 - **Rename is allowed.** On rename, the previous handle enters a
-  **quarantine/hold** for a configurable cooling-off period during which **no
-  other owner can claim it**; the original owner may reclaim it. After the period
-  it returns to the pool.
+  **quarantine/hold** for a cooling-off period — **default 30 days
+  (configurable)** — during which **no other owner can claim it**; the original
+  owner may reclaim it. After the period it returns to the pool. 30 days lets
+  cached consumers / `AuthorizedKeysCommand` pollers stop trusting the old URL
+  before anyone else can claim the name.
 - **A renamed/quarantined handle never serves another party's keys.**
   `GET /{old-handle}` returns **`404`/`410`** (not a redirect), so servers still
   pointed at the old URL simply stop updating rather than silently receiving a
   different owner's keys.
 - **Key-set renames** carry an analogous but **within-owner** footgun (only the
   same owner can reuse the name under their handle): the old `/{handle}/{set}`
-  path 404s, and reusing the name later would serve different keys. Documented as
-  a caution; whether set names are also quarantined is an open item.
+  path 404s, and reusing the name later would serve different keys. **Freed set
+  names are quarantined too** (ADR-0016), on the **same default 30-day** window,
+  so a name cannot be silently reused for different keys while consumers still
+  poll the old path.
 
 ## Consequences
 
@@ -37,6 +41,8 @@ access-hijack. Handles are also the global namespace subject to the blocklist
 
 ## Open items
 
-Default quarantine duration; whether an old handle is ever permanently retired vs
-released; whether key-set names get the same quarantine; grace/notification on
-rename.
+Resolved: **default quarantine 30 days (configurable)**, applied to **both
+handles and set names** (ADR-0016). Remaining as implementation detail:
+grace/notification UX on rename, and whether an operator may permanently retire
+(never release) a specific name — a small admin affordance, not a phase-1
+blocker.

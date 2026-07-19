@@ -39,8 +39,30 @@ production.
 - Maintaining two migration sets requires portability discipline and dual-engine
   CI.
 
+## Tooling
+
+Rather than bending a general-purpose library, the project uses a **small
+embedded custom runner** over embedded SQL, because the mandatory-down and
+dependency/precondition rules above are first-class requirements rather than
+add-ons. Each migration is a versioned unit declaring:
+
+- a unique **`id`** (monotonic/orderable),
+- **`requires`** — the prerequisite migration id(s) that must already be applied,
+- **`preconditions`** — schema/state checks that must hold before apply,
+- an **`up`** plan and a **`down`** plan (down mandatory unless a documented,
+  reviewed irreversible exception),
+- an optional **`destructive`** flag that requires an explicit confirmation to
+  apply.
+
+The runner records applied migrations, verifies `requires`/`preconditions`, and
+**refuses to apply out of order, with a gap, or against an unexpected state**.
+Existing libraries (golang-migrate, goose) were considered; the custom runner was
+chosen for full control over the mandatory-down + dependency semantics, with
+their SQL-file conventions as prior art.
+
 ## Open items
 
-Migration tooling/library choice (must support mandatory down plans and
-dependency/precondition declarations); the exact dependency-declaration format;
-whether destructive migrations require an explicit confirmation flag.
+Resolved: **embedded custom runner** with the `id`/`requires`/`preconditions`/
+`up`/`down`/`destructive` declaration format above. Remaining as implementation
+detail: the concrete on-disk migration file format and the applied-migrations
+bookkeeping table layout.

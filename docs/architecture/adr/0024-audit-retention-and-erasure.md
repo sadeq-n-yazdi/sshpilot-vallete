@@ -13,14 +13,19 @@ conflict; this ADR reconciles them.
 
 - **Append-only in normal operation.** No updates or deletes of audit records via
   ordinary application paths (ADR-0007 stands).
-- **Configurable retention window.** Records older than the retention period are
-  **purged** by a controlled, system-level process — the only routine deletion
-  path — and the purge itself is documented/observable.
+- **Configurable retention window, default 365 days.** Records older than the
+  retention period are **purged** by a controlled, system-level process — the
+  only routine deletion path — and the purge itself is documented/observable.
 - **Pseudonymization on owner deletion / erasure.** Rather than deleting an
   owner's history, replace their identity and personal fields with a
   **non-reversible pseudonym** and drop personal data, while **preserving the
   structural record** (which action happened, when, on what target type). This
   keeps accountability/forensics without retaining PII.
+- **Technique: salted-hash tombstone with per-owner salt destroyed on erasure**
+  (crypto-erasure). Each owner's identifying audit fields are pseudonymized to an
+  **irreversible salted hash**; erasure **destroys the salt**, so the pseudonym
+  can no longer be linked back to the person, yet event counts and lineage remain
+  consistent.
 - Pseudonymization/erasure is a **controlled, audited operation**, not an
   arbitrary record edit.
 - Audit records **never contain secrets or key material** (reaffirms ADR-0007).
@@ -35,6 +40,8 @@ conflict; this ADR reconciles them.
 
 ## Open items
 
-Default retention duration; exact pseudonymization technique (salted-hash with
-destroyed salt vs crypto-erasure); which fields count as personal; interaction
-with external SIEM/log export.
+Resolved: **default retention 365 days (configurable)** and the
+**salted-hash-with-destroyed-salt** pseudonymization technique. Remaining as
+implementation detail: the exact field list classed as personal, and interaction
+with external SIEM/log export (exported copies are outside the app's erasure
+reach — documented as a deployer responsibility).

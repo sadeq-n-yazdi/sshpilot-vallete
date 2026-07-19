@@ -36,8 +36,9 @@ first priority throughout.
   bare `/{handle}` = owner-designated **default set**. Set names lowercase
   `a–z`/`0–9`/hyphen, 1–64; **max 100** (configurable); **default not deletable**,
   **non-empty delete confirmed**, **freed names quarantine** (#20 · ADR-0016).
-- **Handle lifecycle:** globally unique; **rename allowed with quarantine** so a
-  freed handle never serves another owner's keys (old URL 404/410) (#32 · ADR-0026).
+- **Handle lifecycle:** globally unique; **rename allowed with quarantine
+  (default 30 days, handles + set names)** so a freed name never serves another
+  owner's keys (old URL 404/410) (#32 · ADR-0026).
 - **Reserved-identifier blocklist** for handles, set names **and device names**
   (skeleton match: **whole-token** system/impersonation, **substring** offensive);
   default + deploy-seed + **runtime-editable by a system administrator** (audited),
@@ -97,9 +98,12 @@ first priority throughout.
 ## F. Security controls (cross-cutting)
 
 - **Append-only audit log** of access-affecting changes (#13 · ADR-0007), with
-  **retention purge + pseudonymize-on-erasure** (#30 · ADR-0024).
+  **365-day retention purge + salted-hash/destroyed-salt pseudonymize-on-erasure**
+  (#30 · ADR-0024).
 - **Rate limiting & abuse protection** — built-in tiered, configurable,
-  external-friendly; brute-force backoff (#29 · ADR-0023).
+  external-friendly; brute-force backoff. Starting defaults (auth ~5/min+backoff,
+  publish ~60/min/IP, mgmt ~120/min, admin ~60/min); **pluggable in-memory /
+  shared counter store** (shared with the auth denylist) (#29 · ADR-0023).
 
 ## G. Configuration & secrets
 
@@ -113,9 +117,10 @@ first priority throughout.
 - **Observability:** OpenTelemetry (OTLP) core + Prometheus `/metrics`; supports
   Grafana/New Relic/Datadog/etc. by config; `/healthz`+`/readyz` reflect DB & cert
   readiness; no secrets/PII in telemetry (#31 · ADR-0025).
-- **Migrations/backup:** embedded, versioned, **dual-engine**; **mandatory
-  forward + reverse plans**; **declared dependencies verified before apply**;
-  auto-apply default w/ explicit-command toggle; fail-closed on mismatch;
+- **Migrations/backup:** embedded, versioned, **dual-engine** via a **small
+  custom runner** (`id`/`requires`/`preconditions`/`up`/`down`/`destructive`);
+  **mandatory forward + reverse plans**; **declared dependencies verified before
+  apply**; auto-apply default w/ explicit-command toggle; fail-closed on mismatch;
   per-store backup/restore (#34 · ADR-0028).
 - **Supply chain:** pinned deps + CI vuln scanning + SBOM + **signed/reproducible**
   artifacts & images (SLSA-style provenance) (#33 · ADR-0027).
@@ -168,9 +173,11 @@ Per-owner CA signing (ADR-0014); web/TUI/CLI management clients; teams/orgs/RBAC
   manual + APIs for ≥ top-10 providers + ArvanCloud (others later phases); `0600`
   files + secret-provider creds, renew-ahead + alert, TLS 1.2+ AEAD allowlist,
   **fail-closed on expiry**.
-- **Ops detail:** default rate limits + multi-instance counter store; audit
-  retention duration + pseudonymization technique; metric/span catalog; migration
-  tooling + dependency-declaration format; quarantine duration.
+- ~~**Ops detail:**~~ **resolved:** quarantine 30d (ADR-0026); audit retention
+  365d + salted-hash/destroyed-salt erasure (ADR-0024); rate-limit defaults +
+  pluggable shared counter store (ADR-0023); embedded custom migration runner
+  with `id`/`requires`/`preconditions`/`up`/`down`/`destructive` (ADR-0028).
+  Metric/span catalog is a documented implementation artifact (ADR-0025).
 - **Implementation artifacts (produced when coding starts):** field-level data
   model & constraints; full OpenAPI endpoint enumeration; package layout.
 

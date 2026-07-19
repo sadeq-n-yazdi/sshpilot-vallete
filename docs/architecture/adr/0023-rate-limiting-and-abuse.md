@@ -14,13 +14,16 @@ self-hosted instances unprotected.
 
 - **Built-in, configurable rate limiting** with sane defaults, and **designed to
   coexist with an external limiter** (proxy/CDN/WAF).
-- **Tiered limits** by surface, keyed appropriately:
+- **Tiered limits** by surface, keyed appropriately (starting **defaults**, all
+  config-tunable):
   - **Auth/login/enrollment** and **onboarding/signup** — strict; keyed per-IP
-    (and per-account where known). Include **failed-auth backoff/lockout** to
-    resist brute force.
-  - **Publish fetch** (`/{handle}/{set}`) — per-IP limits sized for legitimate
-    `curl`/`AuthorizedKeysCommand` polling.
-  - **Management & admin** operations — per-credential/per-owner limits.
+    (and per-account where known): **~5 attempts/min** with **exponential
+    failed-auth backoff/lockout** to resist brute force.
+  - **Publish fetch** (`/{handle}/{set}`) — per-IP, sized for legitimate
+    `curl`/`AuthorizedKeysCommand` polling: **~60 requests/min per IP** (output
+    is TTL-cached anyway, ADR-0019).
+  - **Management** operations — **~120 requests/min per credential**;
+    **admin** operations — **~60 requests/min per admin**.
 - Over-limit responses return **`429`** with **`Retry-After`**.
 - **Trusted client IP only.** The client IP used for keying is derived from
   forwarded headers **only** when a trusted proxy is configured (ADR-0015);
@@ -32,11 +35,15 @@ self-hosted instances unprotected.
 - Bare deployments get baseline protection; fronted deployments avoid double
   enforcement.
 - Correct keying depends on correct proxy-trust configuration.
-- **Multi-instance** deployments need a **shared counter store** (e.g. Redis) for
-  accurate distributed limits; in-memory suffices for single-instance. The shared
-  backend is an open item.
+- **Multi-instance** deployments use a **pluggable shared counter store behind a
+  single interface**: **in-process counters for single-node**, a **Redis/Valkey-
+  style backend for multi-node**. No hard Redis dependency is imposed on
+  self-hosters. **The same store backs the auth revocation denylist** (ADR-0018),
+  so multi-instance coordination has one moving part, not two.
 
 ## Open items
 
-Default limit values per tier; counter storage for multi-instance/SaaS
-(distributed rate limiting); lockout/backoff parameters; allow/deny lists.
+Resolved: **starting default limits per tier** (above), and the **pluggable
+in-memory/shared-store** design for distributed counters (shared with the
+ADR-0018 denylist). Remaining as tuning/implementation: exact backoff curve
+constants and optional allow/deny lists (config, not design).

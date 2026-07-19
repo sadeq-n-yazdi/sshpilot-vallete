@@ -72,12 +72,12 @@ CLI for managing keys.
 | 26 | **Self-served API docs**: `GET /docs/` returns the OpenAPI document by requested type (rendered HTML / YAML / JSON), **default JSON**; `/docs/spec/` gives stable JSON/YAML URLs; assets bundled (no CDN); exposure deployer-configurable. | 0021 |
 | 27 | **Config**: structured file (YAML/TOML) + env overrides (env > file > defaults), validated fail-closed at startup. **Secrets** never in the file — via env/file refs behind a pluggable secret-provider interface (Vault/KMS later); never logged. | 0022 |
 | 28 | **Protected-set access** presented as an **`Authorization: Bearer`** header (never query string). Per-set access keys: **multiple named, independently revocable**, **rotate-with-grace**, **stored hashed**, **shown in plaintext once** at creation. | 0010 |
-| 29 | **Rate limiting**: built-in, tiered, configurable (auth/signup/publish/admin), `429`+`Retry-After`, trusted-IP keying; coexists with external limiters. | 0023 |
-| 30 | **Audit retention/erasure**: append-only + configurable retention purge; **pseudonymize** owner data on deletion/erasure while keeping the structural record. | 0024 |
+| 29 | **Rate limiting**: built-in, tiered, configurable (auth/signup/publish/admin), `429`+`Retry-After`, trusted-IP keying; coexists with external limiters. **Starting defaults:** auth **~5/min + exponential backoff**, publish **~60/min/IP**, management **~120/min/cred**, admin **~60/min**. Multi-instance uses a **pluggable in-memory / shared (Redis-style) counter store**, shared with the auth revocation denylist. | 0023 |
+| 30 | **Audit retention/erasure**: append-only + configurable retention purge (**default 365 days**); **pseudonymize** owner data on deletion/erasure (**salted-hash tombstone with per-owner salt destroyed on erasure = crypto-erasure**) while keeping the structural record. | 0024 |
 | 31 | **Observability**: OpenTelemetry (OTLP) core + Prometheus `/metrics`; supports Grafana/New Relic/Datadog/etc. by config; `/healthz`+`/readyz` (readiness reflects DB & cert); `/metrics` exposure configurable; no secrets/PII in telemetry. | 0025 |
-| 32 | **Handle lifecycle**: globally unique; **rename allowed with quarantine** (old handle held, never serves another owner's keys — 404/410). | 0026 |
+| 32 | **Handle lifecycle**: globally unique; **rename allowed with quarantine** (old handle held, never serves another owner's keys — 404/410). **Quarantine default 30 days (configurable)**, applied to **handles and set names**. | 0026 |
 | 33 | **Supply chain**: pinned deps + CI vuln scanning + SBOM + signed/reproducible artifacts & images (SLSA-style provenance). | 0027 |
-| 34 | **Migrations/backup**: embedded, versioned, dual-engine migrations; **every migration has mandatory forward + reverse plans** and **declared dependencies verified before apply**; auto-apply by default with explicit-command toggle; fail-closed on schema mismatch; per-store backup/restore documented. | 0028 |
+| 34 | **Migrations/backup**: embedded, versioned, dual-engine migrations via a **small custom runner**; each migration declares **`id` / `requires` / `preconditions` / `up` / `down` / `destructive`**; **mandatory reverse plans** and **declared dependencies verified before apply**; auto-apply by default with explicit-command toggle; fail-closed on schema mismatch; per-store backup/restore documented. | 0028 |
 
 ## 4. Phase-1 scope (as described so far)
 
@@ -194,8 +194,8 @@ Still open:
    via env/file refs behind a pluggable provider (ADR-0022). Exact schema/field
    names and YAML-vs-TOML remain implementation detail.
 5. ~~Handle claiming & uniqueness / rename rules~~ — **resolved:** globally
-   unique; rename allowed with quarantine (ADR-0026). Quarantine **duration**
-   remains open (§Ops detail); set-name quarantine now resolved (§5a).
+   unique; rename allowed with quarantine (ADR-0026). **Quarantine default 30
+   days (configurable)**, applied to **both handles and set names**.
 5a. ~~Key-set details~~ — **resolved (ADR-0016):** set-name rules = lowercase
    `a–z`/`0–9`/hyphen, 1–64 chars, blocklist applies; **max sets default 100**
    (configurable); **default set not deletable** (reassign first); **non-empty
@@ -208,9 +208,11 @@ Still open:
    allowlist** overrides false positives; **existing names newly blocked keep
    working, are flagged, and quarantine-on-release**; **device names are
    covered** too. Remaining as curated data: exact word lists & folding tables.
-6. ~~Rate limiting / abuse~~ — **resolved:** built-in tiered + external-friendly
-   (ADR-0023). Default values and the multi-instance shared counter store remain
-   open.
+6. ~~Rate limiting / abuse~~ — **resolved (ADR-0023):** built-in tiered +
+   external-friendly, with **starting defaults** (auth ~5/min + backoff, publish
+   ~60/min/IP, management ~120/min/cred, admin ~60/min) and a **pluggable
+   in-memory / shared-store** counter design (shared with the auth revocation
+   denylist) for multi-instance.
 7. **Managed-block helper form:** shell script shipped with releases vs an
    endpoint that serves the script vs both.
 8. ~~TLS specifics~~ — **resolved (ADR-0015):** phase 1 ships **two selectable
@@ -278,6 +280,14 @@ Still open:
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system
   administrator** role (audited). Added ADR-0017.
+- 2026-07-19 (open items: ops detail) — Fixed ops tuning: **quarantine default
+  30 days** for handles & set names (ADR-0026); **audit retention 365 days** with
+  **salted-hash/destroyed-salt** pseudonymization (ADR-0024); **rate-limit
+  starting defaults** + **pluggable in-memory/shared counter store** (shared with
+  the auth denylist) (ADR-0023); **embedded custom migration runner** with
+  `id`/`requires`/`preconditions`/`up`/`down`/`destructive` declarations
+  (ADR-0028); metric/span catalog framed as a documented implementation artifact
+  (ADR-0025) (decisions #29, #30, #31, #32, #34).
 - 2026-07-19 (open items: TLS detail) — Fixed TLS tuning in ADR-0015: phase 1
   ships **two selectable automatic cert providers — Let's Encrypt (ACME, with
   both TLS-ALPN-01 and DNS-01 solvers) and Cloudflare Origin CA**. **DNS-01** has
