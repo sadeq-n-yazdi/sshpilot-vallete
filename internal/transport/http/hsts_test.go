@@ -204,8 +204,8 @@ func TestHSTSThroughRealHandshake(t *testing.T) {
 // and can be given https URLs directly, so the usability argument for a
 // redirect does not apply here.
 //
-// The test asserts the server never produces application data over plaintext,
-// and that nothing in the process binds a second listener.
+// The test asserts the server never produces application data, and never a
+// redirect, over a plaintext connection.
 func TestNoPlaintextListenerExists(t *testing.T) {
 	t.Parallel()
 

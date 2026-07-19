@@ -33,7 +33,17 @@ const selfSignedValidity = 24 * time.Hour
 // The now argument is the validity clock for certificate checks. It is a
 // parameter rather than a call to time.Now so that expiry behavior is
 // deterministically testable; production passes the real clock.
-
+//
+// Scope note — certificates are read ONCE, here, at startup. There is
+// deliberately no hot reload and no on-disk watch in this track: an operator who
+// replaces the certificate files must restart the process for the new material
+// to be served. Consequently the fail-closed-on-expiry check below is a STARTUP
+// check. A certificate that expires while the process is running will continue
+// to be presented until the process restarts; ADR-0015 §4 requires the listener
+// to stop serving in that case, and implementing it belongs with the renewal
+// scheduler in the later certificate-provider tracks (a tls.Config.GetCertificate
+// callback re-validating per handshake is the intended hook). Stating the gap
+// explicitly is preferred to leaving the reload story ambiguous.
 func buildTLSConfig(cfg *config.Config, now time.Time) (*tls.Config, error) {
 	minVersion, err := parseMinVersion(cfg.TLS.MinVersion)
 	if err != nil {
@@ -45,10 +55,7 @@ func buildTLSConfig(cfg *config.Config, now time.Time) (*tls.Config, error) {
 	case "self_signed":
 		cert, err = selfSignedCertificate(cfg, now)
 	case "manual":
-		cert, err = tls.LoadX509KeyPair(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile)
-		if err != nil {
-			err = fmt.Errorf("httpserver: load tls keypair: %w", err)
-		}
+		cert, err = manualCertificate(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile, now)
 	default:
 		err = fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
 	}
@@ -121,6 +128,83 @@ func tls12CipherSuites() []uint16 {
 		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
 	}
+}
+
+// manualCertificate loads and validates an operator-supplied certificate and
+// private key, refusing anything it cannot serve safely.
+//
+// This is the operator-provided mode of ADR-0015 §2: the operator owns renewal,
+// so the server's job is to be unambiguous about material it will not serve.
+// Every defect is a startup failure:
+//
+//   - missing, unreadable, or malformed PEM  -> ErrTLSCertificateInvalid
+//   - private key does not match the cert    -> ErrTLSCertificateInvalid
+//   - outside the validity window            -> ErrTLSCertificateExpired
+//
+// The first two come free from [tls.LoadX509KeyPair], which parses both files
+// and verifies that the key matches the leaf's public key. The third does NOT:
+// LoadX509KeyPair is perfectly happy to load a certificate that expired years
+// ago, so the validity window is checked here explicitly. Without this check the
+// fail-closed-on-expiry requirement would appear to be met while doing nothing.
+//
+// Validity is checked against the leaf only. Intermediates in the chain are the
+// issuing CA's business and are validated by the client against its own trust
+// store; rejecting on an intermediate the operator cannot fix would fail closed
+// on someone else's clock.
+//
+// Note on secret handling: the private key reaches this process only inside
+// tls.Certificate.PrivateKey, as a crypto.PrivateKey. It is never read into a
+// string, never formatted, and never logged. Errors below are built from file
+// paths and certificate timestamps — a path is not a secret, but key bytes are,
+// so no error here ever quotes file contents.
+func manualCertificate(certFile, keyFile string, now time.Time) (tls.Certificate, error) {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		// %w on the crypto/tls error preserves "failed to find any PEM data",
+		// "private key does not match public key", and the os path errors,
+		// which are what an operator needs to fix the problem. None of them
+		// echo key material.
+		return tls.Certificate{}, fmt.Errorf("%w: %w", ErrTLSCertificateInvalid, err)
+	}
+
+	// Leaf is populated by LoadX509KeyPair as of Go 1.23, but a nil Leaf would
+	// turn the expiry check below into a silent no-op — precisely the failure
+	// mode this function exists to prevent — so it is re-parsed rather than
+	// trusted. The GODEBUG x509keypairleaf=0 setting can still restore the old
+	// nil-Leaf behavior, which makes this a reachable state, not paranoia.
+	// The two error branches inside this block are unreachable in practice and
+	// are therefore the only statements in this file without test coverage:
+	// LoadX509KeyPair has already parsed the leaf to verify the key match, so
+	// by the time it returns nil error the chain is non-empty and its first
+	// element parses. They are kept because "cannot happen" is an argument for
+	// cheap defense, not against it — the cost of being wrong here is skipping
+	// the expiry check entirely.
+	leaf := cert.Leaf
+	if leaf == nil {
+		if len(cert.Certificate) == 0 {
+			return tls.Certificate{}, fmt.Errorf("%w: %s contains no certificate", ErrTLSCertificateInvalid, certFile)
+		}
+		leaf, err = x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return tls.Certificate{}, fmt.Errorf("%w: parse leaf of %s: %w", ErrTLSCertificateInvalid, certFile, err)
+		}
+		cert.Leaf = leaf
+	}
+
+	// Both ends of the window are enforced. A not-yet-valid certificate is just
+	// as unservable as an expired one (clients reject both), and it is the
+	// normal symptom of a badly skewed server clock, so it gets the same
+	// treatment rather than being waved through.
+	if now.Before(leaf.NotBefore) {
+		return tls.Certificate{}, fmt.Errorf("%w: %s is not valid before %s",
+			ErrTLSCertificateExpired, certFile, leaf.NotBefore.UTC().Format(time.RFC3339))
+	}
+	if now.After(leaf.NotAfter) {
+		return tls.Certificate{}, fmt.Errorf("%w: %s expired at %s",
+			ErrTLSCertificateExpired, certFile, leaf.NotAfter.UTC().Format(time.RFC3339))
+	}
+
+	return cert, nil
 }
 
 // parseMinVersion maps the configured tls.min_version onto a crypto/tls
