@@ -92,6 +92,13 @@ ORDER BY created_at ASC, id ASC`
 // (never revealing the row) and only a same-owner Name change reports
 // domain.ErrImmutable. The whole read-then-write runs atomically.
 func (r *handleRepo) Update(ctx context.Context, h *domain.Handle) error {
+	// A nil entity is a caller programming error, not a storage fault; reject it
+	// as invalid input rather than dereferencing it into a panic. Register and
+	// Create already guard this way, and Update must match: a partially applied
+	// convention is worse than none, because callers stop checking.
+	if h == nil {
+		return fmt.Errorf("%s: nil handle: %w", errPrefix, domain.ErrInvalidInput)
+	}
 	return withLocalTx(ctx, r.e, func(ex execer) error {
 		const sel = `SELECT name FROM handles WHERE id = ? AND owner_id = ?`
 		var current string

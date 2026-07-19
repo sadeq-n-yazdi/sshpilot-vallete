@@ -315,3 +315,15 @@ func TestHandleCrossTenantIsolation(t *testing.T) {
 		t.Errorf("owner A handle mutated by cross-tenant Update: state %q", got.State)
 	}
 }
+
+// TestHandleUpdateRejectsNil pins the nil guard on Update. Register and Create
+// were already guarded; Update was not, so a nil entity panicked inside the
+// transaction instead of returning ErrInvalidInput like every sibling method.
+func TestHandleUpdateRejectsNil(t *testing.T) {
+	t.Parallel()
+
+	s := newStore(t)
+	if err := s.Repos().Handles.Update(context.Background(), nil); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("Update(nil) = %v, want ErrInvalidInput", err)
+	}
+}
