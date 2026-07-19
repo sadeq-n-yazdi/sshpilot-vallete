@@ -250,6 +250,14 @@ func TestSelfSignedCertificateContents(t *testing.T) {
 	if err := leaf.VerifyHostname("vallet.example.com"); err != nil {
 		t.Errorf("certificate does not cover its own domain: %v", err)
 	}
+	// A serving certificate must not also be a CA: if a developer trusts this
+	// cert, it must not gain the power to vouch for other names.
+	if leaf.IsCA {
+		t.Error("development certificate is marked as a CA")
+	}
+	if leaf.KeyUsage&x509.KeyUsageCertSign != 0 {
+		t.Error("development certificate carries the certificate-signing usage")
+	}
 }
 
 func TestCertHostsDefaultsToLoopback(t *testing.T) {

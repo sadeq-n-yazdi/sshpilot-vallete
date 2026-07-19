@@ -124,14 +124,18 @@ func newSelfSignedCert(hosts []string, now time.Time) (tls.Certificate, error) {
 	}
 
 	tmpl := &x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{Organization: []string{"sshpilot-vallet development"}},
-		NotBefore:             now.Add(-time.Minute), // tolerate small clock skew
-		NotAfter:              now.Add(selfSignedValidity),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		SerialNumber: serial,
+		Subject:      pkix.Name{Organization: []string{"sshpilot-vallet development"}},
+		NotBefore:    now.Add(-time.Minute), // tolerate small clock skew
+		NotAfter:     now.Add(selfSignedValidity),
+		// An end-entity certificate, NOT a CA: it is self-issued only because
+		// there is no issuer to ask. Setting IsCA/KeyUsageCertSign would mean
+		// that a developer who added this cert to a trust store granted it the
+		// power to vouch for arbitrary other names, so the capability is
+		// withheld even though the key is ephemeral and in-memory.
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		IsCA:                  true,
 	}
 	for _, h := range hosts {
 		if ip := net.ParseIP(h); ip != nil {
