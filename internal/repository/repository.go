@@ -41,6 +41,8 @@
 // inline "// UNSCOPED:" comment and a justification; there are no others.
 package repository
 
+import "context"
+
 // Page requests a bounded slice of a paginated list. Cursor is an opaque token
 // returned by a previous call; an empty Cursor starts from the beginning.
 // Pagination is cursor-based only (no offset). Only AuditRepository.List and
@@ -52,4 +54,37 @@ type Page struct {
 	Limit int
 	// Cursor is the opaque continuation token; "" starts from the beginning.
 	Cursor string
+}
+
+// Repos is the set of all entity repositories. It is a plain struct so that
+// tests and fakes can fill only the fields they exercise; production code
+// obtains a fully populated Repos from a Store.
+type Repos struct {
+	Owners             OwnerRepository
+	Handles            HandleRepository
+	Devices            DeviceRepository
+	PublicKeys         PublicKeyRepository
+	KeySets            KeySetRepository
+	AccessKeys         AccessKeyRepository
+	RefreshCredentials RefreshCredentialRepository
+	LinkedIdentities   LinkedIdentityRepository
+	Audit              AuditRepository
+	Admins             AdministratorRepository
+}
+
+// Store is the unit-of-work root. It hands out repositories for direct
+// auto-commit use and runs multi-entity work atomically inside a transaction.
+type Store interface {
+	// Repos returns repositories whose operations each auto-commit.
+	Repos() Repos
+
+	// WithTx runs fn inside a single transaction, passing transaction-bound
+	// repositories. The transaction commits when fn returns nil and rolls back
+	// when fn returns an error or panics (the panic is re-raised after
+	// rollback). It composes multi-entity invariants atomically on both
+	// engines (Postgres transactions; SQLite BEGIN IMMEDIATE with serialized
+	// writers); the interface promises atomicity, not identical engine
+	// semantics. Phase 1 has no savepoints, so a nested WithTx MUST return an
+	// error rather than attempt to nest.
+	WithTx(ctx context.Context, fn func(Repos) error) error
 }
