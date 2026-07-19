@@ -58,6 +58,8 @@
 | TLS key / DNS-credential leakage | Weak storage, logging | Restrictive perms, never logged, least-privilege DNS creds | Confirmed (0015); storage form TBD |
 | Cert expiry outage | Renewal failure | Renewal scheduling + expiry alerting; fail-closed vs last-good | Open question (0015) |
 | Self-signed cert used in production | Dev/bootstrap mode left on | ~6h validity ceiling, production start-refusal, loud warnings + audit event | Confirmed (0015) |
+| Stale key after revocation | Cached publish response within TTL | Small bounded TTL (~60s, tunable); AuthorizedKeysCommand is live | Accepted trade-off (0019) |
+| API schema exposure | Public `/docs/` reveals API surface | Contract is not secret; exposure is deployer-configurable (disable/authenticate) | Confirmed (0021) |
 | Tampering without trace | No audit | Append-only audit log | Confirmed (0007) |
 
 ## Deferred defense-in-depth

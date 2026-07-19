@@ -67,6 +67,9 @@ CLI for managing keys.
 | 21 | **Reserved-identifier blocklist** for handles & key-set names (system/impersonation/offensive terms + confusable/leetspeak matching); built-in default, deployer-seedable, and **runtime-editable by a system administrator** (audited). Introduces an **administrator** role. | 0017 |
 | 22 | Management credentials: **refresh + short-lived access tokens** (individually revocable); enrollment via **device-authorization grant, manual token paste, or in-client login** (deployer/owner choice). | 0009, 0018 |
 | 23 | Authorization: tokens carry **scopes** — default **full owner authority**, with mintable narrower scopes (read-only, single-set, single-device). Admin authority is a separate axis. | 0018 |
+| 24 | Publish semantics: native `authorized_keys`, canonical/options-free, deterministic order; **short bounded TTL (~60s default) + ETag**; protected sets not shared-cached; revocation window bounded by TTL (AuthorizedKeysCommand is live). | 0019 |
+| 25 | **Testing**: all code covered by **unit + e2e** tests spanning **happy, fail, and gray** paths; positive *and* negative tests mandatory; CI-enforced coverage gate; run against SQLite and Postgres. | 0020 |
+| 26 | **Self-served API docs**: `GET /docs/` returns the OpenAPI document by requested type (rendered HTML / YAML / JSON), **default JSON**; `/docs/spec/` gives stable JSON/YAML URLs; assets bundled (no CDN); exposure deployer-configurable. | 0021 |
 
 ## 4. Phase-1 scope (as described so far)
 
@@ -91,6 +94,10 @@ Captured from the requirements given to date. **Incomplete — will grow.**
   and key-set names (with confusable/leetspeak-aware matching); ship a default,
   allow deploy-time seeding, and let a **system administrator** edit it at
   runtime (audited). (ADR-0017)
+- **Self-served API docs.** Serve the OpenAPI contract at `GET /docs/` by
+  requested type (rendered HTML / YAML / JSON, default JSON) plus stable
+  `/docs/spec/` URLs, with bundled (CDN-free) assets and deployer-configurable
+  exposure. (ADR-0021)
 - **HTTPS-only transport with certificate provisioning.** Serve only over TLS
   (no plaintext listener); obtain certs via automatic ACME (TLS-ALPN-01 / DNS-01,
   incl. Let's Encrypt / ZeroSSL / Cloudflare-DNS), or use an operator-provided
@@ -133,6 +140,10 @@ Captured from the requirements given to date. **Incomplete — will grow.**
 
 - **Security is priority #1** at every step; no feature ships that weakens the
   controls in §5.
+- **Test coverage is mandatory.** Every feature ships with unit + e2e tests
+  covering happy, fail, and gray paths (positive and negative), meeting the
+  CI-enforced coverage gate. Security boundaries require explicit negative tests.
+  (ADR-0020)
 - **Multi-tenant isolation:** one owner can never read or affect another owner's
   data; enforced at the repository layer.
 - **Instance-level configuration:** auth providers, default handle visibility,
@@ -199,6 +210,15 @@ Still open:
   device-grant / manual paste / in-client login, and scoped authorization
   (default full owner authority; mintable read-only / single-set / single-device
   scopes). Admin authority is a separate axis (decisions #22, #23).
+- 2026-07-19 (gap: publish semantics) — ADR-0019: native/canonical output,
+  deterministic order, short bounded TTL (~60s) + ETag, protected sets not
+  shared-cached, documented revocation window (decision #24).
+- 2026-07-19 (feature: testing) — ADR-0020: all code under unit + e2e tests
+  across happy/fail/gray with mandatory negative tests, CI coverage gate, run on
+  SQLite + Postgres (decision #25).
+- 2026-07-19 (feature: API docs endpoints) — ADR-0021: `/docs/` content-
+  negotiated OpenAPI (default JSON) + rendered UI, `/docs/spec/` stable URLs,
+  bundled assets, deployer-configurable exposure (decision #26).
 - 2026-07-19 (feature: reserved identifiers) — System-wide blocklist for handles
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system

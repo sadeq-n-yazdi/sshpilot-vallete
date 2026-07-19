@@ -32,6 +32,9 @@ consequences. They are the project's decision memory.
 | [0016](0016-named-key-sets.md) | Named key sets per owner | Accepted |
 | [0017](0017-reserved-blocklisted-identifiers.md) | Reserved / blocklisted identifiers | Accepted |
 | [0018](0018-auth-credentials-enrollment-and-scopes.md) | Auth credentials, enrollment, and authorization scopes | Accepted |
+| [0019](0019-publish-and-consume-semantics.md) | Publish/consume semantics | Accepted |
+| [0020](0020-testing-strategy.md) | Testing strategy: unit + e2e, happy/fail/gray | Accepted |
+| [0021](0021-openapi-docs-endpoints.md) | Self-served OpenAPI spec and docs endpoints | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.
