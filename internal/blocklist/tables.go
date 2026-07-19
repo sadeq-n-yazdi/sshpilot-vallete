@@ -5,10 +5,12 @@ import "unicode"
 // This file holds the folding tables consumed by Skeleton. Any edit here
 // changes what the system blocks and must bump TableVersion; see skeleton.go.
 //
-// Invariant enforced by review and by TestTargetsAreFixedPoints: every mapping
-// target below is a lowercase ASCII letter, and no lowercase ASCII letter is a
-// key of confusables, a key of leetspeak, or a separator. This is what makes
-// Skeleton idempotent by construction.
+// Invariant enforced by review and by TestEveryEntryFoldsLikeItsTarget: every
+// mapping target below is made of lowercase ASCII letters and digits; no
+// lowercase ASCII letter is a key of any table or a separator; and every digit
+// carrying a leet reading is consumed by the leetspeak stage, which runs after
+// these tables. What the pipeline finally emits is therefore always a fixed
+// point, which is what makes Skeleton idempotent by construction.
 //
 // The tables are deliberately finite. They cover the forms that are actually
 // used to spoof identifiers, not the whole of Unicode. Under-coverage is a
@@ -225,7 +227,7 @@ var confusables = map[rune]string{
 
 // leetspeak folds the digit and symbol substitutions used to spell a word
 // without using its letters. Only substitutions with a single, widely
-// recognised reading are included; ambiguous ones are omitted rather than
+// recognized reading are included; ambiguous ones are omitted rather than
 // guessed, because a wrong fold blocks a legitimate identifier.
 //
 // The ambiguous case is "1", which reads as either l or i. It is folded to i.
