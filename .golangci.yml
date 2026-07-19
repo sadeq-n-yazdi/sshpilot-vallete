@@ -1,0 +1,24 @@
+# golangci-lint v2 configuration.
+# The CI workflow pins the golangci-lint version so this schema stays valid.
+version: "2"
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - misspell
+  settings:
+    misspell:
+      locale: US
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/sadeq-n-yazdi/sshpilot-vallete
