@@ -48,10 +48,15 @@ func AuthorizedKeyLineFrom(alg domain.Algorithm, blob []byte, comment string) (s
 		return "", ErrBadComment
 	}
 
+	marshaled := pub.Marshal()
 	var b strings.Builder
+	// Pre-size the buffer for "<alg> <base64(blob)>[ <comment>]\n" so the line is
+	// built without intermediate re-allocations. Marshal is called once and
+	// reused for both the size hint and the encoding.
+	b.Grow(len(alg) + 1 + base64.StdEncoding.EncodedLen(len(marshaled)) + 1 + len(comment) + 1)
 	b.WriteString(string(alg))
 	b.WriteByte(' ')
-	b.WriteString(base64.StdEncoding.EncodeToString(pub.Marshal()))
+	b.WriteString(base64.StdEncoding.EncodeToString(marshaled))
 	if comment != "" {
 		b.WriteByte(' ')
 		b.WriteString(comment)
