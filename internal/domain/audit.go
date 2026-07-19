@@ -1,0 +1,113 @@
+package domain
+
+import "time"
+
+// AuditRecordID is the opaque, non-guessable identifier for an AuditRecord.
+type AuditRecordID string
+
+// ActorType identifies the kind of actor that performed an audited action.
+type ActorType string
+
+// Actor types.
+const (
+	ActorTypeOwner         ActorType = "owner"
+	ActorTypeAdministrator ActorType = "administrator"
+	ActorTypeSystem        ActorType = "system"
+)
+
+// IsValid reports whether t is a known ActorType.
+func (t ActorType) IsValid() bool {
+	switch t {
+	case ActorTypeOwner, ActorTypeAdministrator, ActorTypeSystem:
+		return true
+	default:
+		return false
+	}
+}
+
+// TargetType identifies the kind of entity an audited action affected.
+type TargetType string
+
+// Target types.
+const (
+	TargetTypeOwner             TargetType = "owner"
+	TargetTypeHandle            TargetType = "handle"
+	TargetTypeDevice            TargetType = "device"
+	TargetTypePublicKey         TargetType = "public_key"
+	TargetTypeKeySet            TargetType = "key_set"
+	TargetTypeAccessKey         TargetType = "access_key"
+	TargetTypeRefreshCredential TargetType = "refresh_credential"
+	TargetTypeBlocklistEntry    TargetType = "blocklist_entry"
+	TargetTypeAllowlistEntry    TargetType = "allowlist_entry"
+)
+
+// IsValid reports whether t is a known TargetType.
+func (t TargetType) IsValid() bool {
+	switch t {
+	case TargetTypeOwner, TargetTypeHandle, TargetTypeDevice, TargetTypePublicKey,
+		TargetTypeKeySet, TargetTypeAccessKey, TargetTypeRefreshCredential,
+		TargetTypeBlocklistEntry, TargetTypeAllowlistEntry:
+		return true
+	default:
+		return false
+	}
+}
+
+// AuditAction names an audited action. The consts below are a representative
+// starter set, not an exhaustive enumeration.
+type AuditAction string
+
+// Representative audit actions.
+const (
+	AuditActionOwnerCreated AuditAction = "owner.created"
+	AuditActionOwnerDeleted AuditAction = "owner.deleted"
+
+	AuditActionHandleRegistered AuditAction = "handle.registered"
+	AuditActionHandleRenamed    AuditAction = "handle.renamed"
+
+	AuditActionDeviceRegistered AuditAction = "device.registered"
+	AuditActionDeviceRevoked    AuditAction = "device.revoked"
+
+	AuditActionKeyAdded   AuditAction = "key.added"
+	AuditActionKeyRevoked AuditAction = "key.revoked"
+
+	AuditActionKeySetCreated           AuditAction = "key_set.created"
+	AuditActionKeySetRenamed           AuditAction = "key_set.renamed"
+	AuditActionKeySetDeleted           AuditAction = "key_set.deleted"
+	AuditActionKeySetDefaultChanged    AuditAction = "key_set.default_changed"
+	AuditActionKeySetVisibilityChanged AuditAction = "key_set.visibility_changed"
+	AuditActionKeySetMemberAdded       AuditAction = "key_set.member_added"
+	AuditActionKeySetMemberRemoved     AuditAction = "key_set.member_removed"
+
+	AuditActionAccessKeyCreated AuditAction = "access_key.created"
+	AuditActionAccessKeyRotated AuditAction = "access_key.rotated"
+	AuditActionAccessKeyRevoked AuditAction = "access_key.revoked"
+
+	AuditActionCredentialIssued        AuditAction = "credential.issued"
+	AuditActionCredentialRotated       AuditAction = "credential.rotated"
+	AuditActionCredentialRevoked       AuditAction = "credential.revoked"
+	AuditActionCredentialReuseDetected AuditAction = "credential.reuse_detected"
+
+	AuditActionBlocklistEntryAdded   AuditAction = "blocklist.entry_added"
+	AuditActionBlocklistEntryRemoved AuditAction = "blocklist.entry_removed"
+
+	AuditActionAllowlistEntryAdded   AuditAction = "allowlist.entry_added"
+	AuditActionAllowlistEntryRemoved AuditAction = "allowlist.entry_removed"
+
+	AuditActionAuditPseudonymized AuditAction = "audit.pseudonymized"
+)
+
+// AuditRecord is an append-only record of an audited action. ActorID and
+// TargetID are plain strings because they are polymorphic across entity types
+// and must survive pseudonymization.
+type AuditRecord struct {
+	ID            AuditRecordID
+	ActorType     ActorType
+	ActorID       string
+	Action        AuditAction
+	TargetType    TargetType
+	TargetID      string
+	OccurredAt    time.Time
+	Metadata      map[string]string
+	Pseudonymized bool
+}
