@@ -1,9 +1,11 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -188,5 +190,59 @@ func TestNewHandlerToleratesNilLogger(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", rec.Code)
+	}
+}
+
+// TestReadyzLogsClientCancellationBelowWarn separates "this instance cannot
+// reach its database" from "the probe hung up". Both still answer 503 — the
+// instance genuinely did not confirm readiness — but only the former is an
+// operator-actionable fault. A load balancer with a tight probe timeout would
+// otherwise emit a steady stream of Warn lines and train readers to ignore the
+// message that signals a real outage.
+func TestReadyzLogsClientCancellationBelowWarn(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the client is gone before the ping is attempted
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	readyzHandler(errPinger{err: context.Canceled}, logger)(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: readiness was still not confirmed", rec.Code)
+	}
+
+	var entry struct {
+		Level string `json:"level"`
+		Msg   string `json:"msg"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry); err != nil {
+		t.Fatalf("decode log entry %q: %v", buf.String(), err)
+	}
+	if entry.Level == slog.LevelWarn.String() || entry.Level == slog.LevelError.String() {
+		t.Fatalf("client cancellation logged at %s; must not alert operators", entry.Level)
+	}
+	if entry.Msg == "readiness check failed" {
+		t.Fatal("client cancellation must not reuse the genuine-failure message")
+	}
+}
+
+// TestReadyzStillWarnsOnRealDependencyFailure guards the other direction: the
+// cancellation carve-out must not downgrade an actual database outage.
+func TestReadyzStillWarnsOnRealDependencyFailure(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	readyzHandler(errPinger{err: errors.New("connection refused")}, logger)(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+	if !strings.Contains(buf.String(), slog.LevelWarn.String()) {
+		t.Fatalf("real dependency failure must stay at Warn, got %s", buf.String())
 	}
 }

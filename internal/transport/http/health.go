@@ -73,7 +73,17 @@ func readyzHandler(p Pinger, logger *slog.Logger) http.HandlerFunc {
 		if err := p.PingContext(ctx); err != nil {
 			// The reason is logged, never returned: the client learns only
 			// that the instance is not ready.
-			logger.LogAttrs(r.Context(), slog.LevelWarn, "readiness check failed",
+			//
+			// A probe that hangs up mid-check is not a fault of this instance,
+			// so it must not be logged at the level operators alert on. Left at
+			// Warn, a load balancer with a tight probe timeout would emit a
+			// steady stream of false failures and train readers to ignore the
+			// message that signals a genuinely unreachable database.
+			level, msg := slog.LevelWarn, "readiness check failed"
+			if r.Context().Err() != nil {
+				level, msg = slog.LevelDebug, "readiness check canceled by client"
+			}
+			logger.LogAttrs(r.Context(), level, msg,
 				slog.String("request_id", RequestIDFromContext(r.Context())),
 				slog.String("error", err.Error()),
 			)

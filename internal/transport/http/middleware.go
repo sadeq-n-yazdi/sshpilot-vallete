@@ -141,8 +141,26 @@ func sanitizeLogPath(p string) string {
 	if len(p) > maxLoggedPathLen {
 		p = p[:maxLoggedPathLen]
 	}
+	// The common case is a clean path, so scan before allocating: every request
+	// reaches this function, and copying an untouched string is pure waste.
+	i := 0
+	for ; i < len(p); i++ {
+		if p[i] < 0x20 || p[i] == 0x7f {
+			break
+		}
+	}
+	if i == len(p) {
+		return p
+	}
+
+	// The scan is over bytes rather than runes deliberately. Every byte below
+	// 0x20 plus 0x7f is a control character in ASCII, and in well-formed UTF-8
+	// no continuation byte falls in that range, so a byte scan cannot corrupt a
+	// multi-byte sequence — while a rune scan would pay decoding cost on every
+	// request to identify the same characters that matter here (CR and LF, the
+	// log-injection vectors).
 	out := []byte(p)
-	for i := 0; i < len(out); i++ {
+	for ; i < len(out); i++ {
 		if out[i] < 0x20 || out[i] == 0x7f {
 			out[i] = '?'
 		}
@@ -161,10 +179,18 @@ func sanitizeLogPath(p string) string {
 //   - The client gets a generic body. Panic values and stack traces name
 //     internal paths, types, and sometimes argument values, so they go to the
 //     log (where they are needed) and never to the wire.
+//
+// Write tracking is self-contained rather than borrowed from loggingMiddleware's
+// statusRecorder. Depending on that type made the "has anything been sent yet"
+// answer conditional on middleware ordering: used on its own, or behind any
+// middleware that wraps the ResponseWriter further, the type assertion failed
+// and recovery would then write a 500 over a response whose status line was
+// already on the wire, corrupting it. Tracking its own writer makes the
+// invariant hold however this middleware is composed.
 func recoveryMiddleware(logger *slog.Logger) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			rec, ok := w.(*statusRecorder)
+			tw := &writeTrackingWriter{ResponseWriter: w}
 			defer func() {
 				p := recover()
 				if p == nil {
@@ -183,13 +209,36 @@ func recoveryMiddleware(logger *slog.Logger) Middleware {
 
 				// Only write a response if nothing has been sent yet; once the
 				// status line is out, the best we can do is end the response.
-				if ok && rec.written {
+				if tw.wroteHeader {
 					return
 				}
-				writeJSON(w, http.StatusInternalServerError, statusResponse{Status: "error"})
+				writeJSON(tw, http.StatusInternalServerError, statusResponse{Status: "error"})
 			}()
 
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(tw, r)
 		})
 	}
 }
+
+// writeTrackingWriter records whether anything has reached the client yet.
+//
+// Unwrap is implemented so that http.ResponseController and any interface
+// probing further up the chain still reach the underlying writer: a wrapper
+// that hides Flush or Hijack from the handler beneath it would break streaming
+// and connection upgrades.
+type writeTrackingWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *writeTrackingWriter) WriteHeader(code int) {
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *writeTrackingWriter) Write(b []byte) (int, error) {
+	w.wroteHeader = true
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *writeTrackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
