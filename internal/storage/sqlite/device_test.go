@@ -357,3 +357,23 @@ func TestDeviceErrorLeaksNoSQL(t *testing.T) {
 		}
 	}
 }
+
+// TestRepoCreateRejectsNil verifies that the Create/Register entry points guard
+// against a nil entity: a nil pointer is a caller programming error and must be
+// reported as domain.ErrInvalidInput, never dereferenced into a panic.
+func TestRepoCreateRejectsNil(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	repos := s.Repos()
+
+	if err := repos.Devices.Create(ctx, nil); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("Devices.Create(nil) = %v, want ErrInvalidInput", err)
+	}
+	if err := repos.Owners.Create(ctx, nil); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("Owners.Create(nil) = %v, want ErrInvalidInput", err)
+	}
+	if err := repos.Handles.Register(ctx, nil); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("Handles.Register(nil) = %v, want ErrInvalidInput", err)
+	}
+}
