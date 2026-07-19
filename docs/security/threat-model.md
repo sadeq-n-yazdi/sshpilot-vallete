@@ -11,7 +11,9 @@
   into host files (ADR-0003), so its exact bytes are security-critical.
 - **Owner account / management access.** Whoever can mutate an owner's keys
   controls access to that owner's hosts.
-- **Audit trail** (proposed, ADR-0007).
+- **Audit trail** (ADR-0007).
+- **Owner isolation.** In a multi-tenant instance, one owner reading/altering
+  another's data is a critical breach (ADR-0004, 0008).
 
 ## Explicitly NOT assets
 
@@ -23,23 +25,28 @@
 
 1. **Untrusted key submission → backend.** Any submitted key is hostile input.
    Mitigation: strict canonical parsing, forbid options, reject weak algorithms
-   (ADR-0006, proposed).
-2. **Backend → consuming server (public HTTP).** Output must be reconstructed,
-   never echoed. Consuming servers must fetch over TLS.
-3. **Management client → backend.** Requires authN/authZ (OPEN QUESTION) and
-   strict owner-scoping (ADR-0004).
+   (ADR-0006).
+2. **Backend → consuming server (HTTP).** Output must be reconstructed, never
+   echoed. Consuming servers must fetch over TLS. Handle may be public or
+   access-key protected per owner (ADR-0010).
+3. **Management client → backend.** Authenticated via pluggable providers
+   (passkeys/OIDC/API-tokens, ADR-0009) and strictly owner-scoped (ADR-0004).
+4. **Owner ↔ owner (multi-tenant).** Isolation enforced at the repository layer
+   (ADR-0004, 0008).
 
 ## Top risks (current view)
 
 | Risk | Vector | Mitigation | Status |
 | --- | --- | --- | --- |
-| `authorized_keys` directive injection | Option-bearing "public key" is stored and re-emitted | Canonical storage, forbid options | Proposed (0006) |
-| Unauthorized key addition | Weak/absent management authN | Owner-scoped authZ; auth mechanism TBD | Open question |
-| Weak-key acceptance | DSA / short RSA | Algorithm + size floors at ingest | Proposed (0006) |
+| `authorized_keys` directive injection | Option-bearing "public key" is stored and re-emitted | Canonical storage, forbid options | Confirmed (0006) |
+| Unauthorized key addition | Weak/absent management authN | Pluggable authN + owner-scoped authZ | Confirmed (0009, 0004); token model TBD |
+| Weak-key acceptance | DSA / short RSA | Algorithm + size floors at ingest | Confirmed (0006) |
+| Cross-tenant access | Missing owner scoping | Owner-scoping enforced in repository | Confirmed (0004, 0008) |
 | Duplicate/clobbered host files | Non-idempotent `>>` append | Managed-block helper / AuthorizedKeysCommand | Open question |
-| Handle enumeration / metadata leak | Public unauthenticated endpoint | Endpoint exposure policy, rate limiting | Open question |
+| Handle enumeration / metadata leak | Public endpoint | Per-owner visibility + access key; rate limiting | Partly (0010); limiting TBD |
+| Access-key leakage (protected handles) | Key in URL/logs/caches | Presentation mechanism choice | Open question |
 | MITM on key fetch | Plaintext HTTP | Require TLS; document HTTPS-only | To document |
-| Tampering without trace | No audit | Append-only audit log | Proposed (0007) |
+| Tampering without trace | No audit | Append-only audit log | Confirmed (0007) |
 
 ## Deferred defense-in-depth
 

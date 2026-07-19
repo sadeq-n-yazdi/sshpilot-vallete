@@ -1,6 +1,6 @@
 # 0006. Canonical key storage; forbid authorized_keys options
 
-- **Status:** Proposed (security recommendation — NOT yet confirmed)
+- **Status:** Accepted (confirmed by owner)
 - **Date:** 2026-07-19
 
 ## Context
@@ -13,7 +13,7 @@ byte the publisher emits is security-relevant. If the service stored and
 re-emitted whatever a user pasted, a submitted "public key" could smuggle a
 forced command or restriction into every consuming host.
 
-## Decision (proposed)
+## Decision
 
 Never store or re-emit raw `authorized_keys` lines. On ingest:
 
@@ -35,5 +35,7 @@ Never store or re-emit raw `authorized_keys` lines. On ingest:
 
 ## Status note
 
-This is the security crux of the product. Recommended strongly, but marked
-Proposed until the owner confirms the options policy and algorithm/size floors.
+This is the security crux of the product. Confirmed by the owner: options are
+forbidden and weak keys (DSA, RSA < 3072) are rejected. The exact accepted
+algorithm set and RSA floor are implementation constants captured here and may
+be tightened, never loosened, without a superseding ADR.

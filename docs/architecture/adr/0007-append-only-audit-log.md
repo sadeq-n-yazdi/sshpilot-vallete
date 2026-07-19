@@ -1,6 +1,6 @@
 # 0007. Append-only audit log
 
-- **Status:** Proposed (security recommendation — NOT yet confirmed)
+- **Status:** Accepted (confirmed by owner)
 - **Date:** 2026-07-19
 
 ## Context
@@ -9,7 +9,7 @@ Every change to which keys can access an owner's hosts is security-relevant.
 Reconstructing "who added/removed which key, when" after the fact is impossible
 without a record, and bolting one on later is invasive.
 
-## Decision (proposed)
+## Decision
 
 Model an **append-only** audit log as a first-class domain concept. Record
 access-affecting events (device registered/revoked, key added/revoked, handle
