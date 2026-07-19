@@ -8,7 +8,7 @@ hooks:
 
 # Build all packages.
 build:
-	go build ./...
+	go build -ldflags "-s -w" ./...
 
 # Run the full test suite with the race detector and coverage profiling.
 test:
