@@ -72,7 +72,13 @@ func routingTerms() []string {
 	return []string{
 		// The service's own names. Anyone registering these is claiming to be
 		// the operator, and no route check would catch it.
-		"sshpilot", "vallet", "vallete", "sshpilot-vallet",
+		// Both spellings of the compound are reserved. The module is
+		// "sshpilot-vallete" and that is the one that matters, but "vallet" is
+		// the spelling a user reaches for, so a handle spelled either way reads
+		// as the operator. The two are separate entries because they have
+		// separate skeletons: the fold removes the hyphen, not the letter.
+		"sshpilot", "vallet", "vallete",
+		"sshpilot-vallete", "sshpilot-vallet",
 
 		// Reserved by convention or by protocol, and expected at the apex by
 		// tooling rather than chosen by a user.
