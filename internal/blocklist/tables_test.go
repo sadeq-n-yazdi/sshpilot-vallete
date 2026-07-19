@@ -178,7 +178,11 @@ func TestMathAlphanumericBlockIsFullyReduced(t *testing.T) {
 		}
 	}
 
-	// A miscount here means the walk silently stopped covering the block.
+	// A miscount here means the walk silently stopped covering the block, or
+	// that a Go release brought a newer Unicode version that assigns codepoints
+	// this block did not have. Both warrant a look rather than a number bump:
+	// newly assigned runes in this block are exactly the case that reopens the
+	// gap. Treat a failure here as "re-audit the block", not as flakiness.
 	if want := 996; assigned != want {
 		t.Errorf("walked %d assigned runes in the block, want %d", assigned, want)
 	}
