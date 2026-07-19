@@ -38,8 +38,8 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // Repos returns repositories whose operations each auto-commit against the
-// underlying *sql.DB. Only Owners, Handles, Devices, and PublicKeys are
-// populated in this slice; the remaining fields stay nil and are filled by
+// underlying *sql.DB. Only Owners, Handles, Devices, PublicKeys, and KeySets
+// are populated in this slice; the remaining fields stay nil and are filled by
 // later slices.
 func (s *Store) Repos() repository.Repos {
 	return reposFor(s.db)
@@ -85,13 +85,14 @@ func (s *Store) WithTx(ctx context.Context, fn func(ctx context.Context, r repos
 
 // reposFor builds a repository.Repos backed by the given execer, which is
 // either the *sql.DB (auto-commit) or an in-flight *sql.Tx. Only the
-// repositories implemented so far — Owners, Handles, Devices, and PublicKeys —
-// are populated; the rest are left nil for later slices to fill.
+// repositories implemented so far — Owners, Handles, Devices, PublicKeys, and
+// KeySets — are populated; the rest are left nil for later slices to fill.
 func reposFor(e execer) repository.Repos {
 	return repository.Repos{
 		Owners:     &ownerRepo{e: e},
 		Handles:    &handleRepo{e: e},
 		Devices:    &deviceRepo{e: e},
 		PublicKeys: &publicKeyRepo{e: e},
+		KeySets:    &keySetRepo{e: e},
 	}
 }
