@@ -64,7 +64,10 @@ func ParseAuthorizedKeys(raw []byte) ([]ParsedKey, []LineError) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		if t := bytes.TrimLeft(line, " \t"); t[0] == '#' {
+		// The blank-line guard above already guarantees a non-space byte, so t
+		// cannot be empty here; the len(t) > 0 guard is defensive against future
+		// refactoring and mirrors the single-line check in keys.go.
+		if t := bytes.TrimLeft(line, " \t"); len(t) > 0 && t[0] == '#' {
 			continue
 		}
 		// Enforce the per-line size cap here too: MaxFileBytes bounds the whole
