@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/version"
@@ -74,7 +75,12 @@ func run(args []string, stderr io.Writer) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	srv, err := httpserver.New(cfg, logger, db)
+	publisher, err := publish.New(sqlite.NewStore(db).Repos())
+	if err != nil {
+		return err
+	}
+
+	srv, err := httpserver.New(cfg, logger, db, publisher)
 	if err != nil {
 		return err
 	}

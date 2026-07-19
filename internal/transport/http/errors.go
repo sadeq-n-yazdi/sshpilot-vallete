@@ -26,4 +26,11 @@ var (
 
 	// ErrNilPinger is returned when a readiness pinger is required but absent.
 	ErrNilPinger = errors.New("httpserver: nil readiness pinger")
+
+	// ErrNilPublisher is returned when the publish service is absent. Unlike
+	// the pinger, which may legitimately be nil on a database-less server, the
+	// publisher is the reason this process exists: New rejects a nil one at
+	// startup so a misconfigured deployment fails loudly instead of serving
+	// 500s that look like an outage, or 404s that look like empty accounts.
+	ErrNilPublisher = errors.New("httpserver: nil publish service")
 )

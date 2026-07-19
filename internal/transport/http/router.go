@@ -14,8 +14,8 @@ import (
 // panicking — losing logs must never be the reason a request fails.
 //
 // Routing uses the stdlib method-aware ServeMux patterns (Go 1.22+); no
-// third-party router is pulled in for two health routes.
-func NewHandler(logger *slog.Logger, pinger Pinger) http.Handler {
+// third-party router is pulled in for a handful of routes.
+func NewHandler(logger *slog.Logger, pinger Pinger, publisher Publisher) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
@@ -25,6 +25,18 @@ func NewHandler(logger *slog.Logger, pinger Pinger) http.Handler {
 	// by the mux itself; no handler-level method checking is needed.
 	mux.Handle("GET /healthz", healthzHandler())
 	mux.Handle("GET /readyz", readyzHandler(pinger, logger))
+
+	// The publish routes. A "GET" pattern also matches HEAD, so one
+	// registration serves both methods and they cannot drift apart.
+	//
+	// The wildcard patterns are registered alongside the literal health paths
+	// without conflict: ServeMux prefers the more specific pattern, so
+	// /healthz keeps reaching its own handler and is never treated as a
+	// handle. Both publish routes share one handler; the absence of the {set}
+	// segment is what selects the owner's default set.
+	pub := publishHandler(publisher, logger)
+	mux.Handle("GET /{handle}", pub)
+	mux.Handle("GET /{handle}/{set}", pub)
 
 	// Outermost first: every request gets an ID, then is logged, then is
 	// protected from panics.
