@@ -88,25 +88,18 @@ func (a *Authenticator) Authenticate(ctx context.Context, providerID ProviderID,
 	return a.resolve(ctx, identity)
 }
 
-// Resolve maps an already-authenticated identity to its owner without running a
-// provider. It exists for callers that obtained an Identity from a prior
-// authentication — a session or token exchange, in later tracks — and must
-// re-establish the owner.
-//
-// It performs the identical link and owner checks as Authenticate and returns
-// the identical ErrAuthFailed. The caller is responsible for the identity being
-// genuinely authenticated; this method verifies the mapping, not the
-// credential.
-func (a *Authenticator) Resolve(ctx context.Context, identity Identity) (domain.OwnerID, error) {
-	if err := identity.Validate(); err != nil {
-		return "", ErrAuthFailed
-	}
-	return a.resolve(ctx, identity)
-}
-
 // resolve is the single mapping path: (provider, principal) -> OwnerID, with
-// every check that gates it. Both entry points funnel through here so the
-// checks cannot drift apart between them.
+// every check that gates it.
+//
+// It is deliberately unexported. An exported entry point that maps an Identity
+// to an owner *without running a provider* is an authentication bypass wearing
+// a helpful name: its safety would rest entirely on the caller having
+// authenticated the Identity by some other means, which is a convention no
+// signature can enforce, and it would look like the convenient version of
+// Authenticate to anyone in a hurry. When a later track needs to re-establish
+// an owner from a prior authentication (a session or token exchange), it should
+// export an entry point whose signature makes that precondition explicit,
+// rather than this one being left lying around in advance.
 func (a *Authenticator) resolve(ctx context.Context, identity Identity) (domain.OwnerID, error) {
 	// Both halves of the key are passed, always together. Looking up by
 	// principal alone would let a principal issued by one provider resolve to an

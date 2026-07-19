@@ -24,6 +24,11 @@ type fakeProvider struct {
 	id       auth.ProviderID
 	identity auth.Identity
 	err      error
+	// mu guards gotCred only. The concurrency test drives Authenticate from
+	// many goroutines through one shared provider, so without this the race
+	// detector would report a race in the test double rather than in the code
+	// under test. The other fields are written before the fake is shared.
+	mu sync.Mutex
 	// gotCred records the credential passed in, so a test can confirm the
 	// credential reaches the provider unaltered.
 	gotCred *auth.Credential
@@ -33,7 +38,9 @@ func (p *fakeProvider) ID() auth.ProviderID { return p.id }
 
 func (p *fakeProvider) Authenticate(_ context.Context, cred auth.Credential) (auth.Identity, error) {
 	c := cred
+	p.mu.Lock()
 	p.gotCred = &c
+	p.mu.Unlock()
 	if p.err != nil {
 		return auth.Identity{}, p.err
 	}

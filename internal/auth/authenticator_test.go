@@ -105,15 +105,26 @@ func TestAuthenticateHappyPath(t *testing.T) {
 	}
 }
 
-func TestResolveHappyPath(t *testing.T) {
-	a, _, _, _ := newFixture(t)
+// TestAuthenticateIsRepeatable confirms authentication is a pure read: the same
+// credential resolves to the same owner every time, and nothing in the path
+// consumes or mutates state along the way. A single-shot success would point at
+// hidden state that a second request would trip over.
+func TestAuthenticateIsRepeatable(t *testing.T) {
+	a, _, links, _ := newFixture(t)
 
-	got, err := a.Resolve(context.Background(), auth.Identity{Provider: testProvider, Principal: testSubject})
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+	for i := range 3 {
+		got, err := a.Authenticate(context.Background(), testProvider, testCred())
+		if err != nil {
+			t.Fatalf("Authenticate #%d: %v", i, err)
+		}
+		if got != testOwner {
+			t.Fatalf("Authenticate #%d: owner = %q, want %q", i, got, testOwner)
+		}
 	}
-	if got != testOwner {
-		t.Fatalf("owner = %q, want %q", got, testOwner)
+	// Each call must hit the store; a memoized owner would be a cache on the
+	// authentication path that no revocation could invalidate.
+	if links.calls != 3 {
+		t.Fatalf("link store calls = %d, want 3", links.calls)
 	}
 }
 
@@ -338,9 +349,16 @@ func TestAuthenticateFailuresAreIndistinguishable(t *testing.T) {
 	}
 }
 
-// TestResolveFailsClosedOnMalformedIdentity covers Resolve's own gate: an
-// identity that never came from a provider must not reach the store.
-func TestResolveFailsClosedOnMalformedIdentity(t *testing.T) {
+// TestMalformedProviderIdentityNeverReachesTheStore pins where the denial
+// happens. A provider that returns a malformed Identity is rejected at the gate,
+// before the link store is queried at all — so a provider cannot use garbage
+// return values to drive lookups, and a malformed value can never be the key of
+// a query whose result something downstream might trust.
+//
+// Every case here arrives through a provider, because a provider is the only
+// way an Identity enters this package: there is deliberately no exported entry
+// point that takes an Identity directly.
+func TestMalformedProviderIdentityNeverReachesTheStore(t *testing.T) {
 	tests := []struct {
 		name string
 		id   auth.Identity
@@ -349,11 +367,14 @@ func TestResolveFailsClosedOnMalformedIdentity(t *testing.T) {
 		{name: "empty provider", id: auth.Identity{Principal: testSubject}},
 		{name: "empty principal", id: auth.Identity{Provider: testProvider}},
 		{name: "provider with separator", id: auth.Identity{Provider: "api:token", Principal: testSubject}},
+		{name: "principal with NUL", id: auth.Identity{Provider: testProvider, Principal: "dev\x00ice"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a, _, links, _ := newFixture(t)
-			owner, err := a.Resolve(context.Background(), tt.id)
+			a, p, links, _ := newFixture(t)
+			p.identity = tt.id
+
+			owner, err := a.Authenticate(context.Background(), testProvider, testCred())
 			if owner != "" {
 				t.Fatalf("owner = %q, want empty", owner)
 			}

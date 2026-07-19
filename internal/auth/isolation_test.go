@@ -200,9 +200,9 @@ func TestAuthenticateIsConcurrencySafe(t *testing.T) {
 	done := make(chan error, goroutines)
 	for range goroutines {
 		go func() {
-			// Resolve touches only the registry-free path, so both the
-			// Registry map and the Authenticator fields are read concurrently.
-			owner, err := a.Resolve(context.Background(), auth.Identity{Provider: testProvider, Principal: testSubject})
+			// Authenticate reads the Registry map and every Authenticator
+			// field, so the full shared-state surface is exercised at once.
+			owner, err := a.Authenticate(context.Background(), testProvider, testCred())
 			if err == nil && owner != testOwner {
 				err = errors.New("wrong owner")
 			}
@@ -211,7 +211,7 @@ func TestAuthenticateIsConcurrencySafe(t *testing.T) {
 	}
 	for range goroutines {
 		if err := <-done; err != nil {
-			t.Fatalf("concurrent Resolve: %v", err)
+			t.Fatalf("concurrent Authenticate: %v", err)
 		}
 	}
 }
