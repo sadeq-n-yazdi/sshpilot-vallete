@@ -1,12 +1,14 @@
 package auth_test
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -321,5 +323,70 @@ func TestAccessTokenIsRedacted(t *testing.T) {
 		if strings.Contains(r, secret) {
 			t.Fatalf("rendering %q leaked the access token", r)
 		}
+	}
+}
+
+// TestSignerRedactsItsKey proves the signing key cannot escape through any
+// formatting, marshaling, or logging path.
+//
+// The key is unexported, which protects nothing: fmt prints unexported fields,
+// so a signer caught in a "%+v" of an enclosing config struct, or passed to
+// slog, would print the one secret that forges every access token this service
+// will ever issue. The needles cover the three shapes the key would take --
+// raw string, Go byte-slice literal, and the base64 a JSON handler emits.
+func TestSignerRedactsItsKey(t *testing.T) {
+	key := signingKey(1)
+	signer := newSigner(t, 1)
+
+	needles := []string{
+		string(key),
+		fmt.Sprintf("%d", key),
+		base64.StdEncoding.EncodeToString(key),
+		tokenEnc.EncodeToString(key),
+	}
+
+	var textLog, jsonLog bytes.Buffer
+	slog.New(slog.NewTextHandler(&textLog, nil)).Info("cfg", "signer", signer)
+	slog.New(slog.NewJSONHandler(&jsonLog, nil)).Info("cfg", "signer", *signer)
+
+	blob, err := json.Marshal(signer)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	text, err := signer.MarshalText()
+	if err != nil {
+		t.Fatalf("MarshalText: %v", err)
+	}
+
+	renderings := map[string]string{
+		"String":     signer.String(),
+		"GoString":   signer.GoString(),
+		"%v pointer": fmt.Sprintf("%v", signer),
+		"%v value":   fmt.Sprintf("%v", *signer),
+		"%s":         fmt.Sprintf("%s", signer),
+		"%+v":        fmt.Sprintf("%+v", *signer),
+		"%#v":        fmt.Sprintf("%#v", *signer),
+		"nested ptr": fmt.Sprintf("%+v", struct{ S *auth.AccessTokenSigner }{signer}),
+		"nested val": fmt.Sprintf("%+v", struct{ S auth.AccessTokenSigner }{*signer}),
+		"json":       string(blob),
+		"text":       string(text),
+		"slog text":  textLog.String(),
+		"slog json":  jsonLog.String(),
+		"slog value": signer.LogValue().String(),
+	}
+	for name, r := range renderings {
+		for _, needle := range needles {
+			if strings.Contains(r, needle) {
+				t.Fatalf("%s leaked the signing key: %s", name, r)
+			}
+		}
+		if !strings.Contains(r, "[REDACTED]") {
+			t.Fatalf("%s does not show the redaction marker: %s", name, r)
+		}
+	}
+
+	// Redacting must not have broken signing.
+	if _, err := signer.Issue(sampleAccess(baseTime)); err != nil {
+		t.Fatalf("Issue after redaction: %v", err)
 	}
 }

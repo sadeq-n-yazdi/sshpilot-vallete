@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -81,6 +82,47 @@ func NewAccessTokenSigner(key []byte) (*AccessTokenSigner, error) {
 	copy(k, key)
 	return &AccessTokenSigner{key: k}, nil
 }
+
+// redacted is the single rendering used by every formatting path on
+// AccessTokenSigner.
+//
+// The key is an unexported field, which is no protection at all: fmt prints
+// unexported fields, so a signer caught in a "%+v" of some enclosing config
+// struct, or handed to slog as an attribute, would print the one secret in this
+// package that forges every access token ever issued. That is a worse leak than
+// any single token, so the type redacts itself the same way secrets.Redacted,
+// Credential and Issued do.
+//
+// The methods take value receivers so that both a signer and a *signer render
+// redacted; a pointer's method set includes its value methods, but not the
+// reverse.
+func (s AccessTokenSigner) redacted() string { return "auth.AccessTokenSigner{key:[REDACTED]}" }
+
+// String implements fmt.Stringer.
+func (s AccessTokenSigner) String() string { return s.redacted() }
+
+// GoString implements fmt.GoStringer so %#v also redacts.
+func (s AccessTokenSigner) GoString() string { return s.redacted() }
+
+// Format implements fmt.Formatter. It takes precedence over String and
+// GoString for every verb, which is what catches the realistic leak path: a
+// signer printed as a field of a surrounding struct with %v or %+v.
+func (s AccessTokenSigner) Format(f fmt.State, _ rune) {
+	_, _ = f.Write([]byte(s.redacted()))
+}
+
+// MarshalJSON implements json.Marshaler, emitting a quoted redacted string so
+// the output stays valid JSON.
+func (s AccessTokenSigner) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + s.redacted() + `"`), nil
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AccessTokenSigner) MarshalText() ([]byte, error) { return []byte(s.redacted()), nil }
+
+// LogValue implements slog.LogValuer, which slog resolves ahead of the
+// marshalers above.
+func (s AccessTokenSigner) LogValue() slog.Value { return slog.StringValue(s.redacted()) }
 
 // accessClaims is the wire form of an access token payload. The field names are
 // short because they are copied into every request's Authorization header.
