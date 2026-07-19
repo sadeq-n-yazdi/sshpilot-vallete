@@ -40,6 +40,8 @@ consequences. They are the project's decision memory.
 | [0024](0024-audit-retention-and-erasure.md) | Audit retention and erasure | Accepted |
 | [0025](0025-observability-and-telemetry.md) | Observability and telemetry | Accepted |
 | [0026](0026-handle-lifecycle.md) | Handle lifecycle: uniqueness, rename, quarantine | Accepted |
+| [0027](0027-supply-chain-and-build-security.md) | Supply-chain and build security | Accepted |
+| [0028](0028-migrations-and-backup.md) | Schema migrations and backup | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.

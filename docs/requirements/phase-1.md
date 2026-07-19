@@ -76,6 +76,8 @@ CLI for managing keys.
 | 30 | **Audit retention/erasure**: append-only + configurable retention purge; **pseudonymize** owner data on deletion/erasure while keeping the structural record. | 0024 |
 | 31 | **Observability**: OpenTelemetry (OTLP) core + Prometheus `/metrics`; supports Grafana/New Relic/Datadog/etc. by config; `/healthz`+`/readyz` (readiness reflects DB & cert); `/metrics` exposure configurable; no secrets/PII in telemetry. | 0025 |
 | 32 | **Handle lifecycle**: globally unique; **rename allowed with quarantine** (old handle held, never serves another owner's keys — 404/410). | 0026 |
+| 33 | **Supply chain**: pinned deps + CI vuln scanning + SBOM + signed/reproducible artifacts & images (SLSA-style provenance). | 0027 |
+| 34 | **Migrations/backup**: embedded, versioned, dual-engine migrations; **every migration has mandatory forward + reverse plans** and **declared dependencies verified before apply**; auto-apply by default with explicit-command toggle; fail-closed on schema mismatch; per-store backup/restore documented. | 0028 |
 
 ## 4. Phase-1 scope (as described so far)
 
@@ -238,6 +240,12 @@ Still open:
 - 2026-07-19 (gaps: observability, handle lifecycle) — OTLP + Prometheus
   telemetry supporting Grafana/New Relic/Datadog/etc. (ADR-0025, #31); globally
   unique handles with rename-and-quarantine to prevent hijack (ADR-0026, #32).
+- 2026-07-19 (gaps: supply chain, migrations) — Comprehensive supply-chain
+  security (pinned deps, scanning, SBOM, signed/reproducible artifacts;
+  ADR-0027, #33); embedded dual-engine versioned migrations with configurable
+  apply and documented backup/restore (ADR-0028, #34).
+- 2026-07-19 (migrations refinement) — Mandatory reverse (down) plan for every
+  migration and dependency/precondition checking before apply (ADR-0028, #34).
 - 2026-07-19 (feature: reserved identifiers) — System-wide blocklist for handles
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system
