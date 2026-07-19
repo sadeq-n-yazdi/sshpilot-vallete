@@ -33,7 +33,7 @@ const shutdownGrace = 15 * time.Second
 // main stays deliberately thin: it only translates run's error into an exit
 // code, so all startup logic remains ordinary testable Go.
 func main() {
-	if err := run(os.Args[1:], os.Stderr); err != nil {
+	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "valletd: %v\n", err)
 		os.Exit(1)
 	}
@@ -46,7 +46,14 @@ func main() {
 // listener binds, and the server is constructed (which is where TLS policy is
 // enforced) before a single connection is accepted. Any failure returns an
 // error and the process exits non-zero rather than serving degraded.
-func run(args []string, stderr io.Writer) error {
+func run(args []string, stdout, stderr io.Writer) error {
+	// Subcommands are dispatched before flag parsing so their own flag sets own
+	// their arguments. Only a leading bare word is treated as a subcommand, so
+	// the flags-only invocation that serves traffic is unchanged.
+	if len(args) > 0 && args[0] == bootstrapOwnerCmd {
+		return runBootstrapOwner(args[1:], stdout, stderr)
+	}
+
 	fs := flag.NewFlagSet("valletd", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "path to the configuration file (env and defaults are used when empty)")
