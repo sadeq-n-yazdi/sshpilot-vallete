@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
@@ -26,6 +27,11 @@ var _ repository.OwnerRepository = (*ownerRepo)(nil)
 // Create persists a fully populated Owner exactly as given. A duplicate primary
 // key maps to domain.ErrConflict.
 func (r *ownerRepo) Create(ctx context.Context, o *domain.Owner) error {
+	// A nil entity is a caller programming error, not a storage fault; reject it
+	// as invalid input rather than dereferencing it into a panic.
+	if o == nil {
+		return fmt.Errorf("%s: nil owner: %w", errPrefix, domain.ErrInvalidInput)
+	}
 	const q = `INSERT INTO owners (id, status, created_at, updated_at, deleted_at)
 VALUES (?, ?, ?, ?, ?)`
 	_, err := r.e.ExecContext(ctx, q,

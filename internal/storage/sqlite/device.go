@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
@@ -26,6 +27,11 @@ var _ repository.DeviceRepository = (*deviceRepo)(nil)
 // Create persists a fully populated Device exactly as given. A duplicate
 // primary key maps to domain.ErrConflict.
 func (r *deviceRepo) Create(ctx context.Context, d *domain.Device) error {
+	// A nil entity is a caller programming error, not a storage fault; reject it
+	// as invalid input rather than dereferencing it into a panic.
+	if d == nil {
+		return fmt.Errorf("%s: nil device: %w", errPrefix, domain.ErrInvalidInput)
+	}
 	const q = `INSERT INTO devices (id, owner_id, name, status, created_at, updated_at, revoked_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)`
 	_, err := r.e.ExecContext(ctx, q,

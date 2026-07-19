@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
@@ -27,6 +28,11 @@ var _ repository.HandleRepository = (*handleRepo)(nil)
 // Register persists a new handle name-claim exactly as given. The global
 // UNIQUE index on name maps a clash to domain.ErrConflict.
 func (r *handleRepo) Register(ctx context.Context, h *domain.Handle) error {
+	// A nil entity is a caller programming error, not a storage fault; reject it
+	// as invalid input rather than dereferencing it into a panic.
+	if h == nil {
+		return fmt.Errorf("%s: nil handle: %w", errPrefix, domain.ErrInvalidInput)
+	}
 	const q = `INSERT INTO handles (id, owner_id, name, state, quarantine_until,
 flagged_for_review, quarantine_on_release, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
