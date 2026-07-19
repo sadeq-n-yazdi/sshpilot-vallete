@@ -135,7 +135,16 @@ func NewEmitter(sink repository.AuditAppender, opts ...Option) (*Emitter, error)
 		return nil, fmt.Errorf("audit: nil appender: %w", domain.ErrInvalidInput)
 	}
 	e := &Emitter{sink: sink, now: time.Now, newID: newRecordID}
-	for _, opt := range opts {
+	for i, opt := range opts {
+		// A nil option is rejected rather than skipped. Skipping it would
+		// silently drop whatever the caller meant to configure -- a substituted
+		// clock, say -- and leave an Emitter that looks configured and is not.
+		// It is the same class of caller error as a nil sink above and gets the
+		// same answer, for the same reason: the worst moment to discover the
+		// audit log is misconfigured is the first event it fails to record.
+		if opt == nil {
+			return nil, fmt.Errorf("audit: nil option at index %d: %w", i, domain.ErrInvalidInput)
+		}
 		opt(e)
 	}
 	return e, nil

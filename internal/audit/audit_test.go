@@ -160,6 +160,40 @@ func TestNewEmitterIgnoresNilOptions(t *testing.T) {
 	}
 }
 
+// TestNewEmitterRejectsANilOption covers the case the test above does not:
+// WithClock(nil) is a non-nil Option carrying a nil value, whereas a nil Option
+// is a nil func that would panic when applied.
+//
+// It is rejected rather than skipped. Skipping would silently discard whatever
+// the caller meant to configure and hand back an Emitter that looks configured
+// and is not -- the failure would surface as a missing or mis-stamped audit
+// record long after the call that caused it.
+func TestNewEmitterRejectsANilOption(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts []Option
+	}{
+		{name: "only a nil option", opts: []Option{nil}},
+		{name: "nil after a valid option", opts: []Option{WithClock(nil), nil}},
+		{name: "nil before a valid option", opts: []Option{nil, WithClock(nil)}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			e, err := NewEmitter(&fakeSink{}, tc.opts...)
+			if !errors.Is(err, domain.ErrInvalidInput) {
+				t.Errorf("NewEmitter = %v, want ErrInvalidInput", err)
+			}
+			if e != nil {
+				t.Error("a rejected construction must not return an Emitter")
+			}
+		})
+	}
+}
+
 func TestEmitPropagatesSinkError(t *testing.T) {
 	t.Parallel()
 	sentinel := errors.New("sink down")
