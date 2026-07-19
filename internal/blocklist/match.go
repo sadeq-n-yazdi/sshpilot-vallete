@@ -1,0 +1,449 @@
+package blocklist
+
+import (
+	"fmt"
+	"strings"
+)
+
+// ListVersion identifies the revision of the default word lists in lists.go.
+//
+// It is deliberately SEPARATE from TableVersion. TableVersion says which
+// identifiers compare equal; ListVersion says which of those comparisons the
+// system refuses. The two change for different reasons and are reviewed by
+// different criteria -- a folding-table edit is a Unicode judgment, a word-list
+// edit is a policy judgment -- so collapsing them into one number would make an
+// audit unable to tell which kind of change it is looking at. Adding, removing
+// or re-categorizing a default term MUST bump this; touching the folding tables
+// MUST NOT.
+//
+// Version 1: initial routing, impersonation and offensive lists.
+const ListVersion = 1
+
+// MaxInputBytes bounds the input Check will consider. Anything longer is
+// refused without being examined.
+//
+// The bound exists for two reasons. The substring scan is O(terms x length),
+// and while this runs at create/rename rather than per request, an unbounded
+// input still lets an unauthenticated caller choose how much work the server
+// does. The second reason is that it costs nothing: handles and key-set names
+// are capped at 64 characters by their own validation, so 256 bytes is already
+// several times any legitimate identifier and no real user can reach it.
+//
+// Callers SHOULD apply their own length validation first, so that an
+// over-length identifier is reported as too long rather than as blocked.
+const MaxInputBytes = 256
+
+// MatchMode selects how a list's terms are compared against a skeleton.
+//
+// The zero value is invalid on purpose. A List that reaches NewMatcher without
+// an explicitly chosen mode is a programming error, and guessing a default for
+// it would silently pick a policy nobody reviewed.
+type MatchMode uint8
+
+const (
+	// MatchModeInvalid is the unusable zero value; see MatchMode.
+	MatchModeInvalid MatchMode = iota
+
+	// MatchWholeSkeleton blocks only when the entire skeleton equals a term.
+	//
+	// This is the "whole-token" mode ADR-0017 requires for routing and
+	// impersonation terms, and the reason it is spelled "whole skeleton" is the
+	// single most important thing to understand about this package.
+	//
+	// Skeleton deletes separators entirely. "a-d-m-i-n", "a.d.m.i.n" and
+	// "admin" all reduce to "admin", which means a skeleton has no interior
+	// token boundaries left to find: by construction it is exactly one token.
+	// "Whole-token match on the skeleton" and "whole-skeleton equality" are
+	// therefore the same operation, and equality is the honest way to write it.
+	//
+	// Rejected alternative -- tokenize the ORIGINAL input on its separators and
+	// skeletonize each token. It fails in both directions. Used alone it misses
+	// the evasion the package exists to stop: "a-d-m-i-n" tokenizes to five
+	// single letters, none of which is a term, so the padded spelling of the
+	// reserved word sails through. Layered on top of whole-skeleton equality as
+	// an extra candidate set it does catch that, but it then blocks every
+	// legitimate hyphenated handle containing a reserved word as one component
+	// -- "help-desk", "root-cause", "api-docs", "security-blog" -- and handles
+	// are drawn from a-z, 0-9 and hyphen, so multi-component names are the
+	// normal case, not an edge case. Over-blocking real users is the worse
+	// failure (see tables.go), and the brief for this category calls substring
+	// behavior here catastrophic for false positives. Equality gets every
+	// must-block case right, because they all reduce to exactly the term, and
+	// costs no token machinery at all.
+	//
+	// Known and accepted gap: "admin123" and "admin-support" reduce to
+	// "admin123" and "adminsupport", neither of which equals "admin", so both
+	// are permitted. Narrowing that is a policy change belonging to the runtime
+	// list editing of Fb3 or the enforcement layer of Fb4, not to the match
+	// mode. Splitting on letter/digit boundaries was considered as a middle
+	// road and rejected: it would block "root2689", an ordinary identifier that
+	// already appears as a fuzz seed.
+	MatchWholeSkeleton
+
+	// MatchSubstring blocks when a term appears anywhere inside the skeleton.
+	//
+	// This is the mode for offensive terms, where the harm is the word being
+	// visible in a public URL at all; hiding it inside a longer name does not
+	// make it less visible. The cost is the Scunthorpe problem, which is real
+	// and which ADR-0017 answers with the administrator allowlist built in Fb3.
+	// The defense available here is list curation: see lists.go, where terms
+	// that are substrings of ordinary words are deliberately left out.
+	MatchSubstring
+)
+
+// String renders the mode for logs. It names the mode only and never any term,
+// so it is safe to include anywhere a Result is logged.
+func (m MatchMode) String() string {
+	switch m {
+	case MatchWholeSkeleton:
+		return "whole-skeleton"
+	case MatchSubstring:
+		return "substring"
+	case MatchModeInvalid:
+		return "invalid"
+	default:
+		return "unknown"
+	}
+}
+
+// Reason records why Check returned the verdict it did.
+type Reason uint8
+
+const (
+	// ReasonEngineUnavailable is the zero value, and it means blocked.
+	//
+	// Pairing the zero Reason with the zero Result -- which is also blocked,
+	// see Result -- is what makes an uninitialized or partially-constructed
+	// verdict fail closed instead of silently permitting the identifier.
+	ReasonEngineUnavailable Reason = iota
+
+	// ReasonAllowed: the skeleton matched no term in any list.
+	ReasonAllowed
+
+	// ReasonEmptySkeleton: the input reduced to nothing.
+	//
+	// Skeleton's contract requires callers to reject this rather than treat it
+	// as matching no term. An identifier made entirely of separators, combining
+	// marks or zero-width characters carries no comparable content, so no
+	// blocklist can ever speak to it, and permitting it would let an attacker
+	// register an identifier that no future list entry can reach.
+	ReasonEmptySkeleton
+
+	// ReasonTooLong: the input exceeded MaxInputBytes and was not examined.
+	ReasonTooLong
+
+	// ReasonBlockedTerm: the skeleton matched List/Term under Mode.
+	ReasonBlockedTerm
+)
+
+// String renders the reason for logs. Like MatchMode.String it names no term.
+func (r Reason) String() string {
+	switch r {
+	case ReasonAllowed:
+		return "allowed"
+	case ReasonEmptySkeleton:
+		return "empty-skeleton"
+	case ReasonTooLong:
+		return "too-long"
+	case ReasonBlockedTerm:
+		return "blocked-term"
+	case ReasonEngineUnavailable:
+		return "engine-unavailable"
+	default:
+		return "unknown"
+	}
+}
+
+// Result is the verdict for one identifier.
+//
+// # The field is Allowed, not Blocked
+//
+// This is a security decision, not a style one. The zero Result must mean
+// "blocked", because a zero Result is what a caller holds after a path that
+// forgot to assign one, after a struct built by a future refactor that missed a
+// field, or after any decode that failed halfway. With a Blocked field the zero
+// value would read as "not blocked" and every such mistake would become a
+// silent bypass. With Allowed, every one of them fails closed.
+//
+// # Reporting without leaking the list
+//
+// List and Term say which curated entry fired. That is what an audit log and an
+// administrator need, and it is exactly what an end user must not receive: the
+// blocklist is a moving target an attacker would otherwise get to enumerate one
+// rejected registration at a time. Result therefore deliberately has NO Error
+// or String method. Nothing about it is safe to hand to fmt.Errorf("%v") or to
+// return up an HTTP handler by accident; a caller wanting user-facing text must
+// call PublicMessage and must reach past a field boundary to get anything more.
+//
+// Result also does not carry the skeleton. Skeletons are comparison-only and
+// must never be stored or displayed, and the surest way to keep one out of a
+// log line is to never put it in the value that gets logged.
+type Result struct {
+	// Allowed is true only when the identifier may be used.
+	Allowed bool
+
+	// Reason is why. Always set by Check.
+	Reason Reason
+
+	// List and Term are populated only when Reason is ReasonBlockedTerm. Term
+	// is the curated list entry in its original human-readable spelling, never
+	// the user's input and never a skeleton.
+	List string
+	Term string
+
+	// Mode is the match mode that fired, set with List and Term.
+	Mode MatchMode
+}
+
+// Blocked reports whether the identifier must be refused. It is the negation of
+// Allowed and exists so calling code reads as a refusal check without anyone
+// being tempted to add a Blocked field and reintroduce the zero-value problem
+// described on Result.
+func (r Result) Blocked() bool { return !r.Allowed }
+
+// PublicMessage returns text safe to show the user who supplied the identifier.
+//
+// It is deliberately uninformative and identical for every blocked term. Saying
+// which word matched, or even which category it came from, turns each rejected
+// registration into one bit of the blocklist and lets an attacker map the list
+// by brute force. Detail belongs in the audit log, from the Result fields.
+func (r Result) PublicMessage() string {
+	if r.Allowed {
+		return "identifier is available"
+	}
+	return "this identifier is not available; please choose another"
+}
+
+// List is one curated set of terms sharing a match mode.
+//
+// Terms are held in their original, human-readable spelling and are skeletonized
+// once by NewMatcher. Storing "admin" rather than its skeleton is what keeps
+// lists.go reviewable -- a reviewer approving a policy change must be able to
+// read the word being banned -- while comparison still happens skeleton against
+// skeleton. It is also what lets Fb3 accept an administrator's term as typed.
+//
+// List is plain data with no behavior so that Fb3 can add an allowlist and
+// runtime edits by supplying different Lists to NewMatcher, without the engine
+// changing shape.
+type List struct {
+	// Name identifies the list in a Result and in audit records.
+	Name string
+
+	// Mode is how Terms are compared; see MatchMode.
+	Mode MatchMode
+
+	// Terms is ordered, and the order is part of the contract: see Matcher for
+	// why determinism depends on it.
+	Terms []string
+}
+
+// compiledTerm pairs a term's skeleton with the spelling to report.
+type compiledTerm struct {
+	skeleton string
+	raw      string
+}
+
+// compiledList is a List with its skeletons precomputed.
+type compiledList struct {
+	name string
+	mode MatchMode
+
+	// whole indexes MatchWholeSkeleton terms by skeleton. A map is safe here
+	// precisely because the lookup is equality: a given skeleton finds at most
+	// one entry, so which entry is found cannot depend on iteration order. The
+	// map is never ranged over.
+	whole map[string]compiledTerm
+
+	// substrings holds MatchSubstring terms in the order they were declared,
+	// as a slice and never a map. Several terms can match one skeleton at
+	// once, so the scan has to choose among them, and ranging a map to choose
+	// would make the reported term vary run to run under Go's randomized map
+	// iteration -- the blocked/allowed boolean would stay stable while the
+	// audit record and the tests silently did not.
+	substrings []compiledTerm
+}
+
+// Matcher checks identifiers against a fixed set of Lists.
+//
+// # Determinism
+//
+// The same input yields the same Result, including the same List and Term, on
+// every run of every process. Lists are consulted in the order given to
+// NewMatcher; within a list, whole-skeleton matching is an equality lookup with
+// at most one answer and substring matching walks the declared term order and
+// stops at the first hit. No map is ever iterated. This matters because the
+// verdict is written to an audit log an administrator later reasons about; a
+// record that names a different term each time it is regenerated is evidence of
+// nothing.
+//
+// # Precedence
+//
+// Whole-skeleton lists are consulted before substring lists, regardless of the
+// order they were supplied in. An identifier that is exactly a reserved word is
+// most usefully reported as impersonation even if it happens to contain an
+// offensive fragment too, and fixing the precedence means the report does not
+// depend on how the caller happened to order its arguments.
+//
+// # Fail closed
+//
+// A Matcher that was not built by NewMatcher -- the zero value, or a nil
+// pointer -- blocks everything. See Check.
+//
+// A Matcher is immutable after construction and safe for concurrent use.
+type Matcher struct {
+	// ready is set only by NewMatcher, and only after every list has been
+	// validated. It is what distinguishes a usable Matcher from a zero one;
+	// without it the zero Matcher would hold no lists, match nothing, and
+	// therefore allow everything, which is the exact failure mode this package
+	// must not have.
+	ready bool
+
+	lists []compiledList
+}
+
+// NewMatcher compiles lists into a Matcher, or reports why it cannot.
+//
+// Every term is skeletonized once here rather than on every check. The
+// validation is strict and the errors are fatal by design: a malformed list is
+// a bug in curated data or in an administrator's input, and the safe response
+// is to refuse to build an engine whose behavior nobody can predict, not to
+// build one that quietly ignores the bad entry.
+//
+// Refused, and why each would be dangerous rather than merely untidy:
+//
+//   - A list with no name, because a Result naming no list is unauditable.
+//   - A mode outside the two defined ones, because there is no safe guess.
+//   - Two lists sharing a name, because a Result could then not be traced back
+//     to the entry that produced it.
+//   - A term whose skeleton is empty. This one is the serious one: the empty
+//     string is a substring of every string, so an empty-skeleton term in a
+//     substring list blocks every identifier in the system, and in a
+//     whole-skeleton list it blocks exactly the empty skeleton, which Check
+//     already refuses on its own grounds. Neither is what an author writing
+//     down a word intended.
+//   - Two terms in one list sharing a skeleton, because they are the same term
+//     to this engine and only one of them could ever be reported. Rejecting
+//     forces the duplicate to be resolved in the data, where a reviewer can
+//     see it, instead of one spelling silently shadowing the other.
+//
+// An empty list, or no lists at all, is accepted: a deployment may legitimately
+// carry an empty allowlist, and Fb3 needs that to stay true.
+func NewMatcher(lists ...List) (*Matcher, error) {
+	compiled := make([]compiledList, 0, len(lists))
+	seenNames := make(map[string]struct{}, len(lists))
+
+	for _, l := range lists {
+		if l.Name == "" {
+			return nil, fmt.Errorf("blocklist: list has no name")
+		}
+		if _, dup := seenNames[l.Name]; dup {
+			return nil, fmt.Errorf("blocklist: duplicate list name %q", l.Name)
+		}
+		seenNames[l.Name] = struct{}{}
+
+		if l.Mode != MatchWholeSkeleton && l.Mode != MatchSubstring {
+			return nil, fmt.Errorf("blocklist: list %q has invalid match mode %d", l.Name, l.Mode)
+		}
+
+		cl := compiledList{name: l.Name, mode: l.Mode}
+		if l.Mode == MatchWholeSkeleton {
+			cl.whole = make(map[string]compiledTerm, len(l.Terms))
+		} else {
+			cl.substrings = make([]compiledTerm, 0, len(l.Terms))
+		}
+
+		seenSkeletons := make(map[string]string, len(l.Terms))
+		for _, raw := range l.Terms {
+			sk := Skeleton(raw)
+			if sk == "" {
+				return nil, fmt.Errorf("blocklist: list %q term %q has an empty skeleton", l.Name, raw)
+			}
+			if prev, dup := seenSkeletons[sk]; dup {
+				return nil, fmt.Errorf(
+					"blocklist: list %q terms %q and %q share a skeleton", l.Name, prev, raw)
+			}
+			seenSkeletons[sk] = raw
+
+			term := compiledTerm{skeleton: sk, raw: raw}
+			if l.Mode == MatchWholeSkeleton {
+				cl.whole[sk] = term
+			} else {
+				cl.substrings = append(cl.substrings, term)
+			}
+		}
+		compiled = append(compiled, cl)
+	}
+
+	// Fix the precedence described on Matcher once, here, rather than on every
+	// check. A stable partition keeps each mode's lists in the caller's
+	// relative order, so the caller still controls ties within a mode.
+	ordered := make([]compiledList, 0, len(compiled))
+	for _, cl := range compiled {
+		if cl.mode == MatchWholeSkeleton {
+			ordered = append(ordered, cl)
+		}
+	}
+	for _, cl := range compiled {
+		if cl.mode == MatchSubstring {
+			ordered = append(ordered, cl)
+		}
+	}
+
+	return &Matcher{ready: true, lists: ordered}, nil
+}
+
+// Check returns the verdict for a user-supplied identifier.
+//
+// The input is the original string as the user typed it. Check does the
+// skeletonising itself; callers must not pre-normalize, both because a skeleton
+// is not something to be passed around and because doing it twice is exactly
+// how a caller ends up comparing the wrong thing.
+//
+// Every path that is not a positive decision to allow returns blocked:
+//
+//   - a nil or unbuilt Matcher, so a wiring mistake refuses identifiers rather
+//     than admitting them;
+//   - input longer than MaxInputBytes, refused unexamined;
+//   - input whose skeleton is empty, per Skeleton's contract.
+//
+// Only a completed walk of every list with no hit returns Allowed.
+func (m *Matcher) Check(input string) Result {
+	if m == nil || !m.ready {
+		return Result{Allowed: false, Reason: ReasonEngineUnavailable}
+	}
+	if len(input) > MaxInputBytes {
+		return Result{Allowed: false, Reason: ReasonTooLong}
+	}
+
+	skeleton := Skeleton(input)
+	if skeleton == "" {
+		return Result{Allowed: false, Reason: ReasonEmptySkeleton}
+	}
+
+	for _, cl := range m.lists {
+		if cl.mode == MatchWholeSkeleton {
+			if term, ok := cl.whole[skeleton]; ok {
+				return blockedBy(cl, term)
+			}
+			continue
+		}
+		for _, term := range cl.substrings {
+			if strings.Contains(skeleton, term.skeleton) {
+				return blockedBy(cl, term)
+			}
+		}
+	}
+
+	return Result{Allowed: true, Reason: ReasonAllowed}
+}
+
+// blockedBy builds the refusal for a term that matched.
+func blockedBy(cl compiledList, term compiledTerm) Result {
+	return Result{
+		Allowed: false,
+		Reason:  ReasonBlockedTerm,
+		List:    cl.name,
+		Term:    term.raw,
+		Mode:    cl.mode,
+	}
+}
