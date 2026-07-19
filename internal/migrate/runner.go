@@ -16,6 +16,8 @@ type Runner struct {
 	engine Engine
 	reg    *Registry
 	now    func() time.Time
+
+	allowDestructive bool
 }
 
 // Option configures a Runner at construction.
@@ -29,6 +31,13 @@ func WithClock(now func() time.Time) Option {
 			r.now = now
 		}
 	}
+}
+
+// AllowDestructive permits reverting migrations marked Destructive. Without it,
+// Down refuses such reverts. It never permits reverting an irreversible
+// migration.
+func AllowDestructive() Option {
+	return func(r *Runner) { r.allowDestructive = true }
 }
 
 // NewRunner returns a Runner, or an error wrapping domain.ErrInvalidInput if db
@@ -193,6 +202,93 @@ func (r *Runner) verify(ctx context.Context) ([]Ledger, []Migration, error) {
 		return nil, nil, err
 	}
 	return applied, pending, nil
+}
+
+// Down reverts applied migrations newest-first until toID is the newest
+// still-applied migration. An empty toID reverts everything (the teardown
+// path). It verifies the ledger first, then, as a pre-flight before touching
+// anything, refuses if any migration it would revert is irreversible
+// (ErrIrreversible) or is destructive without AllowDestructive
+// (ErrDestructiveBlocked). A toID that is unknown or not currently applied
+// yields ErrUnknownTarget. Each revert runs the down steps and the ledger
+// delete in one transaction; a failure stops Down, leaving newer already-
+// reverted migrations reverted and returning their ledger rows with the error.
+func (r *Runner) Down(ctx context.Context, toID string) ([]Ledger, error) {
+	if err := ensureLedgerTable(ctx, r.db); err != nil {
+		return nil, err
+	}
+	applied, _, err := r.verify(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// applied is oldest-first; keep the prefix up to and including toID.
+	keep := 0
+	if toID != "" {
+		idx := -1
+		for i, l := range applied {
+			if l.ID == toID {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return nil, fmt.Errorf("migrate: down target %q is not an applied migration: %w", toID, ErrUnknownTarget)
+		}
+		keep = idx + 1
+	}
+	toRevert := applied[keep:]
+	if len(toRevert) == 0 {
+		return nil, nil
+	}
+
+	// Pre-flight gating: reject the whole operation before any change.
+	for _, l := range toRevert {
+		m, ok := r.reg.Get(l.ID)
+		if !ok {
+			return nil, fmt.Errorf("migrate: ledger records migration %q, absent from the registry: %w", l.ID, ErrLedgerAhead)
+		}
+		if m.IrreversibleReason != "" {
+			return nil, fmt.Errorf("migrate: migration %q is irreversible (%s): %w", m.ID, m.IrreversibleReason, ErrIrreversible)
+		}
+		if m.Destructive && !r.allowDestructive {
+			return nil, fmt.Errorf("migrate: migration %q is destructive and reverting it requires AllowDestructive: %w", m.ID, ErrDestructiveBlocked)
+		}
+	}
+
+	// Revert newest-first.
+	var reverted []Ledger
+	for i := len(toRevert) - 1; i >= 0; i-- {
+		l := toRevert[i]
+		m, _ := r.reg.Get(l.ID)
+		if err := r.revertOne(ctx, m); err != nil {
+			return reverted, err
+		}
+		reverted = append(reverted, l)
+	}
+	return reverted, nil
+}
+
+// revertOne reverts a single migration in its own transaction.
+func (r *Runner) revertOne(ctx context.Context, m Migration) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("migrate: migration %q: begin transaction: %w", m.ID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for i, stmt := range m.Down.forEngine(r.engine) {
+		if err := tx.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("migrate: migration %q down step %d: %w", m.ID, i+1, err)
+		}
+	}
+	if err := deleteLedger(ctx, tx, r.engine, m.ID); err != nil {
+		return fmt.Errorf("migrate: migration %q: delete ledger: %w", m.ID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate: migration %q: commit: %w", m.ID, err)
+	}
+	return nil
 }
 
 // checkDependencies verifies each pending migration's Requires are satisfied by

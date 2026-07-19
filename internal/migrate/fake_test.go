@@ -33,8 +33,10 @@ type fakeDB struct {
 	rows   map[string]ledgerRow
 	tables map[string]bool
 
-	execLog  []execEntry
-	beginErr error
+	execLog   []execEntry
+	beginErr  error
+	commitErr error
+	rowsErr   error
 	// execErr, if set, is consulted on every Exec (db- and tx-level). A
 	// non-nil return fails that Exec and the statement is not applied.
 	execErr func(query string, args []any) error
@@ -54,6 +56,9 @@ func newFakeDB(engine Engine) *fakeDB {
 // seedLedger inserts a ledger row directly, bypassing SQL, for verify
 // scenarios.
 func (db *fakeDB) seedLedger(r ledgerRow) { db.rows[r.id] = r }
+
+// seedTable marks a table as existing for catalog preconditions.
+func (db *fakeDB) seedTable(name string) { db.tables[name] = true }
 
 // appliedIDs returns the ledger IDs currently stored, sorted.
 func (db *fakeDB) appliedIDs() []string {
@@ -158,6 +163,9 @@ func (db *fakeDB) query(rows map[string]ledgerRow, tables map[string]bool, q str
 		return r, nil
 	}
 	if strings.Contains(strings.ToUpper(q), "FROM SCHEMA_MIGRATIONS") {
+		if db.rowsErr != nil {
+			return &fakeRows{err: db.rowsErr}, nil
+		}
 		return runLedgerQuery(rows), nil
 	}
 	return &fakeRows{}, nil
@@ -215,6 +223,11 @@ func (tx *fakeTx) Query(_ context.Context, query string, args ...any) (Rows, err
 }
 
 func (tx *fakeTx) Commit() error {
+	if tx.db.commitErr != nil {
+		// Commit failed: changes are not made durable.
+		tx.done = true
+		return tx.db.commitErr
+	}
 	tx.db.rows = tx.rows
 	tx.db.tables = tx.tables
 	tx.committed = true
