@@ -62,7 +62,7 @@ func tableExistsQuery(engine Engine) string {
 func tablePresent(ctx context.Context, e Executor, engine Engine, name string) (bool, error) {
 	rows, err := e.Query(ctx, tableExistsQuery(engine), name)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("migrate: catalog query: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -70,14 +70,14 @@ func tablePresent(ctx context.Context, e Executor, engine Engine, name string) (
 	for rows.Next() {
 		var n int
 		if err := rows.Scan(&n); err != nil {
-			return false, err
+			return false, fmt.Errorf("migrate: catalog scan: %w", err)
 		}
 		if n > 0 {
 			present = true
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return false, err
+		return false, fmt.Errorf("migrate: catalog rows: %w", err)
 	}
 	return present, nil
 }

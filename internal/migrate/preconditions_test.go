@@ -69,6 +69,29 @@ func TestTablePresentQueryError(t *testing.T) {
 	}
 }
 
+// TestPreconditionInfraErrorPropagates proves that an infrastructure failure
+// while evaluating a precondition (e.g. a lost connection or catalog read
+// error) propagates as-is rather than masquerading as ErrPreconditionFailed.
+func TestPreconditionInfraErrorPropagates(t *testing.T) {
+	ctx := context.Background()
+	m := mig("0001", "widgets")
+	m.Preconditions = []Precondition{TableAbsent("widgets")}
+	db := newFakeDB(EngineSQLite)
+	sentinel := errors.New("catalog unavailable")
+	db.queryErr = func(string) error { return sentinel }
+	r := mustRunner(t, db, EngineSQLite, mustRegistry(t, m))
+	_, err := r.Up(ctx)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("infra error should propagate, got %v", err)
+	}
+	if errors.Is(err, ErrPreconditionFailed) {
+		t.Errorf("infra error must not be reported as ErrPreconditionFailed: %v", err)
+	}
+	if ids := db.appliedIDs(); len(ids) != 0 {
+		t.Errorf("ledger must be empty after precondition infra failure: %v", ids)
+	}
+}
+
 // TestPreconditionIntegratesWithUp proves a precondition runs inside the
 // migration transaction and can block application.
 func TestPreconditionIntegratesWithUp(t *testing.T) {

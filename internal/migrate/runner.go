@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -107,9 +108,16 @@ func (r *Runner) applyOne(ctx context.Context, m Migration) (Ledger, error) {
 
 	for _, pc := range m.Preconditions {
 		if err := pc.Check(ctx, tx, r.engine); err != nil {
-			// The check's own error may reference database data, so it is not
-			// wrapped; only the static description is surfaced.
-			return Ledger{}, fmt.Errorf("migrate: migration %q precondition %q: %w", m.ID, pc.Description, ErrPreconditionFailed)
+			// A genuine "precondition not met" wraps domain.ErrConflict; its
+			// message may reference database data, so only the static
+			// description is surfaced under ErrPreconditionFailed. Any other
+			// error is an infrastructure failure (lost connection, catalog
+			// read error) and must not masquerade as a precondition conflict:
+			// propagate it wrapped, mirroring how up-step Exec errors flow.
+			if errors.Is(err, domain.ErrConflict) {
+				return Ledger{}, fmt.Errorf("migrate: migration %q precondition %q: %w", m.ID, pc.Description, ErrPreconditionFailed)
+			}
+			return Ledger{}, fmt.Errorf("migrate: migration %q precondition %q: %w", m.ID, pc.Description, err)
 		}
 	}
 

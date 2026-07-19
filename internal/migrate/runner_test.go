@@ -3,6 +3,7 @@ package migrate
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -109,7 +110,7 @@ func TestUpPreconditionFailRollsBack(t *testing.T) {
 	m.Preconditions = []Precondition{{
 		Description: "widgets table must be absent",
 		Check: func(context.Context, Executor, Engine) error {
-			return errors.New("table widgets already exists")
+			return fmt.Errorf("table widgets already exists: %w", domain.ErrConflict)
 		},
 	}}
 	db := newFakeDB(EngineSQLite)
