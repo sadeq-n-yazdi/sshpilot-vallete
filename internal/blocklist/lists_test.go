@@ -299,45 +299,90 @@ func TestTheServiceCannotBeImpersonated(t *testing.T) {
 	}
 }
 
-// TestKnownLeetGapForTheLetterL records a live evasion class that this package
-// cannot close, so that it is tracked rather than rediscovered.
+// TestKnownLeetGapForTheLetterL guards the evasion class that this test was
+// originally written to record as OPEN, and which is now closed.
 //
-// The digit "1" has two leet readings, "i" and "l". Fb1's table picks "i",
-// which is what makes "4dm1n" fold to "admin". The consequence is that the
-// other reading is unavailable: "he1p" folds to "heip", not "help", so every
-// reserved word containing an L can be spelled past the blocklist -- "1ogin",
-// "bi11ing", "officia1", "1ega1", "nu11".
+// The history matters, because the shape of the bug is the reason for the shape
+// of the fix. The digit "1" has two leet readings, i and l. A fold that emits
+// one rune can keep only one of them, and the leetspeak table keeps i, which is
+// what makes "4dm1n" equal "admin". The cost was the other reading: "he1p"
+// folded to "heip", which is not a reserved word, and so every reserved word
+// containing an l was registerable -- "1ogin", "bi11ing", "officia1", "nu11",
+// "wa11et". Flipping the table to l would not have fixed it, only moved it onto
+// "4dm1n".
 //
-// This is deliberately NOT fixed here, on two grounds. It lives in the folding
-// tables, not the match engine, and any change there alters which identifiers
-// compare equal and so must be a reviewed TableVersion bump rather than a side
-// effect of adding a word list. And the fix is not a one-line table edit: a
-// rune with two readings cannot be folded to one output without losing the
-// other, so closing it means either the fold or the matcher generating both
-// candidate readings -- a design change with its own false-positive budget,
-// since "i" and "l" would then be interchangeable everywhere.
+// TableVersion 4 closes it at the match stage instead: the skeleton is expanded
+// into the set of skeletons it might be a reading of, and any candidate
+// matching a term blocks. Both readings are therefore live at once, without
+// either being lost to the other. See ambiguousReadings in tables.go.
 //
-// Papering over it from this side by adding "he1p" as a curated term was
-// rejected: the term would be stored as its skeleton "heip" and the data would
-// stop meaning what it reads as, which is the property lists.go depends on.
-//
-// These assertions PASS today by asserting the gap is open. If one starts
-// failing, Fb1 has closed it and this test and its note should be deleted.
+// The assertions are inverted from the original: they now PASS by asserting the
+// gap is CLOSED. A failure here means the expansion has regressed and the
+// bypass is live again.
 func TestKnownLeetGapForTheLetterL(t *testing.T) {
 	m := defaultMatcher(t)
 
-	for _, evasion := range []string{"he1p", "1ogin", "bi11ing", "officia1", "nu11"} {
+	// Every spelling that was permitted before TableVersion 4.
+	for _, evasion := range []string{
+		"he1p", "1ogin", "bi11ing", "officia1", "nu11", "wa11et", "1ega1",
+		"he1pdesk", "1ocalhost", "bo11ocks",
+	} {
 		t.Run(evasion, func(t *testing.T) {
-			if m.Check(evasion).Blocked() {
-				t.Fatalf("Check(%q) is now blocked -- the 1-as-l leet gap has "+
-					"been closed in the folding tables; delete this test", evasion)
+			if !m.Check(evasion).Blocked() {
+				t.Fatalf("Check(%q) allowed; the 1-as-l evasion is live again", evasion)
 			}
 		})
 	}
 
-	// The reading that IS covered, for contrast: the same digit folding to "i".
-	if !m.Check("4dm1n").Blocked() {
-		t.Fatal("Check(\"4dm1n\") allowed; the 1-as-i reading must stay covered")
+	// The reading that was always covered must STAY covered. This is the whole
+	// point of expanding rather than re-pointing the table: a fix that made
+	// "he1p" block by folding 1 to l instead of i would trade this case away
+	// for the ones above, and would pass every assertion in the loop.
+	for _, stillCovered := range []string{"4dm1n", "@dm1n", "adm1n", "1nfo", "1nvo1ce"} {
+		t.Run(stillCovered, func(t *testing.T) {
+			if !m.Check(stillCovered).Blocked() {
+				t.Fatalf("Check(%q) allowed; the 1-as-i reading has been traded away",
+					stillCovered)
+			}
+		})
+	}
+}
+
+// TestAmbiguousExpansionCoversEveryStrokeShapedSource checks the claim that
+// makes ambiguousReadings a single entry rather than one per source codepoint.
+//
+// Every codepoint that draws a bare vertical stroke already converges on "i" by
+// the time the pipeline finishes -- the ASCII digit through leetspeak, capital
+// I through the case fold, the fullwidth, circled, superscript and mathematical
+// digits through foldRange chaining into leetspeak, and dotless ı, Greek iota
+// and script capital ℐ through confusables. Keying the ambiguity on the output
+// therefore covers all of them at once. If a future table change breaks that
+// convergence, this test says so rather than leaving a source silently
+// unexpanded.
+func TestAmbiguousExpansionCoversEveryStrokeShapedSource(t *testing.T) {
+	m := defaultMatcher(t)
+
+	for name, spelling := range map[string]string{
+		"ascii digit one":  "he1p",
+		"capital i":        "heIp",
+		"fullwidth one":    "he１p",
+		"circled one":      "he①p",
+		"superscript one":  "he¹p",
+		"mathematical one": "he\U0001D7CFp",
+		"dotless i":        "heıp",
+		"greek iota":       "heιp",
+		"script capital i": "heℐp",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := Skeleton(spelling); got != "heip" {
+				t.Fatalf("Skeleton(%q) = %q; want %q -- this source no longer "+
+					"converges on i and ambiguousReadings no longer covers it",
+					spelling, got, "heip")
+			}
+			if !m.Check(spelling).Blocked() {
+				t.Fatalf("Check(%q) allowed a spelling of a reserved word", spelling)
+			}
+		})
 	}
 }
 

@@ -134,6 +134,24 @@ const (
 
 	// ReasonBlockedTerm: the skeleton matched List/Term under Mode.
 	ReasonBlockedTerm
+
+	// ReasonTooAmbiguous: the skeleton held more ambiguous runes than
+	// maxAmbiguousRunes, so the candidate set could not be built in full and
+	// the identifier was refused unexamined.
+	//
+	// This is a fail-closed verdict and the direction is not arbitrary. The
+	// engine cannot enumerate everything such an input might read as, so it
+	// cannot show that none of those readings is a reserved word. Allowing it
+	// would hand an attacker the bypass directly: pad an identifier with enough
+	// ambiguous runes to blow the bound and it is permitted without ever being
+	// compared. Refusing costs a legitimate user nothing, because no legitimate
+	// identifier reaches the bound; see maxAmbiguousRunes.
+	//
+	// Appended after ReasonBlockedTerm on purpose: these values are recorded
+	// alongside persisted decisions, so inserting one in the middle would
+	// renumber the existing reasons and silently change what an old record
+	// means.
+	ReasonTooAmbiguous
 )
 
 // String renders the reason for logs. Like MatchMode.String it names no term.
@@ -147,6 +165,8 @@ func (r Reason) String() string {
 		return "too-long"
 	case ReasonBlockedTerm:
 		return "blocked-term"
+	case ReasonTooAmbiguous:
+		return "too-ambiguous"
 	case ReasonEngineUnavailable:
 		return "engine-unavailable"
 	default:
@@ -404,9 +424,16 @@ func NewMatcher(lists ...List) (*Matcher, error) {
 //   - a nil or unbuilt Matcher, so a wiring mistake refuses identifiers rather
 //     than admitting them;
 //   - input longer than MaxInputBytes, refused unexamined;
-//   - input whose skeleton is empty, per Skeleton's contract.
+//   - input whose skeleton is empty, per Skeleton's contract;
+//   - input too ambiguous to expand within maxAmbiguousRunes, refused because
+//     the engine cannot enumerate what it might read as.
 //
-// Only a completed walk of every list with no hit returns Allowed.
+// The skeleton is not compared only as itself. Runes that draw a glyph with
+// more than one reading are expanded into a set of candidate skeletons, and a
+// match against ANY candidate blocks; see candidateSkeletons.
+//
+// Only a completed walk of every list against every candidate with no hit
+// returns Allowed.
 func (m *Matcher) Check(input string) Result {
 	if m == nil || !m.ready {
 		return Result{Allowed: false, Reason: ReasonEngineUnavailable}
@@ -420,21 +447,99 @@ func (m *Matcher) Check(input string) Result {
 		return Result{Allowed: false, Reason: ReasonEmptySkeleton}
 	}
 
+	candidates, ok := candidateSkeletons(skeleton)
+	if !ok {
+		return Result{Allowed: false, Reason: ReasonTooAmbiguous}
+	}
+
+	// Lists stay the outer loop, so the precedence documented on Matcher --
+	// whole-skeleton lists before substring lists, caller order within a mode
+	// -- is unchanged by the expansion. Candidates come next, ahead of the
+	// terms, because candidates[0] is the skeleton itself: an exact match is
+	// found and reported before any alternative reading is even tried.
 	for _, cl := range m.lists {
 		if cl.mode == MatchWholeSkeleton {
-			if term, ok := cl.whole[skeleton]; ok {
-				return blockedBy(cl, term)
+			for _, candidate := range candidates {
+				if term, ok := cl.whole[candidate]; ok {
+					return blockedBy(cl, term)
+				}
 			}
 			continue
 		}
-		for _, term := range cl.substrings {
-			if strings.Contains(skeleton, term.skeleton) {
-				return blockedBy(cl, term)
+		for _, candidate := range candidates {
+			for _, term := range cl.substrings {
+				if strings.Contains(candidate, term.skeleton) {
+					return blockedBy(cl, term)
+				}
 			}
 		}
 	}
 
 	return Result{Allowed: true, Reason: ReasonAllowed}
+}
+
+// candidateSkeletons returns every skeleton sk might be a reading of, and
+// reports whether it could do so within maxAmbiguousRunes.
+//
+// A rune whose glyph carries two readings cannot be folded to one output
+// without losing the other, so Skeleton returns one reading and this restores
+// the rest; see ambiguousReadings in tables.go for why the ambiguity is keyed
+// on the fold's output and why the expansion is one-way.
+//
+// Contract, all three parts relied on by Check:
+//
+//   - The first element is always sk itself, unmodified. Check walks candidates
+//     in order, so an identifier that is exactly a reserved word is reported
+//     against that word rather than against whatever an alternative reading of
+//     it happens to hit.
+//   - The order is fixed: positions ascend, and within a position the readings
+//     follow their declared order in ambiguousReadings. The table is looked up,
+//     never ranged, so Go's randomized map iteration cannot reach the result.
+//     Two runs of two processes produce the same slice, which is what makes the
+//     reported term in an audit record mean something.
+//   - ok is false when sk holds more than maxAmbiguousRunes ambiguous
+//     positions. The candidate set is then NOT partially returned: a truncated
+//     set is worse than none, because Check would walk it, find no match, and
+//     allow the identifier on the strength of an expansion it never finished.
+//     Callers MUST treat false as blocked.
+//
+// The scan is byte-wise, which ambiguousReadings' ASCII-only invariant makes
+// exact: every byte of a multi-byte rune is >= 0x80 and so matches no key, and
+// substituting one ASCII byte for another leaves every other offset in place.
+func candidateSkeletons(sk string) ([]string, bool) {
+	// Count first, expand second. Finding the bound broken before allocating
+	// anything is what stops the denial-of-service case from being paid for on
+	// the way to refusing it.
+	positions := make([]int, 0, maxAmbiguousRunes)
+	for i := 0; i < len(sk); i++ {
+		if _, ok := ambiguousReadings[sk[i]]; !ok {
+			continue
+		}
+		if len(positions) == maxAmbiguousRunes {
+			return nil, false
+		}
+		positions = append(positions, i)
+	}
+
+	candidates := make([]string, 1, 1<<len(positions))
+	candidates[0] = sk
+
+	for _, pos := range positions {
+		readings := ambiguousReadings[sk[pos]]
+		grown := make([]string, 0, len(candidates)*(1+len(readings)))
+		// The unmodified set first, so candidates[0] survives every round as
+		// sk itself.
+		grown = append(grown, candidates...)
+		for _, reading := range readings {
+			for _, c := range candidates {
+				b := []byte(c)
+				b[pos] = reading
+				grown = append(grown, string(b))
+			}
+		}
+		candidates = grown
+	}
+	return candidates, true
 }
 
 // blockedBy builds the refusal for a term that matched.

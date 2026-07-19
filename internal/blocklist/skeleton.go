@@ -65,7 +65,19 @@ import (
 // and the mathematical digits -- the italic dotless i/j at U+1D6A4..U+1D6A5 and
 // the whole Mathematical Greek block at U+1D6A8..U+1D7CB. Every styled Greek
 // letter previously survived unfolded, so "𝛂dmin" did not match "admin".
-const TableVersion = 3
+//
+// Version 4: ambiguousReadings and the candidate expansion the match stage
+// performs with it. Skeleton itself is unchanged and still returns exactly one
+// string; what changed is that a skeleton is no longer compared only as itself.
+// The digit one and every codepoint that folds to "i" alongside it draw a glyph
+// with two readings, i and l, and a fold to a single output can only keep one.
+// Version 3 kept i, which is what makes "4dm1n" equal "admin" -- and which left
+// every reserved word containing an l spellable past the list: "he1p", "1ogin",
+// "bi11ing", "officia1" were all permitted. The match stage now expands the
+// discarded reading back out; see ambiguousReadings in tables.go. This changes
+// which identifiers the system refuses, so it is a table revision even though
+// no folding table entry moved.
+const TableVersion = 4
 
 // Skeleton reduces s to its canonical comparison form. The result is a lossy,
 // one-way projection of s; see the package documentation.
