@@ -198,6 +198,14 @@ func TestConfirmedHomoglyphBypasses(t *testing.T) {
 		{"cyrillic yi for i (U+0457)", "admїn", "admin"},
 		{"cyrillic shha for h (U+04BB)", "һdmin", "hdmin"},
 		{"greek omega for w (U+03C9)", "ωeb", "web"},
+		{"math dotless italic i (U+1D6A4)", "adm\U0001D6A4n", "admin"},
+		{"math bold small alpha (U+1D6C2)", "\U0001D6C2dmin", "admin"},
+		{"math bold small omicron (U+1D6D0)", "admin\U0001D6D0", "admino"},
+		// The styled alphabets must agree with each other as well as with the
+		// plain letter: sans-serif bold italic alpha is a different codepoint
+		// from bold alpha and both must reach "a".
+		{"math sans-serif bold italic alpha (U+1D7AA)", "\U0001D7AAdmin", "admin"},
+		{"math bold capital alpha (U+1D6A8)", "\U0001D6A8dmin", "admin"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

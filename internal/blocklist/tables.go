@@ -18,13 +18,18 @@ import "unicode"
 // user refused a legitimate name, which is the worse failure. When in doubt,
 // an entry is left out.
 
-// foldRange maps the algorithmically contiguous compatibility blocks to ASCII
-// by arithmetic. These are ranges rather than table entries because they are
-// regular: writing out ~700 mathematical alphanumeric codepoints by hand would
+// foldRange maps the algorithmically contiguous compatibility blocks to their
+// base form. These are ranges rather than table entries because they are
+// regular: writing out ~1000 mathematical alphanumeric codepoints by hand would
 // be unauditable, whereas the offset rules below are each one line to verify.
 //
-// The returned rune is re-examined by the later stages, so a fullwidth "４"
-// becomes ASCII "4" here and then "a" in the leetspeak stage.
+// Most rules land on ASCII directly. The mathematical Greek rule instead lands
+// on the plain Greek letter, which the confusables stage then reduces where a
+// Latin look-alike exists. Either way the returned rune is re-examined by every
+// later stage -- a fullwidth "４" becomes ASCII "4" here and then "a" in the
+// leetspeak stage; a mathematical bold small alpha becomes "α" here and then
+// "a" in the confusables stage -- so the output is a fixed point regardless of
+// which rule produced it.
 func foldRange(r rune) (rune, bool) {
 	switch {
 	// Fullwidth ASCII forms U+FF01..U+FF5E are the ASCII repertoire shifted by
@@ -41,6 +46,34 @@ func foldRange(r rune) (rune, bool) {
 	// stays correct across them. Covers 𝐚𝐝𝐦𝐢𝐧 and every other styled variant.
 	case r >= 0x1D400 && r <= 0x1D6A3:
 		return 'a' + (r-0x1D400)%26, true
+
+	// Mathematical italic dotless i and j, U+1D6A4..U+1D6A5. They sit
+	// immediately past the end of the Latin run above and are the styled forms
+	// of U+0131/U+0237, so they fold like the letters they draw. U+1D6A6 and
+	// U+1D6A7 are unassigned and deliberately fall through.
+	case r >= 0x1D6A4 && r <= 0x1D6A5:
+		return 'i' + (r - 0x1D6A4), true
+
+	// Mathematical Greek U+1D6A8..U+1D7C9: five styled alphabets (bold, italic,
+	// bold italic, sans-serif bold, sans-serif bold italic) laid out as a
+	// repeating 58-rune unit. mathGreekUnit maps a position within that unit to
+	// the plain Greek letter it draws; see its comment for the layout.
+	//
+	// The fold target is plain Greek rather than ASCII because that is what the
+	// rune actually is -- the confusables table then reduces the ones that have
+	// a Latin look-alike (alpha->a, omicron->o, eta->n, ...) and leaves the rest
+	// as themselves. Folding straight to ASCII here would mean inventing a Latin
+	// reading for every Greek letter, including the ones that have none.
+	case r >= 0x1D6A8 && r <= 0x1D7C9:
+		if g := mathGreekUnit[(r-0x1D6A8)%58]; g != 0 {
+			return g, true
+		}
+
+	// Mathematical digamma U+1D7CA..U+1D7CB, capital and small, trailing the
+	// Greek units. Both fold to the small plain letter; it has no Latin
+	// look-alike and stops there.
+	case r >= 0x1D7CA && r <= 0x1D7CB:
+		return 0x03DD, true // GREEK SMALL LETTER DIGAMMA
 
 	// Mathematical digits U+1D7CE..U+1D7FF: 5 consecutive 10-digit blocks.
 	case r >= 0x1D7CE && r <= 0x1D7FF:
@@ -64,6 +97,49 @@ func foldRange(r rune) (rune, bool) {
 		return '0', true
 	}
 	return 0, false
+}
+
+// mathGreekUnit maps a position within one styled Greek alphabet of the
+// Mathematical Alphanumeric Symbols block to the plain Greek letter that
+// position draws. The block holds five such alphabets -- bold, italic, bold
+// italic, sans-serif bold, sans-serif bold italic -- at U+1D6A8, U+1D6E2,
+// U+1D71C, U+1D756 and U+1D790, each 58 runes long and each with an identical
+// internal layout (verified rune by rune against the Unicode names, not
+// assumed).
+//
+// Targets are the LOWERCASE plain letter even for the capitals, because
+// Skeleton case-folds before calling foldRange and these runes have no Unicode
+// case mapping of their own: a capital would arrive here unchanged and, folded
+// to a capital, would miss the lowercase-keyed confusables table and survive.
+//
+// Two positions are deliberately left unfolded (0, meaning "no fold"): NABLA
+// and PARTIAL DIFFERENTIAL are operators, not letters, and have no plain-letter
+// form to fold to. They are the only assigned runes in U+1D400..U+1D7FF that
+// this package does not reduce.
+//
+// The layout is regular except at two positions, and an arithmetic rule would
+// get both wrong:
+//
+//   - Position 17 is CAPITAL THETA SYMBOL, not the eighteenth capital.
+//     U+03A2 is a reserved hole in the plain Greek capitals, and the block
+//     fills that slot with the theta symbol; "U+0391 + 17" would emit an
+//     unassigned codepoint.
+//   - Position 43 is SMALL FINAL SIGMA, which the plain small run also carries
+//     at the matching offset, so it needs no exception -- but it is the reason
+//     the small run is 25 letters against the capitals' 24 plus a substitute.
+var mathGreekUnit = [58]rune{
+	// 0..24: capitals Alpha..Omega, with the theta symbol at 17.
+	'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν',
+	'ξ', 'ο', 'π', 'ρ', 'θ', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω',
+	// 25: NABLA.
+	0,
+	// 26..50: smalls alpha..omega, with final sigma at 43.
+	'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν',
+	'ξ', 'ο', 'π', 'ρ', 'ς', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω',
+	// 51: PARTIAL DIFFERENTIAL.
+	0,
+	// 52..57: the variant letterforms, each to the letter it varies.
+	'ε', 'θ', 'κ', 'φ', 'ρ', 'π',
 }
 
 // confusables maps visually-confusable codepoints to their ASCII skeleton.

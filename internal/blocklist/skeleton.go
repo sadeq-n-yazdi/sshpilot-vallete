@@ -59,7 +59,12 @@ import (
 // Version 2: confusables gains Greek eta and omega and Cyrillic yi and shha.
 // Each was a working impersonation vector: "admiη", "admїn" and "һdmin" all
 // survived version 1 unfolded.
-const TableVersion = 2
+//
+// Version 3: foldRange covers the gap between the mathematical Latin letters
+// and the mathematical digits -- the italic dotless i/j at U+1D6A4..U+1D6A5 and
+// the whole Mathematical Greek block at U+1D6A8..U+1D7CB. Every styled Greek
+// letter previously survived unfolded, so "𝛂dmin" did not match "admin".
+const TableVersion = 3
 
 // Skeleton reduces s to its canonical comparison form. The result is a lossy,
 // one-way projection of s; see the package documentation.
@@ -90,12 +95,20 @@ const TableVersion = 2
 // Stages 3, 4 and 5 chain deliberately: fullwidth "４" becomes ASCII "4" in
 // stage 3 and then "a" in stage 5, so "４dmin" and "admin" agree.
 //
-// No character surviving the pipeline is a key of any table or a separator:
-// stages 3 and 4 emit only ASCII letters and digits, and every digit and
+// No character surviving the pipeline is a key of any table or a separator.
+// Stage 4 emits only ASCII letters and digits; stage 3 emits ASCII except for
+// the mathematical Greek rule, which emits a plain Greek letter so that stage 4
+// can reduce the ones with a Latin look-alike. The Greek letters that stage 4
+// does not reduce -- beta, gamma, theta and the rest, which have no Latin
+// reading to give them -- survive to the output, and they are fixed points too:
+// none is a key of any table, a leet source or a separator. Every digit and
 // symbol with a leet reading is consumed by stage 5. Every output character is
 // therefore a fixed point of the pipeline, which makes
 // Skeleton(Skeleton(s)) == Skeleton(s) true by construction rather than by
 // accident. Skeleton is pure and deterministic.
+//
+// A skeleton is consequently not guaranteed to be ASCII. It is guaranteed to be
+// canonical: two inputs that draw the same glyphs share one skeleton.
 //
 // The result is always valid UTF-8. Empty, whitespace-only, and
 // entirely-foldable inputs all return "". Callers MUST treat an empty

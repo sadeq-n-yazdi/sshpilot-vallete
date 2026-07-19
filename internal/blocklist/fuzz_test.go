@@ -20,6 +20,11 @@ func FuzzSkeleton(f *testing.F) {
 		"\xff\xfe", "ad\xc3min", "漢字", "root2689",
 		// Confirmed bypasses: Greek eta/omega, Cyrillic yi/shha.
 		"admiη", "admїn", "һdmin", "ωeb",
+		// Confirmed bypasses in the mathematical Greek block and the dotless
+		// i/j that precede it, plus the two runes there that stay unfolded.
+		"adm\U0001D6A4n", "\U0001D6C2dmin", "admin\U0001D6D0",
+		"\U0001D6A8dmin", "\U0001D7AAdmin", "\U0001D7CB",
+		"\U0001D6C1\U0001D6DB",
 	}
 	for _, s := range seeds {
 		f.Add(s)
