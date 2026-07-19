@@ -87,7 +87,7 @@ func isUniqueViolation(err error) bool {
 // isForeignKeyViolation reports whether err is a PostgreSQL foreign-key
 // violation (SQLSTATE 23503). It is not used by mapError, which routes 23503 to
 // the generic wrap for parity with the SQLite adapter; it exists so that
-// behaviour is asserted by an explicit test rather than left implicit.
+// behavior is asserted by an explicit test rather than left implicit.
 func isForeignKeyViolation(err error) bool {
 	var perr *pgconn.PgError
 	if !errors.As(err, &perr) {
