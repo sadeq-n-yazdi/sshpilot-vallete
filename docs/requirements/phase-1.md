@@ -53,7 +53,7 @@ CLI for managing keys.
 | 7 | Tenancy: **owner abstraction now**; **multi-tenant-capable, self-hosted first, SaaS-ready later** (both, phased). | 0004, 0008 |
 | 8 | License: **GPL-3.0** (matches the sshpilot family). | — |
 | 9 | Module path (assumed): `github.com/mfat/sshpilot-vallet` — trivially renamable. | — |
-| 10 | Management auth: **pluggable providers** — passkeys/WebAuthn, OAuth/OIDC, and API-token/device-pairing; the **deployer configures which are enabled**. Email+password excluded. | 0009 |
+| 10 | Management auth: **pluggable providers** — passkeys/WebAuthn (incl. **hardware security keys: YubiKey / FIDO2 roaming authenticators** as first-class), OAuth/OIDC, and API-token/device-pairing; the **deployer configures which are enabled**. Email+password excluded. | 0009 |
 | 11 | Publish access: **per-owner configurable** — public by default; optionally requires an access key. | 0010 |
 | 12 | Ingest security: **forbid `authorized_keys` options**; **canonical storage**; **reject weak keys** (DSA, RSA < 3072). | 0006 |
 | 13 | **Append-only audit log** of every access-affecting change. | 0007 |
@@ -65,8 +65,8 @@ CLI for managing keys.
 | 19 | **ACME challenges**: TLS-ALPN-01 and DNS-01 (pluggable DNS providers, e.g. Cloudflare); HTTP-01 not used. | 0015 |
 | 20 | **Multiple named key sets** per owner (many-to-many key membership), addressed at `/{handle}/{set}`; bare `/{handle}` serves an owner-designated **default set**; **visibility is per set** (access keys per set). | 0016, 0010 |
 | 21 | **Reserved-identifier blocklist** for handles & key-set names (system/impersonation/offensive terms + confusable/leetspeak matching); built-in default, deployer-seedable, and **runtime-editable by a system administrator** (audited). Introduces an **administrator** role. | 0017 |
-| 22 | Management credentials: **refresh + short-lived access tokens** (individually revocable); enrollment via **device-authorization grant, manual token paste, or in-client login** (deployer/owner choice). | 0009, 0018 |
-| 23 | Authorization: tokens carry **scopes** — default **full owner authority**, with mintable narrower scopes (read-only, single-set, single-device). Admin authority is a separate axis. | 0018 |
+| 22 | Management credentials: **refresh + short-lived access tokens** (individually revocable). **Access TTL 15m**; **refresh rotates on use** (reuse-theft detection) with a **90-day absolute cap**; revocation **hybrid** (TTL + small live denylist for immediate effect). Enrollment via **device-authorization grant, manual token paste, or in-client login** (deployer/owner choice). | 0009, 0018 |
+| 23 | Authorization: tokens carry **scopes** — default **full owner authority**, with mintable narrower scopes (**read-only, single-set, single-device**, each bound to exactly one resource). Admin authority is a separate axis. **OIDC** provider-agnostic via discovery + configurable claim mapping; documented/tested for Keycloak/Authentik, Google, Microsoft Entra, Auth0, GitHub. | 0018 |
 | 24 | Publish semantics: native `authorized_keys`, canonical/options-free, deterministic order; **short bounded TTL (~60s default) + ETag**; protected sets not shared-cached; revocation window bounded by TTL (AuthorizedKeysCommand is live). | 0019 |
 | 25 | **Testing**: all code covered by **unit + e2e** tests spanning **happy, fail, and gray** paths; positive *and* negative tests mandatory; CI-enforced coverage gate; run against SQLite and Postgres. | 0020 |
 | 26 | **Self-served API docs**: `GET /docs/` returns the OpenAPI document by requested type (rendered HTML / YAML / JSON), **default JSON**; `/docs/spec/` gives stable JSON/YAML URLs; assets bundled (no CDN); exposure deployer-configurable. | 0021 |
@@ -170,10 +170,16 @@ Still open:
 1. ~~Protected-set access mechanism~~ — **resolved:** `Authorization: Bearer`
    header (ADR-0010). Access-key issuance/rotation/revocation lifecycle remains
    open (§5a).
-2. **Auth fine detail:** exact scope catalog, access/refresh token TTLs, and
-   revocation propagation (short TTL vs revocation check). (Model set in ADR-0018.)
-3. **OIDC & WebAuthn specifics:** which OIDC providers, discovery/config,
-   claim→owner mapping and account linking; WebAuthn RP configuration.
+2. ~~Auth fine detail~~ — **resolved (ADR-0018):** access TTL **15m**; refresh
+   **rotates on use** with reuse-theft detection and **90-day absolute cap**;
+   revocation is **hybrid** (TTL + small live denylist for immediate effect).
+   Scope catalog fixed at four owner scopes (full-owner / read-only / single-set
+   / single-device), each narrow scope bound to exactly one resource.
+3. **OIDC & WebAuthn specifics** — OIDC **resolved (ADR-0018):** provider-agnostic
+   via `.well-known` discovery + configurable claim mapping; documented/tested
+   setups for self-hosted (Keycloak/Authentik), Google, Microsoft Entra, Auth0,
+   GitHub. Still open: **WebAuthn RP config** (settled with library choice at
+   implementation).
 4. ~~Instance config mechanism~~ — **resolved:** file + env overrides, secrets
    via env/file refs behind a pluggable provider (ADR-0022). Exact schema/field
    names and YAML-vs-TOML remain implementation detail.
@@ -250,3 +256,10 @@ Still open:
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system
   administrator** role (audited). Added ADR-0017.
+- 2026-07-19 (open items: auth detail) — Fixed concrete auth tuning in ADR-0018:
+  **access TTL 15m**, **rotating refresh** with reuse-theft detection and a
+  **90-day absolute cap**, and **hybrid revocation** (TTL + small live denylist).
+  Scope catalog fixed at four owner scopes, each narrow scope bound to exactly
+  one resource. **OIDC** made provider-agnostic (discovery + configurable claim
+  mapping) with documented/tested setups for Keycloak/Authentik, Google,
+  Microsoft Entra, Auth0, and GitHub (decisions #22, #23).

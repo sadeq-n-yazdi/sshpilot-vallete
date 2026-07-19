@@ -58,15 +58,19 @@ first priority throughout.
 
 ## D. Authentication & authorization
 
-- **Pluggable management-auth providers** — passkeys/WebAuthn, OIDC,
-  API-token/device-pairing — **deployer selects** which are enabled;
-  email+password excluded (#10 · ADR-0009).
-- **Credentials:** long-lived revocable **refresh** + **short-lived access**
-  tokens; **enrollment** via device-authorization grant, manual paste, or
-  in-client login (#22 · ADR-0018).
+- **Pluggable management-auth providers** — passkeys/WebAuthn (incl. **hardware
+  security keys: YubiKey / FIDO2**), OIDC, API-token/device-pairing — **deployer
+  selects** which are enabled; email+password excluded (#10 · ADR-0009).
+- **Credentials:** revocable **refresh** (rotates on use, reuse-theft detection,
+  90-day absolute cap) + **short-lived access** tokens (**15m TTL**); revocation
+  **hybrid** (TTL + small live denylist); **enrollment** via device-authorization
+  grant, manual paste, or in-client login (#22 · ADR-0018).
 - **Scoped authorization:** default **full owner authority**; mintable narrower
-  scopes (read-only / single-set / single-device). Admin authority is a separate
-  axis (#23 · ADR-0018).
+  scopes (read-only / single-set / single-device, each bound to one resource).
+  Admin authority is a separate axis (#23 · ADR-0018).
+- **OIDC:** provider-agnostic (`.well-known` discovery + configurable claim
+  mapping); documented/tested for Keycloak/Authentik, Google, Microsoft Entra,
+  Auth0, GitHub (#23 · ADR-0018).
 
 ## E. Transport & TLS
 
@@ -123,8 +127,10 @@ Per-owner CA signing (ADR-0014); web/TUI/CLI management clients; teams/orgs/RBAC
 
 ## Open items (tuning/detail, not open decisions)
 
-- **Auth detail:** exact scope catalog, access/refresh TTLs, revocation
-  propagation; OIDC providers & claim mapping; WebAuthn RP config.
+- ~~**Auth detail:**~~ **resolved (ADR-0018):** scope catalog (4 owner scopes,
+  single-resource binding), access TTL 15m, rotating refresh + 90-day cap, hybrid
+  revocation, OIDC discovery + claim mapping (Keycloak/Authentik, Google, Entra,
+  Auth0, GitHub). Remaining: **WebAuthn RP config** (with library choice).
 - **Key-set detail:** set-name rules/reserved names, max sets, delete-default/
   non-empty rules, per-set access-key lifecycle; whether set names quarantine.
 - **Blocklist detail:** confusable/leetspeak folding tables, per-category match

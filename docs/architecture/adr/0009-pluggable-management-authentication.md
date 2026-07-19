@@ -17,7 +17,10 @@ Authentication for the **management** surface is provided by **pluggable
 providers**, and the **deployer configures which are enabled** (any combination):
 
 1. **Passkeys / WebAuthn** — account secured by FIDO2 credentials;
-   phishing-resistant; on-theme with the product.
+   phishing-resistant; on-theme with the product. This explicitly includes
+   **hardware security keys (YubiKey and other FIDO2/CTAP2 roaming
+   authenticators)** as first-class, alongside platform passkeys. User
+   verification (PIN/biometric) is supported and can be required by policy.
 2. **OAuth / OIDC** — delegate human login to an external IdP (e.g. Google,
    GitHub, self-hosted OIDC).
 3. **API tokens / device pairing** — an owner mints scoped, revocable tokens; a
