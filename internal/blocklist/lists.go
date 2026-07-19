@@ -1,5 +1,7 @@
 package blocklist
 
+import "sync"
+
 // This file is the default policy data for ADR-0017. Editing it changes what
 // the system refuses and MUST bump ListVersion (see match.go). It must NOT bump
 // TableVersion: nothing here affects which identifiers compare equal.
@@ -45,14 +47,36 @@ func DefaultLists() []List {
 	}
 }
 
-// DefaultMatcher builds a Matcher over DefaultLists.
+// DefaultMatcher returns the Matcher over DefaultLists.
 //
 // It returns an error rather than panicking even though the input is a
 // compile-time constant, because Fb3 will need the same construction path for
 // administrator-supplied lists and a function that panics on bad data is not a
 // path an admin API can use.
-func DefaultMatcher() (*Matcher, error) {
+//
+// The result is computed once and shared. Compiling the defaults skeletonizes
+// roughly 150 terms and builds their maps, and enforcement runs at every handle
+// and key-set create and rename, so rebuilding it per call is repeated work
+// with no compensating benefit.
+//
+// Sharing one instance is safe only because a Matcher is immutable: its fields
+// are unexported, NewMatcher is the only thing that sets them, and Check is
+// read-only. Do not add a method that mutates a Matcher -- Fb3's allowlist and
+// runtime edits must compose new Lists and build a new Matcher, exactly as
+// DefaultLists's own contract describes. A mutating method would turn this
+// shared pointer into a global that one caller can edit under every other.
+//
+// sync.OnceValues rather than an init function: the work stays lazy, so a
+// binary that never touches the blocklist never pays for it, and the
+// initialization order stays independent of the package-level folding tables
+// this depends on.
+var defaultMatcherOnce = sync.OnceValues(func() (*Matcher, error) {
 	return NewMatcher(DefaultLists()...)
+})
+
+// DefaultMatcher returns the shared Matcher over DefaultLists. See defaultMatcherOnce.
+func DefaultMatcher() (*Matcher, error) {
+	return defaultMatcherOnce()
 }
 
 // routingTerms are names that would collide with the application's own URL

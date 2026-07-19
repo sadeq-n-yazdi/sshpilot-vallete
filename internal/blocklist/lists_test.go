@@ -2,6 +2,7 @@ package blocklist
 
 import (
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -278,5 +279,52 @@ func TestWholeSkeletonTermsActuallyBlock(t *testing.T) {
 func TestListVersionIsSet(t *testing.T) {
 	if ListVersion < 1 {
 		t.Errorf("ListVersion = %d; want a positive revision", ListVersion)
+	}
+}
+
+// TestDefaultMatcherIsSharedAndStable pins the two properties that make
+// computing the default matcher once acceptable.
+//
+// Callers get the same instance, which is the point -- compiling the defaults
+// skeletonizes every term, and enforcement runs on every create and rename.
+// Sharing is only safe while a Matcher stays immutable, so this also checks
+// that a verdict is unchanged after concurrent use: if a mutating method were
+// ever added and something wrote through the shared pointer, the second read
+// would disagree with the first.
+func TestDefaultMatcherIsSharedAndStable(t *testing.T) {
+	t.Parallel()
+
+	first, err := DefaultMatcher()
+	if err != nil {
+		t.Fatalf("DefaultMatcher() error = %v", err)
+	}
+	second, err := DefaultMatcher()
+	if err != nil {
+		t.Fatalf("DefaultMatcher() error = %v", err)
+	}
+	if first != second {
+		t.Errorf("DefaultMatcher returned distinct instances (%p, %p); the compiled lists should be shared", first, second)
+	}
+
+	before := first.Check("admin")
+
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m, err := DefaultMatcher()
+			if err != nil || m != first {
+				t.Errorf("concurrent DefaultMatcher() = %p, %v; want %p, nil", m, err, first)
+				return
+			}
+			_ = m.Check("admin")
+			_ = m.Check("some-unremarkable-handle")
+		}()
+	}
+	wg.Wait()
+
+	if after := first.Check("admin"); after != before {
+		t.Errorf("verdict changed after concurrent use: %+v -> %+v; a Matcher must stay immutable", before, after)
 	}
 }
