@@ -83,7 +83,9 @@ var confusables = map[rune]string{
 	'ѕ': "s", // U+0455 CYRILLIC SMALL DZE
 	'н': "h", // U+043D CYRILLIC SMALL EN (uppercase Н reads as H)
 	'і': "i", // U+0456 CYRILLIC SMALL BYELORUSSIAN-UKRAINIAN I
+	'ї': "i", // U+0457 CYRILLIC SMALL YI (і plus a diaeresis, precomposed)
 	'ј': "j", // U+0458 CYRILLIC SMALL JE
+	'һ': "h", // U+04BB CYRILLIC SMALL SHHA (drawn as a Latin h)
 	'к': "k", // U+043A CYRILLIC SMALL KA
 	'м': "m", // U+043C CYRILLIC SMALL EM (uppercase М reads as M)
 	'о': "o", // U+043E CYRILLIC SMALL O
@@ -96,6 +98,7 @@ var confusables = map[rune]string{
 	// --- Greek.
 	'α': "a", // U+03B1 GREEK SMALL ALPHA
 	'ε': "e", // U+03B5 GREEK SMALL EPSILON
+	'η': "n", // U+03B7 GREEK SMALL ETA (reads as Latin n)
 	'ι': "i", // U+03B9 GREEK SMALL IOTA
 	'κ': "k", // U+03BA GREEK SMALL KAPPA
 	'μ': "m", // U+03BC GREEK SMALL MU
@@ -105,6 +108,7 @@ var confusables = map[rune]string{
 	'τ': "t", // U+03C4 GREEK SMALL TAU
 	'υ': "u", // U+03C5 GREEK SMALL UPSILON
 	'χ': "x", // U+03C7 GREEK SMALL CHI
+	'ω': "w", // U+03C9 GREEK SMALL OMEGA (as Cyrillic ѡ above)
 	'ϲ': "c", // U+03F2 GREEK LUNATE SIGMA
 
 	// --- Latin letters whose lowercase mapping does not reach ASCII.
@@ -265,8 +269,11 @@ var leetspeak = map[rune]rune{
 // evasions this package is required to defeat. The trade is judged not worth
 // it. Should that change, it belongs in a reviewed TableVersion bump.
 func isSeparator(r rune) bool {
+	// ASCII fast path. '-' is in unicode.Pd and '_' in unicode.Pc, so both are
+	// already covered below; naming them here only skips a range-table search
+	// for the separators that actually appear in identifiers.
 	switch r {
-	case '_', '.':
+	case '_', '.', '-':
 		return true
 	}
 	// unicode.Pd covers ASCII "-" together with every other dash form

@@ -185,6 +185,27 @@ func TestEvasionsCollapseToTarget(t *testing.T) {
 	}
 }
 
+// TestConfirmedHomoglyphBypasses pins the concrete impersonation vectors that
+// were verified to survive an earlier revision of the tables unfolded. Each one
+// is a real bypass, not a hypothetical: before the entry that fixes it, the
+// input below is returned unchanged and therefore never matches its target.
+// They are listed by codepoint so a reader is not asked to tell "admiη" from
+// "admin" by eye -- which is the whole point.
+func TestConfirmedHomoglyphBypasses(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"greek eta for n (U+03B7)", "admiηn", "adminn"},
+		{"greek eta as the n (U+03B7)", "admiη", "admin"},
+		{"cyrillic yi for i (U+0457)", "admїn", "admin"},
+		{"cyrillic shha for h (U+04BB)", "һdmin", "hdmin"},
+		{"greek omega for w (U+03C9)", "ωeb", "web"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			checkSkeleton(t, tc.in, tc.want)
+		})
+	}
+}
+
 // TestDistinctIdentifiersDoNotCollide guards the other failure mode. Folding
 // too aggressively refuses a legitimate user their own name, so a set of
 // genuinely different identifiers must keep genuinely different skeletons.

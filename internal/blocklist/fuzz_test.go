@@ -18,6 +18,8 @@ func FuzzSkeleton(f *testing.F) {
 		"\U0001d41a\U0001d41d\U0001d426\U0001d422\U0001d427",
 		"ⓐⓓⓜⓘⓝ", "¹²³", "ﬁ", "ß", "İ", "a\u200bd\u0301min",
 		"\xff\xfe", "ad\xc3min", "漢字", "root2689",
+		// Confirmed bypasses: Greek eta/omega, Cyrillic yi/shha.
+		"admiη", "admїn", "һdmin", "ωeb",
 	}
 	for _, s := range seeds {
 		f.Add(s)

@@ -55,7 +55,11 @@ import (
 //
 // Version 1: initial tables (compatibility ranges, confusables, leet,
 // separators) as described in tables.go.
-const TableVersion = 1
+//
+// Version 2: confusables gains Greek eta and omega and Cyrillic yi and shha.
+// Each was a working impersonation vector: "admiη", "admїn" and "һdmin" all
+// survived version 1 unfolded.
+const TableVersion = 2
 
 // Skeleton reduces s to its canonical comparison form. The result is a lossy,
 // one-way projection of s; see the package documentation.
