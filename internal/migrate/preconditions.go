@@ -47,7 +47,12 @@ func TableAbsent(name string) Precondition {
 // by the single bind argument. The table name is never interpolated.
 func tableExistsQuery(engine Engine) string {
 	if engine == EnginePostgres {
-		return `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`
+		// to_regclass resolves the name against the session search_path and
+		// PostgreSQL's identifier case-folding rules, so it does not silently
+		// miss tables in a non-default schema the way a hardcoded
+		// table_schema = 'public' filter on information_schema.tables would.
+		// It returns NULL for an unknown name, so the count is 0.
+		return `SELECT COUNT(*) FROM pg_class WHERE oid = to_regclass($1)`
 	}
 	return `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`
 }

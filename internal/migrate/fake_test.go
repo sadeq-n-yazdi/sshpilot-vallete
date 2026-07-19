@@ -124,7 +124,7 @@ func tableName(q, upper, verb string) string {
 // the named table exists, else 0.
 func (db *fakeDB) runCatalogQuery(tables map[string]bool, query string, args []any) (Rows, bool) {
 	upper := strings.ToUpper(query)
-	if !strings.Contains(upper, "SQLITE_MASTER") && !strings.Contains(upper, "INFORMATION_SCHEMA.TABLES") {
+	if !strings.Contains(upper, "SQLITE_MASTER") && !strings.Contains(upper, "TO_REGCLASS") {
 		return nil, false
 	}
 	if len(args) != 1 {
