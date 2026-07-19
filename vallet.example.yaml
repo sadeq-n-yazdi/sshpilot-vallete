@@ -1,0 +1,131 @@
+# sshpilot-vallet example configuration.
+#
+# Precedence: environment variables override this file, which overrides the
+# built-in defaults (ADR-0022). Every value shown below is the built-in default
+# unless noted; delete anything you do not need to change.
+#
+# Secrets are NEVER written here. Fields ending in `_ref` take a *reference* of
+# the form `scheme:opaque`:
+#   env:VALLET_PG_DSN        -> read from the named environment variable
+#   file:/run/secrets/pg-dsn -> read from the file (one trailing newline trimmed)
+#
+# Every leaf can also be set from the environment as VALLET_ + the upper-snaked
+# path, e.g. server.public_base_url -> VALLET_SERVER_PUBLIC_BASE_URL.
+#
+# Durations accept Go syntax (300ms, 15m, 1h30m) plus a day suffix (30d = 720h).
+
+server:
+  # production | development. Production is fail-closed: it requires an https
+  # public_base_url and a token signing key, and rejects self-signed TLS.
+  environment: production
+  listen_addr: ":8443"
+  # Required in production; must be https://. The externally reachable base URL.
+  public_base_url: ""
+  # Source IPs/CIDRs of trusted reverse proxies (required for tls.mode upstream).
+  trusted_proxies: []
+
+tls:
+  # REQUIRED, no default. One of:
+  #   acme | cloudflare_origin | manual | csr | upstream | self_signed
+  mode: ""
+  min_version: "1.2"
+  acme:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+    # tls_alpn_01 | dns_01
+    solver: ""
+    dns:
+      # manual | api
+      mode: ""
+      provider: ""
+      # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
+      credentials_ref: ""
+  cloudflare_origin:
+    # Required for cloudflare_origin mode. e.g. env:VALLET_CF_API_TOKEN
+    api_token_ref: ""
+  manual:
+    # Both required for manual mode.
+    cert_file: ""
+    key_file: ""
+  upstream:
+    # TLS terminated by an upstream proxy; trust X-Forwarded-Proto from proxies.
+    require_forwarded_proto: true
+  # Permit self_signed in production (NOT recommended; production refuses it
+  # otherwise).
+  allow_self_signed_in_production: false
+  # Primary certificate domain (required for acme and csr modes).
+  domain: ""
+  sans: []
+
+database:
+  # sqlite | postgres
+  driver: sqlite
+  sqlite:
+    path: "./data/vallet.db"
+  postgres:
+    # Required for postgres driver. e.g. file:/run/secrets/pg-dsn
+    dsn_ref: ""
+
+auth:
+  access_token_ttl: 15m
+  refresh_token_max_age: 90d
+  # Required in production. e.g. env:VALLET_TOKEN_SIGNING_KEY
+  token_signing_key_ref: ""
+  providers:
+    # At least one provider must be enabled.
+    api_token:
+      enabled: true
+    passkey:
+      enabled: false
+    oidc:
+      enabled: false
+
+rate_limit:
+  enabled: true
+  # memory | shared
+  store: memory
+  shared:
+    # Required when store is shared.
+    address: ""
+    # Optional. e.g. env:VALLET_RATE_LIMIT_PASSWORD
+    password_ref: ""
+  tiers:
+    auth: { requests: 5, window: 1m }
+    publish: { requests: 60, window: 1m }
+    management: { requests: 120, window: 1m }
+    admin: { requests: 60, window: 1m }
+
+telemetry:
+  log:
+    level: info
+    format: json
+  metrics:
+    prometheus:
+      enabled: true
+      # Empty means serve metrics on the main listener.
+      listen_addr: ""
+      path: /metrics
+    otlp:
+      enabled: false
+      # Required when enabled.
+      endpoint: ""
+      # Optional. e.g. env:VALLET_OTLP_HEADERS
+      headers_ref: ""
+  traces:
+    enabled: false
+    # Required when enabled.
+    endpoint: ""
+
+onboarding:
+  # invite | open
+  mode: invite
+
+blocklist:
+  # Optional path to a newline-delimited reserved-identifier seed file.
+  seed_file: ""
+  extra_entries: []
+  allow_entries: []
+
+retention:
+  handle_quarantine: 30d
+  audit_retention: 365d
+  max_sets_per_owner: 100
