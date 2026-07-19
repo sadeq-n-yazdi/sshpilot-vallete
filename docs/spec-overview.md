@@ -123,10 +123,24 @@ first priority throughout.
 
 ---
 
-## Deferred beyond phase 1
+## Roadmap (phases)
+
+- **Phase 1 (current):** single-owner vallet — public-keys-only registration,
+  named key sets, clientless `authorized_keys` publishing, pluggable auth, TLS,
+  and the security/ops controls captured above.
+- **Phase 2 — group / organization accounts:** multi-user orgs, shared
+  ownership, roles/RBAC over key sets. The **Owner** abstraction (ADR-0004) is
+  deliberately shaped to extend to orgs without a rewrite.
+- **Phase 3 — scaling:** horizontal scale-out and higher-throughput operation
+  (multi-instance coordination, caching/distribution). Phase-1 choices that
+  anticipate this — shared counter/denylist store (ADR-0023/0018), stateless
+  access tokens, dual-engine data layer (ADR-0011) — keep the door open.
+
+### Deferred beyond phase 1
 
 Per-owner CA signing (ADR-0014); web/TUI/CLI management clients; teams/orgs/RBAC
-(owner abstraction already leaves room); pull-agent distribution mode.
+(→ **phase 2**); pull-agent distribution mode; large-scale/horizontal scaling
+(→ **phase 3**).
 
 ## Open items (tuning/detail, not open decisions)
 

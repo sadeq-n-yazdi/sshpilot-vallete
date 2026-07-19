@@ -137,11 +137,21 @@ Captured from the requirements given to date. **Incomplete — will grow.**
 
 ## 6. Deferred / future (noted, not phase 1)
 
+**Phase roadmap.** Phase 1 = single-owner vallet (this document). **Phase 2 =
+group / organization accounts** (multi-user orgs, shared ownership, RBAC over key
+sets). **Phase 3 = scaling** (horizontal scale-out, multi-instance coordination,
+higher-throughput distribution). Phase-1 design deliberately anticipates both:
+the **Owner** abstraction (ADR-0004) extends to orgs, and the shared
+counter/denylist store (ADR-0023/0018), stateless access tokens, and dual-engine
+data layer (ADR-0011) leave room to scale out.
+
+- **Group / organization accounts** — **phase 2.** Multi-user orgs, shared key-set
+  ownership, roles/RBAC.
+- **Scaling** — **phase 3.** Horizontal scale-out and higher-throughput operation.
 - **Per-owner CA signing** of published keys for third-party verifiability
   (Termius "SSH ID" parity). **Confirmed out of phase 1** (ADR-0014); the data
   model must not preclude adding it later.
 - **Web UI / TUI / CLI** management clients.
-- **Teams / orgs / RBAC** (owner abstraction already leaves room).
 - **Pull-agent** distribution mode (superseded for phase 1 by clientless curl).
 
 ## 7. Cross-cutting requirements (apply to every feature)
