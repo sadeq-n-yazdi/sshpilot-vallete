@@ -1,0 +1,141 @@
+// Package blocklist reduces user-supplied identifiers (handles, key-set names,
+// device names) to a canonical "skeleton" string used only for comparison
+// against reserved-word and profanity blocklists.
+//
+// # One-way and lossy
+//
+// Skeleton is deliberately DESTRUCTIVE. It discards case, accents, separators,
+// combining marks, and the distinction between whole families of
+// visually-confusable codepoints. The result MUST NEVER be stored as the
+// user's identifier, displayed back to a user, used as a database key, or
+// round-tripped in any way. Its single purpose is to be compared against
+// another skeleton. Persist and display the original input; compare the
+// skeleton.
+//
+// # Why
+//
+// A naive string compare against a list such as {"admin", "root"} is trivially
+// defeated: an attacker registers "Admin", "аdmin" (Cyrillic U+0430), "ａｄｍｉｎ"
+// (fullwidth), "a-d-m-i-n", "4dm1n", or "𝐚𝐝𝐦𝐢𝐧" (mathematical bold) and
+// renders an identifier that is indistinguishable from the reserved one to
+// every human who reads it. Folding all of those to the same skeleton is what
+// makes the later match step (a separate change) meaningful.
+//
+// # Scope
+//
+// This package implements the normalization step ONLY. It contains no
+// blocklists, no allowlist, no matching, and no enforcement.
+//
+// # Not NFKC
+//
+// The Unicode standard's answer to stage one would be NFKC. The Go standard
+// library does not ship a normalizer and this module deliberately takes no new
+// dependency, so what follows is a curated compatibility-and-confusable fold
+// built from explicit, hand-auditable tables (see tables.go). It covers the
+// compatibility forms that matter for identifier spoofing -- fullwidth,
+// mathematical alphanumerics, circled, superscript, ligatures -- rather than
+// the whole of NFKC. Coverage is intentionally finite and is expected to grow;
+// see TableVersion.
+package blocklist
+
+import (
+	"unicode"
+	"unicode/utf8"
+)
+
+// TableVersion identifies the revision of the folding tables and of the
+// pipeline that consumes them. It is a monotonically increasing integer.
+//
+// Changing any table, or the order of the pipeline stages, changes which
+// identifiers are considered equal and therefore changes what the system
+// blocks and what it permits. Such a change is a deliberate, security-relevant
+// act: it MUST bump TableVersion, and it MUST be reviewed. Recording this
+// value alongside any persisted decision makes a later ruleset change
+// detectable and auditable.
+//
+// Version 1: initial tables (compatibility ranges, confusables, leet,
+// separators) as described in tables.go.
+const TableVersion = 1
+
+// Skeleton reduces s to its canonical comparison form. The result is a lossy,
+// one-way projection of s; see the package documentation.
+//
+// The pipeline runs once per rune, in this order. The order is deliberate:
+//
+//  1. Ignorables. Invalid UTF-8, combining marks (Mn) and format characters
+//     (Cf, e.g. zero-width space/joiner and soft hyphen) are dropped. Doing
+//     this first means "a<ZWSP>dmin" and decomposed "ádmin" cannot hide behind
+//     an invisible codepoint for the rest of the pipeline.
+//  2. Case folding, via unicode.ToLower, which applies the full Unicode simple
+//     lowercase mapping (Cyrillic А->а, Greek Α->α, fullwidth Ａ->ａ), not just
+//     ASCII. Folding here means every later table needs lowercase keys only,
+//     which halves them and halves what a reviewer must audit. Two cases the
+//     simple mapping does not cover are handled by table instead: dotless ı
+//     (U+0131) has no lowercase mapping to i, and İ (U+0130) lowercases to
+//     "i" plus a combining dot already removed by stage 1.
+//  3. Compatibility ranges: algorithmically contiguous blocks (fullwidth,
+//     mathematical alphanumerics, circled) are mapped by arithmetic to ASCII.
+//  4. Confusables: the arbitrary, non-algorithmic visual equivalences --
+//     Cyrillic, Greek, ligatures, accented Latin -- from an explicit table.
+//  5. Leetspeak: digit and symbol substitutions.
+//  6. Separators: the padding characters an attacker inserts to break a
+//     substring compare.
+//
+// Stages 3, 4 and 5 chain deliberately: fullwidth "４" becomes ASCII "4" in
+// stage 3 and then "a" in stage 5, so "４dmin" and "admin" agree.
+//
+// No character surviving the pipeline is a key of any table or a separator:
+// stages 3 and 4 emit only ASCII letters and digits, and every digit and
+// symbol with a leet reading is consumed by stage 5. Every output character is
+// therefore a fixed point of the pipeline, which makes
+// Skeleton(Skeleton(s)) == Skeleton(s) true by construction rather than by
+// accident. Skeleton is pure and deterministic.
+//
+// The result is always valid UTF-8. Empty, whitespace-only, and
+// entirely-foldable inputs all return "". Callers MUST treat an empty
+// skeleton as "carries no comparable content" and reject such identifiers on
+// that ground rather than treating them as matching nothing.
+func Skeleton(s string) string {
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		// A decoding error over invalid UTF-8 yields utf8.RuneError; so does a
+		// literal U+FFFD in the input. Both are dropped, which is what keeps
+		// the output valid UTF-8 unconditionally.
+		if r == utf8.RuneError {
+			continue
+		}
+		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Cf, r) {
+			continue
+		}
+
+		r = unicode.ToLower(r)
+
+		if folded, ok := foldRange(r); ok {
+			r = folded
+		}
+		if mapped, ok := confusables[r]; ok {
+			// Each rune the table produced re-enters the remaining stages, so
+			// a superscript "¹" becomes "1" here and then "i" below. Without
+			// that, a table target could itself be a leet source and
+			// idempotence would break.
+			for _, m := range mapped {
+				out = appendFolded(out, m)
+			}
+			continue
+		}
+		out = appendFolded(out, r)
+	}
+	return string(out)
+}
+
+// appendFolded runs the final two stages -- leetspeak and separator removal --
+// and appends the result, if any, to out.
+func appendFolded(out []rune, r rune) []rune {
+	if mapped, ok := leetspeak[r]; ok {
+		return append(out, mapped)
+	}
+	if isSeparator(r) {
+		return out
+	}
+	return append(out, r)
+}
