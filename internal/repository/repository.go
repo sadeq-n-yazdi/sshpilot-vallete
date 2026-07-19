@@ -79,12 +79,15 @@ type Store interface {
 	Repos() Repos
 
 	// WithTx runs fn inside a single transaction, passing transaction-bound
-	// repositories. The transaction commits when fn returns nil and rolls back
-	// when fn returns an error or panics (the panic is re-raised after
-	// rollback). It composes multi-entity invariants atomically on both
-	// engines (Postgres transactions; SQLite BEGIN IMMEDIATE with serialized
-	// writers); the interface promises atomicity, not identical engine
-	// semantics. Phase 1 has no savepoints, so a nested WithTx MUST return an
-	// error rather than attempt to nest.
-	WithTx(ctx context.Context, fn func(Repos) error) error
+	// repositories. It also passes fn a context derived from (or equal to) the
+	// one that scopes the transaction, so fn can detect that it is already
+	// inside a WithTx and honor cancellation: implementations MUST propagate
+	// cancellation of that context into the transaction. The transaction commits
+	// when fn returns nil and rolls back when fn returns an error or panics (the
+	// panic is re-raised after rollback). It composes multi-entity invariants
+	// atomically on both engines (Postgres transactions; SQLite BEGIN IMMEDIATE
+	// with serialized writers); the interface promises atomicity, not identical
+	// engine semantics. Phase 1 has no savepoints, so a nested WithTx MUST return
+	// an error rather than attempt to nest.
+	WithTx(ctx context.Context, fn func(ctx context.Context, r Repos) error) error
 }
