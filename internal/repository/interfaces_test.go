@@ -29,8 +29,10 @@ var (
 // be assigned independently, as fakes rely on.
 func TestReposIsPlainStruct(t *testing.T) {
 	var r repository.Repos
-	if r.Owners != nil || r.Audit != nil || r.Admins != nil {
-		t.Fatal("zero-valued Repos should have nil fields")
+	// Comparing against the empty literal covers every field, including any
+	// added later, rather than a hand-picked subset.
+	if r != (repository.Repos{}) {
+		t.Fatal("zero-valued Repos should equal the empty Repos literal")
 	}
 }
 
