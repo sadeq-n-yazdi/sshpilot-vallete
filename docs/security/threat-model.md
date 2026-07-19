@@ -14,6 +14,9 @@
 - **Audit trail** (ADR-0007).
 - **Owner isolation.** In a multi-tenant instance, one owner reading/altering
   another's data is a critical breach (ADR-0004, 0008).
+- **Server TLS private key** and, when DNS-01 is used, **DNS-provider API
+  credentials.** The server's own secrets (distinct from users' SSH keys); their
+  compromise enables impersonation or unauthorized cert issuance (ADR-0015).
 
 ## Explicitly NOT assets
 
@@ -33,6 +36,9 @@
    (passkeys/OIDC/API-tokens, ADR-0009) and strictly owner-scoped (ADR-0004).
 4. **Owner ↔ owner (multi-tenant).** Isolation enforced at the repository layer
    (ADR-0004, 0008).
+5. **Upstream TLS terminator → backend.** When TLS is terminated by a proxy/CDN,
+   the app-facing hop is trusted only if explicitly configured; forwarded headers
+   from unknown sources must not be trusted (ADR-0015).
 
 ## Top risks (current view)
 
@@ -42,13 +48,16 @@
 | Unauthorized key addition | Weak/absent management authN | Pluggable authN + owner-scoped authZ | Confirmed (0009, 0004); token model TBD |
 | Weak-key acceptance | DSA / short RSA | Algorithm + size floors at ingest | Confirmed (0006) |
 | Cross-tenant access | Missing owner scoping | Owner-scoping enforced in repository | Confirmed (0004, 0008) |
-| Duplicate/clobbered host files | Non-idempotent `>>` append | Managed-block helper / AuthorizedKeysCommand | Open question |
+| Duplicate/clobbered host files | Non-idempotent `>>` append | Managed-block helper (atomic, 0600, marked block) / AuthorizedKeysCommand | Confirmed (0013); helper form TBD |
 | Handle enumeration / metadata leak | Public endpoint | Per-owner visibility + access key; rate limiting | Partly (0010); limiting TBD |
 | Access-key leakage (protected handles) | Key in URL/logs/caches | Presentation mechanism choice | Open question |
-| MITM on key fetch | Plaintext HTTP | Require TLS; document HTTPS-only | To document |
+| MITM / tampering on key fetch | Plaintext or downgraded transport | HTTPS-only, refuse plaintext, HSTS, TLS ≥ 1.2 | Confirmed (0015) |
+| Forwarded-header spoofing | Trusting `X-Forwarded-*` from any source | Trust proxy headers only when explicitly configured | Confirmed (0015) |
+| TLS key / DNS-credential leakage | Weak storage, logging | Restrictive perms, never logged, least-privilege DNS creds | Confirmed (0015); storage form TBD |
+| Cert expiry outage | Renewal failure | Renewal scheduling + expiry alerting; fail-closed vs last-good | Open question (0015) |
 | Tampering without trace | No audit | Append-only audit log | Confirmed (0007) |
 
 ## Deferred defense-in-depth
 
-- Per-owner **CA signing** of published keys for third-party verification.
-- Host-side write safety (atomic write, `0600`, managed-block markers).
+- Per-owner **CA signing** of published keys for third-party verification
+  (ADR-0014, deferred).

@@ -53,6 +53,9 @@ CLI for managing keys.
 | 14 | Owner onboarding: **deployer-configurable** — open self-signup or invite/admin-provisioned. | 0012 |
 | 15 | Key application: support **`curl`** and **`AuthorizedKeysCommand`**; ship a **managed-block helper** for the curl path. | 0013 |
 | 16 | Per-owner **CA signing**: **deferred** beyond phase 1. | 0014 |
+| 17 | Transport is **HTTPS-only**: no plaintext listener, plaintext **refused** (not redirected), HSTS, TLS ≥ 1.2. | 0015 |
+| 18 | **Certificate modes** (deployer selects): automatic ACME, operator-provided cert+key, generate CSR for external signing, or TLS terminated upstream. | 0015 |
+| 19 | **ACME challenges**: TLS-ALPN-01 and DNS-01 (pluggable DNS providers, e.g. Cloudflare); HTTP-01 not used. | 0015 |
 
 ## 4. Phase-1 scope (as described so far)
 
@@ -71,6 +74,11 @@ Captured from the requirements given to date. **Incomplete — will grow.**
   owner's machines, keeping them consistent.
 - **Configurable onboarding.** The deployer chooses how owners are created —
   open self-signup or invite/admin-provisioned. (ADR-0012)
+- **HTTPS-only transport with certificate provisioning.** Serve only over TLS
+  (no plaintext listener); obtain certs via automatic ACME (TLS-ALPN-01 / DNS-01,
+  incl. Let's Encrypt / ZeroSSL / Cloudflare-DNS), or use an operator-provided
+  cert, or generate a CSR for external signing, or run behind an upstream TLS
+  terminator. (ADR-0015)
 - **Key management surface.** The backend exposes management operations (register
   device, add/list/revoke keys, set handle, set handle visibility) for a
   separate client (sshpilot desktop first; web/TUI/CLI later). *Management client
@@ -135,6 +143,10 @@ Still open:
 6. **Rate limiting / abuse** on the public endpoint (more pressing for SaaS).
 7. **Managed-block helper form:** shell script shipped with releases vs an
    endpoint that serves the script vs both.
+8. **TLS specifics:** EAB handling for ZeroSSL-style CAs; which DNS-01 providers
+   ship first; storage location/format for cert, key, and DNS credentials;
+   renewal scheduling and failure alerting; min TLS version / cipher defaults;
+   fail-closed vs serve-last-good when a cert expires and renewal fails.
 
 ## 9. Change log
 
@@ -146,3 +158,7 @@ Still open:
 - 2026-07-19 (round 2 answers) — Data store = SQLite + PostgreSQL; onboarding
   deployer-configurable; key application via curl + AuthorizedKeysCommand with a
   managed-block helper; CA signing confirmed deferred. Refreshed open questions.
+- 2026-07-19 (feature: TLS) — HTTPS-only transport (refuse plaintext), four
+  deployer-selectable certificate modes (ACME / provided / CSR / upstream),
+  ACME via TLS-ALPN-01 and DNS-01 (no HTTP-01). Added ADR-0015 and TLS open
+  items.

@@ -28,6 +28,7 @@ consequences. They are the project's decision memory.
 | [0012](0012-configurable-owner-onboarding.md) | Configurable owner onboarding | Accepted |
 | [0013](0013-key-application-methods.md) | Key application methods and managed-block helper | Accepted |
 | [0014](0014-ca-signing-deferred.md) | Per-owner CA signing deferred beyond phase 1 | Accepted |
+| [0015](0015-https-only-transport-and-certificate-provisioning.md) | HTTPS-only transport with pluggable certificate provisioning | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.
