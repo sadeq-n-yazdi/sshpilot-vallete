@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 
@@ -51,6 +52,13 @@ func decodeFile(path string, cfg *Config) error {
 	dec := yaml.NewDecoder(f)
 	dec.KnownFields(true)
 	if err := dec.Decode(cfg); err != nil {
+		// An empty or comments-only document has nothing to decode and yields
+		// io.EOF. Treat that as "no overrides": cfg keeps the defaults it was
+		// called with. KnownFields strictness is preserved for every other
+		// (non-empty) document, so unknown keys remain a hard error.
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
 		return fmt.Errorf("config: decode %q: %w", path, err)
 	}
 	return nil

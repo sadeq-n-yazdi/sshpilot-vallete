@@ -74,6 +74,27 @@ func TestLoadMinimal(t *testing.T) {
 	}
 }
 
+// TestLoadEmptyFileYieldsDefaults asserts that an empty or comments-only file
+// loads cleanly as "no overrides" rather than failing on the io.EOF that yaml
+// returns for a document with nothing to decode. Concrete defaults must
+// survive, guarding against both an erroring path and a silent zeroing of cfg.
+func TestLoadEmptyFileYieldsDefaults(t *testing.T) {
+	for _, name := range []string{"empty.yaml", "comments-only.yaml"} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := Load(filepath.Join("testdata", name))
+			if err != nil {
+				t.Fatalf("Load(%s): %v", name, err)
+			}
+			if cfg.Server.Environment != "production" {
+				t.Errorf("environment = %q, want default production", cfg.Server.Environment)
+			}
+			if cfg.Database.Driver != "sqlite" {
+				t.Errorf("driver = %q, want default sqlite", cfg.Database.Driver)
+			}
+		})
+	}
+}
+
 // applyEnvFrom is a test helper overlaying a fixed environment map.
 func applyEnvFrom(t *testing.T, cfg *Config, env map[string]string) {
 	t.Helper()
