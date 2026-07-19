@@ -38,6 +38,8 @@ consequences. They are the project's decision memory.
 | [0022](0022-configuration-and-secrets.md) | Configuration and secrets management | Accepted |
 | [0023](0023-rate-limiting-and-abuse.md) | Rate limiting and abuse protection | Accepted |
 | [0024](0024-audit-retention-and-erasure.md) | Audit retention and erasure | Accepted |
+| [0025](0025-observability-and-telemetry.md) | Observability and telemetry | Accepted |
+| [0026](0026-handle-lifecycle.md) | Handle lifecycle: uniqueness, rename, quarantine | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.

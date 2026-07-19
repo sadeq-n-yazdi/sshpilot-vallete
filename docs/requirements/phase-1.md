@@ -74,6 +74,8 @@ CLI for managing keys.
 | 28 | **Protected-set access** presented as an **`Authorization: Bearer`** header (never query string). | 0010 |
 | 29 | **Rate limiting**: built-in, tiered, configurable (auth/signup/publish/admin), `429`+`Retry-After`, trusted-IP keying; coexists with external limiters. | 0023 |
 | 30 | **Audit retention/erasure**: append-only + configurable retention purge; **pseudonymize** owner data on deletion/erasure while keeping the structural record. | 0024 |
+| 31 | **Observability**: OpenTelemetry (OTLP) core + Prometheus `/metrics`; supports Grafana/New Relic/Datadog/etc. by config; `/healthz`+`/readyz` (readiness reflects DB & cert); `/metrics` exposure configurable; no secrets/PII in telemetry. | 0025 |
+| 32 | **Handle lifecycle**: globally unique; **rename allowed with quarantine** (old handle held, never serves another owner's keys — 404/410). | 0026 |
 
 ## 4. Phase-1 scope (as described so far)
 
@@ -173,8 +175,9 @@ Still open:
 4. ~~Instance config mechanism~~ — **resolved:** file + env overrides, secrets
    via env/file refs behind a pluggable provider (ADR-0022). Exact schema/field
    names and YAML-vs-TOML remain implementation detail.
-5. **Handle claiming & uniqueness**, reservation, and change/rename rules
-   (esp. across tenants).
+5. ~~Handle claiming & uniqueness / rename rules~~ — **resolved:** globally
+   unique; rename allowed with quarantine (ADR-0026). Quarantine duration and
+   set-name quarantine remain open (§5a).
 5a. **Key-set details:** set-name rules & reserved names; max sets per owner;
    deleting a non-empty or default set; per-set access-key lifecycle.
 5b. **Blocklist details:** confusable/leetspeak folding tables and per-category
@@ -232,6 +235,9 @@ Still open:
 - 2026-07-19 (gaps: rate limiting, audit lifecycle) — Built-in tiered,
   external-friendly rate limiting (ADR-0023, #29); audit append-only with
   retention purge and pseudonymize-on-erasure (ADR-0024, #30).
+- 2026-07-19 (gaps: observability, handle lifecycle) — OTLP + Prometheus
+  telemetry supporting Grafana/New Relic/Datadog/etc. (ADR-0025, #31); globally
+  unique handles with rename-and-quarantine to prevent hijack (ADR-0026, #32).
 - 2026-07-19 (feature: reserved identifiers) — System-wide blocklist for handles
   and key-set names across four categories with confusable/leetspeak-aware
   matching; default + deploy-time seed + runtime-editable by a new **system

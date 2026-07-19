@@ -51,6 +51,7 @@
 | Cross-tenant access | Missing owner scoping | Owner-scoping enforced in repository | Confirmed (0004, 0008) |
 | Duplicate/clobbered host files | Non-idempotent `>>` append | Managed-block helper (atomic, 0600, marked block) / AuthorizedKeysCommand | Confirmed (0013); helper form TBD |
 | Identifier impersonation | Claiming `admin`/`root`/homoglyph handles | Reserved-identifier blocklist w/ confusable-aware matching | Confirmed (0017); folding tables TBD |
+| Handle-hijack after rename | Reclaiming a freed handle still in servers' URLs | Rename quarantine; old handle 404s, never serves other keys | Confirmed (0026) |
 | Handle/set enumeration / metadata leak | Public endpoint | Per-set visibility + access key; rate limiting | Confirmed (0010, 0016, 0023) |
 | Credential brute force | Repeated login/enrollment attempts | Tiered rate limits + failed-auth backoff/lockout | Confirmed (0023) |
 | Signup flood / scraping | Automated abuse of open surfaces | Built-in tiered rate limiting (per-IP/owner) | Confirmed (0023); defaults TBD |
