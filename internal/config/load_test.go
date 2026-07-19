@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,6 +59,30 @@ func TestLoadUnknownKeyRejected(t *testing.T) {
 func TestLoadBadDurationRejected(t *testing.T) {
 	if _, err := Load(filepath.Join("testdata", "invalid-bad-duration.yaml")); err == nil {
 		t.Fatal("expected duration parse error")
+	}
+}
+
+// TestLoadUnreadablePathErrors covers the non-ErrNotExist open failure: a path
+// whose parent component is a regular file cannot be opened, and Load must
+// report it rather than silently proceeding on defaults.
+func TestLoadUnreadablePathErrors(t *testing.T) {
+	notADir := filepath.Join("testdata", "empty.yaml", "config.yaml")
+	if _, err := Load(notADir); err == nil {
+		t.Fatal("expected an open error for a path under a regular file")
+	}
+}
+
+// TestLoadRejectsBadEnvOverride asserts the environment layer fails the whole
+// Load. Precedence is env > file, so a malformed override must not fall back to
+// the file or default value it was meant to replace.
+func TestLoadRejectsBadEnvOverride(t *testing.T) {
+	t.Setenv("VALLET_AUTH_ACCESS_TOKEN_TTL", "-15m")
+	cfg, err := Load("")
+	if err == nil {
+		t.Fatalf("expected a load error, got config %+v", cfg)
+	}
+	if !strings.Contains(err.Error(), "VALLET_AUTH_ACCESS_TOKEN_TTL") {
+		t.Errorf("error %q does not name the offending variable", err)
 	}
 }
 

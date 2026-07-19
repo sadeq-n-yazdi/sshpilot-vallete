@@ -169,7 +169,7 @@ func TestApplyEnvParseFailures(t *testing.T) {
 	}
 }
 
-// TestApplyEnvValueConversions pins the parsing behaviour of the typed setters
+// TestApplyEnvValueConversions pins the parsing behavior of the typed setters
 // that is not obvious from the table: list splitting and the day duration form.
 func TestApplyEnvValueConversions(t *testing.T) {
 	cfg := Default()

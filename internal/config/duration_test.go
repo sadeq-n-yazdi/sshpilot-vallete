@@ -136,6 +136,21 @@ func TestDurationYAMLRoundTrip(t *testing.T) {
 	}
 }
 
+// TestDurationUnmarshalYAMLNonString covers the node-type guard: a duration
+// written as a yaml sequence or mapping must be a decode error, not a zero
+// value silently accepted.
+func TestDurationUnmarshalYAMLNonString(t *testing.T) {
+	type wrap struct {
+		D Duration `yaml:"d"`
+	}
+	for _, doc := range []string{"d: [1, 2]\n", "d: {a: b}\n"} {
+		var w wrap
+		if err := yaml.Unmarshal([]byte(doc), &w); err == nil {
+			t.Errorf("yaml.Unmarshal(%q) = nil error, want a type error", doc)
+		}
+	}
+}
+
 func TestDurationUnmarshalText(t *testing.T) {
 	var d Duration
 	if err := d.UnmarshalText([]byte("90d")); err != nil {

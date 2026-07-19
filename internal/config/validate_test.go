@@ -84,6 +84,10 @@ func TestValidateFailures(t *testing.T) {
 			c.TLS.Mode = "manual"
 			c.TLS.Manual.KeyFile = "/k"
 		}, "tls.manual.cert_file"},
+		{"manual missing key", func(c *Config) {
+			c.TLS.Mode = "manual"
+			c.TLS.Manual.CertFile = "/c"
+		}, "tls.manual.key_file"},
 		{"upstream no proxies", func(c *Config) {
 			c.TLS.Mode = "upstream"
 		}, "server.trusted_proxies"},
@@ -289,6 +293,31 @@ func TestValidateTrustedProxies(t *testing.T) {
 				t.Fatalf("proxies %v should be valid, got: %v", tc.proxies, err)
 			}
 		})
+	}
+}
+
+// TestValidateRateLimitDisabledSkipsTierChecks documents a deliberate
+// zero-is-legitimate decision: when rate limiting is off, the tier requests and
+// windows are not consumed by anything, so a zero or unset tier is not an
+// error. The checks apply only to values that will actually be used.
+func TestValidateRateLimitDisabledSkipsTierChecks(t *testing.T) {
+	c := validConfig()
+	c.RateLimit.Enabled = false
+	c.RateLimit.Store = ""
+	c.RateLimit.Tiers = RateLimitTiers{}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("disabled rate limiting should not require tiers, got: %v", err)
+	}
+}
+
+// TestValidateRateLimitSharedStore covers the shared store's accepted form.
+func TestValidateRateLimitSharedStore(t *testing.T) {
+	c := validConfig()
+	c.RateLimit.Store = "shared"
+	c.RateLimit.Shared.Address = "redis.internal:6379"
+	c.RateLimit.Shared.PasswordRef = "env:VALLET_RL_PASSWORD"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("shared store config should be valid, got: %v", err)
 	}
 }
 
