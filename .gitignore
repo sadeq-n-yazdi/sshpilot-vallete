@@ -1,0 +1,22 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.out
+
+# Go
+/vendor/
+*.test
+coverage.out
+coverage.html
+
+# Env / secrets (never commit real secrets)
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
