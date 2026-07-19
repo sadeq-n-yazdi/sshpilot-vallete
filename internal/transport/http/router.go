@@ -13,8 +13,10 @@ import (
 // to a socket. A nil logger is replaced with a discarding one rather than
 // panicking — losing logs must never be the reason a request fails.
 //
-// Routing uses the stdlib method-aware ServeMux patterns (Go 1.22+); no
-// third-party router is pulled in for a handful of routes.
+// Routing uses the stdlib method-aware ServeMux patterns; no third-party
+// router is pulled in for a handful of routes. (Those patterns arrived in Go
+// 1.22, which is a note on the feature's history, not a compatibility floor:
+// the module requires go 1.26 per go.mod, and CI builds on exactly that.)
 func NewHandler(logger *slog.Logger, pinger Pinger, publisher Publisher) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
