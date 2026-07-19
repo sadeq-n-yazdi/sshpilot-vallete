@@ -165,7 +165,8 @@ data layer (ADR-0011) leave room to scale out.
 - **Multi-tenant isolation:** one owner can never read or affect another owner's
   data; enforced at the repository layer.
 - **Instance-level configuration:** auth providers, default handle visibility,
-  and similar policy are set by the deployer via config (mechanism TBD).
+  and similar policy are set by the deployer via config (structured file + env
+  overrides, validated fail-closed; secrets via a pluggable provider — ADR-0022).
 
 ## 8. Open questions (resolve before finalizing phase 1)
 

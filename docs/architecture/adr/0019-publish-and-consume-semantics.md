@@ -40,9 +40,18 @@ revocation.
 
 ### Not-found & enumeration
 
-- Unknown handle or set → `404`. Existing but empty set → `200` with an empty
-  body. Protected sets return `404`/`401` uniformly enough not to leak existence
-  beyond what the handle already implies (enumeration hardening is an open item).
+- Unknown handle or set → `404`. Existing but empty **public** set → `200` with
+  an empty body.
+- **Enumeration hardening (resolved):** without a valid access credential, a
+  **protected** set responds **identically to a nonexistent** set — **`404`** —
+  so an unauthenticated scanner cannot distinguish "a protected set exists here"
+  from "nothing here." Legitimate consumers hold the access key (delivered
+  out-of-band with the URL) and always present the `Authorization: Bearer` token:
+  a **valid** token yields `200`; an **invalid/expired** token targeting that set
+  yields **`401`**. Combined with rate limiting (ADR-0023), this blunts
+  enumeration of protected set names. The trade-off — a mistyped/credential-less
+  request to a real protected set sees `404` rather than a helpful `401` — is
+  accepted in favor of not leaking existence.
 
 ## Consequences
 
