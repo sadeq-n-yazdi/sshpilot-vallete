@@ -29,6 +29,19 @@ const buildScript = "../../scripts/build.sh"
 // `git describe` produced different output between them.
 const testVersion = "0.0.0-repro-test"
 
+// testBinName is pinned so the test knows the output file name by
+// construction. The build script honors BIN_NAME from the environment, so
+// without this an ambient BIN_NAME would leave the test looking for a file the
+// script never wrote.
+//
+// The test dictates the environment rather than re-deriving the script's
+// defaulting rules. Mirroring that logic here would duplicate it, and the copy
+// could drift from the script -- at which point the test either fails
+// spuriously or, worse, silently hashes the wrong file. It also matters that
+// this test is hermetic: a reproducibility check whose own behavior varies
+// with ambient environment is a poor witness for "this build is deterministic".
+const testBinName = "valletd-repro-test"
+
 func TestBuildIsReproducible(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping reproducible build check in -short mode: it compiles the binary twice")
@@ -82,9 +95,17 @@ func buildOnce(t *testing.T, label string) string {
 	outDir := filepath.Join(t.TempDir(), label)
 
 	cmd := exec.Command("bash", buildScript)
+
+	// Every input the script reads is pinned explicitly, appended after
+	// os.Environ() so these values win over anything ambient. That makes the
+	// output path known by construction and keeps the two builds differing in
+	// nothing but the directory they are written to.
 	cmd.Env = append(os.Environ(),
 		"OUT_DIR="+outDir,
 		"VERSION="+testVersion,
+		"BIN_NAME="+testBinName,
+		"GOOS="+runtime.GOOS,
+		"GOARCH="+runtime.GOARCH,
 	)
 
 	out, err := cmd.CombinedOutput()
@@ -92,7 +113,7 @@ func buildOnce(t *testing.T, label string) string {
 		t.Fatalf("build (%s) failed: %v\n%s", label, err, out)
 	}
 
-	return sha256File(t, filepath.Join(outDir, "valletd"))
+	return sha256File(t, filepath.Join(outDir, testBinName))
 }
 
 // sha256File returns the hex-encoded SHA-256 digest of the named file.
