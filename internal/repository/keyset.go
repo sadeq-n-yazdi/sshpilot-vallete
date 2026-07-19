@@ -49,8 +49,10 @@ type KeySetRepository interface {
 
 	// Delete removes the key set and its membership rows (never the PublicKey
 	// rows). The implementation MUST refuse to delete a set whose IsDefault is
-	// true, returning domain.ErrConflict. It returns domain.ErrNotFound if the
-	// set does not exist or belongs to another owner.
+	// true, returning domain.ErrDefaultKeySet so callers can distinguish this
+	// recoverable "designate another default first" condition from a generic
+	// state clash. It returns domain.ErrNotFound if the set does not exist or
+	// belongs to another owner.
 	Delete(ctx context.Context, ownerID domain.OwnerID, id domain.KeySetID) error
 
 	// AddMember adds the key to the set, stamping AddedAt with now. It returns
