@@ -51,6 +51,24 @@ func TestTableExistsForwardsInfraError(t *testing.T) {
 	}
 }
 
+// TestVerifyLedgerLongerThanRegistry covers the fast-path guard: a ledger with
+// more rows than the registry contains fails with ErrLedgerAhead before the
+// per-row loop, and nothing is applied.
+func TestVerifyLedgerLongerThanRegistry(t *testing.T) {
+	ctx := context.Background()
+	m := mig("0001", "one")
+	db := newFakeDB(EngineSQLite)
+	db.seedLedger(appliedRow(m, EngineSQLite, fixedClock()))
+	db.seedLedger(appliedRow(mig("0002", "two"), EngineSQLite, fixedClock()))
+	r := mustRunner(t, db, EngineSQLite, mustRegistry(t, m))
+	if _, err := r.Up(ctx); !errors.Is(err, ErrLedgerAhead) {
+		t.Fatalf("expected ErrLedgerAhead, got %v", err)
+	}
+	if _, err := r.Status(ctx); !errors.Is(err, ErrLedgerAhead) {
+		t.Fatalf("Status expected ErrLedgerAhead, got %v", err)
+	}
+}
+
 // TestStepsForEngineUnknownEngine covers the defensive default branch of
 // Steps.forEngine, which yields nil for an engine the runner never constructs.
 func TestStepsForEngineUnknownEngine(t *testing.T) {

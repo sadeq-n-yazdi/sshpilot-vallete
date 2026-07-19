@@ -166,10 +166,11 @@ func (r *Runner) Status(ctx context.Context) (Status, error) {
 // first) and the pending migrations (in application order).
 //
 // Checks run in a fixed order so a scenario that violates exactly one invariant
-// yields the matching sentinel: per-row registry membership (ErrLedgerAhead),
-// engine match (ErrEngineMismatch), and checksum (ErrChecksumMismatch); then
-// the global contiguous-prefix check (ErrLedgerOrder); then the pending
-// dependency check (ErrDependencyUnmet).
+// yields the matching sentinel: a ledger longer than the registry
+// (ErrLedgerAhead); then per-row registry membership (ErrLedgerAhead), engine
+// match (ErrEngineMismatch), and checksum (ErrChecksumMismatch); then the
+// global contiguous-prefix check (ErrLedgerOrder); then the pending dependency
+// check (ErrDependencyUnmet).
 func (r *Runner) verify(ctx context.Context) ([]Ledger, []Migration, error) {
 	applied, err := loadLedger(ctx, r.db)
 	if err != nil {
@@ -177,6 +178,13 @@ func (r *Runner) verify(ctx context.Context) ([]Ledger, []Migration, error) {
 	}
 
 	all := r.reg.ordered
+	// A ledger longer than the registry means it records at least one migration
+	// the registry no longer contains. Fail fast before the per-row loop; this
+	// also makes the all[i] index in the contiguous-prefix loop below provably
+	// in range.
+	if len(applied) > len(all) {
+		return nil, nil, fmt.Errorf("migrate: ledger records more migrations than the registry contains: %w", ErrLedgerAhead)
+	}
 	for _, row := range applied {
 		m, ok := r.reg.Get(row.ID)
 		if !ok {
@@ -190,9 +198,6 @@ func (r *Runner) verify(ctx context.Context) ([]Ledger, []Migration, error) {
 		}
 	}
 
-	if len(applied) > len(all) {
-		return nil, nil, fmt.Errorf("migrate: ledger records more migrations than the registry contains: %w", ErrLedgerOrder)
-	}
 	for i, row := range applied {
 		if row.ID != all[i].ID {
 			return nil, nil, fmt.Errorf("migrate: applied migrations are not a contiguous registry prefix at position %d (found %q, expected %q): %w", i, row.ID, all[i].ID, ErrLedgerOrder)
