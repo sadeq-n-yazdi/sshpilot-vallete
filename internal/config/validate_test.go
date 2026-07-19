@@ -48,6 +48,9 @@ func TestValidateFailures(t *testing.T) {
 		{"missing public url", func(c *Config) { c.Server.PublicBaseURL = "" }, "server.public_base_url"},
 		{"non-https public url", func(c *Config) { c.Server.PublicBaseURL = "http://x.example.com" }, "server.public_base_url"},
 		{"missing tls mode", func(c *Config) { c.TLS.Mode = "" }, "tls.mode"},
+		{"tls min version below floor", func(c *Config) { c.TLS.MinVersion = "1.0" }, "tls.min_version"},
+		{"tls min version empty", func(c *Config) { c.TLS.MinVersion = "" }, "tls.min_version"},
+		{"tls min version unknown", func(c *Config) { c.TLS.MinVersion = "TLSv1.3" }, "tls.min_version"},
 		{"unknown tls mode", func(c *Config) { c.TLS.Mode = "weird" }, "tls.mode"},
 		{"acme missing domain", func(c *Config) { c.TLS.Domain = "" }, "tls.domain"},
 		{"acme ip domain in prod", func(c *Config) { c.TLS.Domain = "203.0.113.5" }, "tls.domain"},
@@ -161,6 +164,18 @@ func TestValidateFailures(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.field) {
 				t.Errorf("error %q does not mention field %s", err, tc.field)
+			}
+		})
+	}
+}
+
+func TestValidateTLSMinVersionAccepted(t *testing.T) {
+	for _, ver := range []string{"1.2", "1.3"} {
+		t.Run(ver, func(t *testing.T) {
+			c := validConfig()
+			c.TLS.MinVersion = ver
+			if err := c.Validate(); err != nil {
+				t.Fatalf("min_version %q should be valid, got: %v", ver, err)
 			}
 		})
 	}

@@ -107,8 +107,17 @@ var tlsModes = map[string]bool{
 	"csr": true, "upstream": true, "self_signed": true,
 }
 
+// tlsMinVersions is the set of accepted minimum TLS versions. ADR-0015 sets the
+// floor at TLS 1.2, so 1.0 and 1.1 are not selectable: an operator who asks for
+// one is asking to weaken the transport, and an unrecognized string would leave
+// the floor to whatever the TLS stack defaults to.
+var tlsMinVersions = map[string]bool{"1.2": true, "1.3": true}
+
 func (c *Config) validateTLS(v *validator, prod bool) {
 	t := c.TLS
+	if !tlsMinVersions[t.MinVersion] {
+		v.add("tls.min_version", "must be 1.2 or 1.3, got %q", t.MinVersion)
+	}
 	if t.Mode == "" {
 		v.add("tls.mode", "required (one of acme, cloudflare_origin, manual, csr, upstream, self_signed)")
 		return
