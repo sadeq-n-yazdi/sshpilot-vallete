@@ -160,13 +160,33 @@ func (c *Config) validateACME(v *validator, prod bool) {
 	default:
 		v.add("tls.acme.solver", "unknown solver %q", a.Solver)
 	}
-	if a.Solver == "dns_01" && a.DNS.Mode == "api" {
-		if a.DNS.Provider == "" {
+	if a.Solver == "dns_01" {
+		c.validateACMEDNS(v)
+	}
+}
+
+// validateACMEDNS fails closed on the DNS-01 solving mode. ADR-0015 defines
+// exactly two: "manual" (emit the _acme-challenge TXT records and wait for the
+// operator) and "api" (drive a DNS provider's API). There is deliberately no
+// default: an unset or unrecognized mode previously fell through this function
+// silently, leaving the solver with no way to answer the challenge and skipping
+// the provider/credentials requirements below, so a misconfigured issuance path
+// reached production and only failed at renewal time.
+func (c *Config) validateACMEDNS(v *validator) {
+	d := c.TLS.ACME.DNS
+	switch d.Mode {
+	case "manual":
+	case "api":
+		if d.Provider == "" {
 			v.add("tls.acme.dns.provider", "required for dns_01 api mode")
 		}
-		if a.DNS.CredentialsRef.IsZero() {
+		if d.CredentialsRef.IsZero() {
 			v.add("tls.acme.dns.credentials_ref", "required for dns_01 api mode")
 		}
+	case "":
+		v.add("tls.acme.dns.mode", "required for dns_01 solver (manual or api)")
+	default:
+		v.add("tls.acme.dns.mode", "unknown mode %q (want manual or api)", d.Mode)
 	}
 }
 

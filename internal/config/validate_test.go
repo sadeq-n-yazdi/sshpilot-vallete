@@ -65,6 +65,15 @@ func TestValidateFailures(t *testing.T) {
 			c.TLS.ACME.DNS.Mode = "api"
 			c.TLS.ACME.DNS.Provider = "cloudflare"
 		}, "tls.acme.dns.credentials_ref"},
+		{"dns_01 missing mode", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+		}, "tls.acme.dns.mode"},
+		{"dns_01 unknown mode", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "automatic"
+			c.TLS.ACME.DNS.Provider = "cloudflare"
+			c.TLS.ACME.DNS.CredentialsRef = "env:X"
+		}, "tls.acme.dns.mode"},
 		{"cloudflare missing token", func(c *Config) {
 			c.TLS.Mode = "cloudflare_origin"
 		}, "tls.cloudflare_origin.api_token_ref"},
@@ -152,6 +161,40 @@ func TestValidateFailures(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.field) {
 				t.Errorf("error %q does not mention field %s", err, tc.field)
+			}
+		})
+	}
+}
+
+// TestValidateACMEDNSModeAccepted covers the accepting side of the DNS-01 mode
+// gate: both documented modes pass, and the mode is only consulted for the
+// dns_01 solver so a leftover value cannot fail an unrelated solver.
+func TestValidateACMEDNSModeAccepted(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(c *Config)
+	}{
+		{"manual mode needs no provider or credentials", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "manual"
+		}},
+		{"api mode with provider and credentials", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "api"
+			c.TLS.ACME.DNS.Provider = "cloudflare"
+			c.TLS.ACME.DNS.CredentialsRef = "env:VALLET_DNS_CREDS"
+		}},
+		{"mode ignored for tls_alpn_01 solver", func(c *Config) {
+			c.TLS.ACME.Solver = "tls_alpn_01"
+			c.TLS.ACME.DNS.Mode = "" // unset must not matter here
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			tc.mut(&c)
+			if err := c.Validate(); err != nil {
+				t.Fatalf("config should be valid, got: %v", err)
 			}
 		})
 	}
