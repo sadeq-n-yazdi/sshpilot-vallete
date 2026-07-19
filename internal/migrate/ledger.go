@@ -81,7 +81,7 @@ func deleteLedger(ctx context.Context, e Executor, engine Engine, id string) err
 func loadLedger(ctx context.Context, e Executor) ([]Ledger, error) {
 	rows, err := e.Query(ctx, selectLedgerSQL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("migrate: load ledger: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -89,7 +89,7 @@ func loadLedger(ctx context.Context, e Executor) ([]Ledger, error) {
 	for rows.Next() {
 		var id, name, checksum, appliedAt, engine string
 		if err := rows.Scan(&id, &name, &checksum, &appliedAt, &engine); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("migrate: scan ledger row: %w", err)
 		}
 		ts, perr := time.Parse(time.RFC3339, appliedAt)
 		if perr != nil {
@@ -104,7 +104,7 @@ func loadLedger(ctx context.Context, e Executor) ([]Ledger, error) {
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("migrate: read ledger rows: %w", err)
 	}
 	return out, nil
 }

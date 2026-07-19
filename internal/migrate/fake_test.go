@@ -37,6 +37,9 @@ type fakeDB struct {
 	beginErr  error
 	commitErr error
 	rowsErr   error
+	// scanErr, if set, makes every row returned by Query fail on Scan. It
+	// exercises the driver-level Scan failure path in loadLedger/tablePresent.
+	scanErr error
 	// execErr, if set, is consulted on every Exec (db- and tx-level). A
 	// non-nil return fails that Exec and the statement is not applied.
 	execErr func(query string, args []any) error
@@ -160,13 +163,20 @@ func (db *fakeDB) query(rows map[string]ledgerRow, tables map[string]bool, q str
 		}
 	}
 	if r, ok := db.runCatalogQuery(tables, q, args); ok {
+		if fr, ok := r.(*fakeRows); ok {
+			fr.scanErr = db.scanErr
+		}
 		return r, nil
 	}
 	if strings.Contains(strings.ToUpper(q), "FROM SCHEMA_MIGRATIONS") {
 		if db.rowsErr != nil {
 			return &fakeRows{err: db.rowsErr}, nil
 		}
-		return runLedgerQuery(rows), nil
+		lr := runLedgerQuery(rows)
+		if fr, ok := lr.(*fakeRows); ok {
+			fr.scanErr = db.scanErr
+		}
+		return lr, nil
 	}
 	return &fakeRows{}, nil
 }
@@ -263,10 +273,11 @@ func cloneTables(in map[string]bool) map[string]bool {
 // --- Rows ---
 
 type fakeRows struct {
-	data   [][]any
-	idx    int
-	closed bool
-	err    error
+	data    [][]any
+	idx     int
+	closed  bool
+	err     error
+	scanErr error
 }
 
 func (r *fakeRows) Next() bool {
@@ -278,6 +289,9 @@ func (r *fakeRows) Next() bool {
 }
 
 func (r *fakeRows) Scan(dest ...any) error {
+	if r.scanErr != nil {
+		return r.scanErr
+	}
 	if r.idx == 0 || r.idx > len(r.data) {
 		return errors.New("fake: Scan called out of range")
 	}
