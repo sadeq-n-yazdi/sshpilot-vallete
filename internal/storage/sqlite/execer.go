@@ -30,13 +30,17 @@ var (
 // or rollback. This lets a multi-statement repository method be atomic on its
 // own yet compose into a larger caller-managed transaction.
 func withLocalTx(ctx context.Context, e execer, fn func(execer) error) error {
-	if tx, ok := e.(*sql.Tx); ok {
+	// Guard the pointer, not just the assertion: an execer holding a typed-nil
+	// *sql.Tx or *sql.DB satisfies the assertion with ok == true, and calling a
+	// method on the nil pointer (fn(tx), db.BeginTx) would panic. Treat a nil
+	// pointer as an unsupported execer and fail with an error instead.
+	if tx, ok := e.(*sql.Tx); ok && tx != nil {
 		return fn(tx)
 	}
 
 	db, ok := e.(*sql.DB)
-	if !ok {
-		return fmt.Errorf("sqlite: withLocalTx: unsupported execer %T", e)
+	if !ok || db == nil {
+		return fmt.Errorf("sqlite: withLocalTx: unsupported or nil execer %T", e)
 	}
 
 	tx, err := db.BeginTx(ctx, nil)
