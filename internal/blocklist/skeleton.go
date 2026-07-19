@@ -39,6 +39,7 @@
 package blocklist
 
 import (
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -115,7 +116,13 @@ const TableVersion = 3
 // skeleton as "carries no comparable content" and reject such identifiers on
 // that ground rather than treating them as matching nothing.
 func Skeleton(s string) string {
-	out := make([]rune, 0, len(s))
+	// A strings.Builder rather than a []rune accumulator: runes cost four bytes
+	// each and the final string(out) conversion allocates a second time, while
+	// Grow reserves one byte-sized buffer that String() hands over without
+	// copying. Grow(len(s)) is a hint, not a bound -- a confusables entry may
+	// expand one rune into several -- so the Builder still grows when it must.
+	var out strings.Builder
+	out.Grow(len(s))
 	for _, r := range s {
 		// A decoding error over invalid UTF-8 yields utf8.RuneError; so does a
 		// literal U+FFFD in the input. Both are dropped, which is what keeps
@@ -138,23 +145,24 @@ func Skeleton(s string) string {
 			// that, a table target could itself be a leet source and
 			// idempotence would break.
 			for _, m := range mapped {
-				out = appendFolded(out, m)
+				writeFolded(&out, m)
 			}
 			continue
 		}
-		out = appendFolded(out, r)
+		writeFolded(&out, r)
 	}
-	return string(out)
+	return out.String()
 }
 
-// appendFolded runs the final two stages -- leetspeak and separator removal --
-// and appends the result, if any, to out.
-func appendFolded(out []rune, r rune) []rune {
+// writeFolded runs the final two stages -- leetspeak and separator removal --
+// and writes the result, if any, to out.
+func writeFolded(out *strings.Builder, r rune) {
 	if mapped, ok := leetspeak[r]; ok {
-		return append(out, mapped)
+		out.WriteRune(mapped)
+		return
 	}
 	if isSeparator(r) {
-		return out
+		return
 	}
-	return append(out, r)
+	out.WriteRune(r)
 }
