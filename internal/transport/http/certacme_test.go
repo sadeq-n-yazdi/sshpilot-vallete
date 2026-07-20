@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -610,5 +611,109 @@ func TestACMEProviderName(t *testing.T) {
 	}
 	if strings.Contains(p.Name(), "example.com") {
 		t.Error("provider name leaks the configured domain")
+	}
+}
+
+// TestACMERenewalLoopDrivesIssuance tests the MECHANISM that keeps a
+// certificate fresh, not the artifact it produces.
+//
+// Every other test in this file reaches issuance directly — setCurrent, or
+// obtain against Pebble — so all of them still pass if renewalLoop never calls
+// issuance at all. That mutant survives an artifact-shaped test suite, and its
+// consequence is a server that issues once and then silently rides the
+// certificate to expiry, at which point it refuses every handshake. Failing
+// closed makes it an outage rather than a downgrade, but an outage nobody can
+// see coming is still the thing renewal exists to prevent.
+//
+// So these cases assert on the issuance CALL: that the loop makes one when a
+// certificate is needed, makes none when the current one is fresh, and does not
+// retry hot after a failure.
+func TestACMERenewalLoopDrivesIssuance(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name string
+		// seed installs the provider's starting certificate, if any.
+		seed      func(p *acmeProvider)
+		issueErr  error
+		wantCalls int
+		reason    string
+	}{
+		{
+			name:      "no certificate yet",
+			seed:      func(*acmeProvider) {},
+			wantCalls: 1,
+			reason:    "the loop must obtain the first certificate; nothing else will",
+		},
+		{
+			name:      "current certificate is fresh",
+			seed:      func(p *acmeProvider) { p.setCurrent(mustSelfSigned(t, now)) },
+			wantCalls: 0,
+			reason:    "reissuing a fresh certificate burns CA rate limit for nothing",
+		},
+		{
+			name:      "issuance keeps failing",
+			seed:      func(*acmeProvider) {},
+			issueErr:  errors.New("order failed"),
+			wantCalls: 1,
+			reason: "a failed attempt must back off on the timer, not retry in a hot " +
+				"loop that would hammer the CA into a rate-limit ban",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			p := acmeTestProvider(t, now)
+			tc.seed(p)
+
+			var mu sync.Mutex
+			calls := 0
+			called := make(chan struct{}, 1)
+
+			p.issue = func(context.Context) error {
+				mu.Lock()
+				calls++
+				mu.Unlock()
+				select {
+				case called <- struct{}{}:
+				default:
+				}
+				return tc.issueErr
+			}
+
+			ctx, cancel := context.WithCancel(t.Context())
+			go p.renewalLoop(ctx)
+
+			if tc.wantCalls > 0 {
+				select {
+				case <-called:
+				case <-time.After(5 * time.Second):
+					cancel()
+					<-p.done
+					t.Fatalf("renewalLoop never called issuance: %s", tc.reason)
+				}
+			}
+
+			// Settle: long enough that a hot retry loop, or a loop that reissues a
+			// fresh certificate, would run up a call count far above wantCalls.
+			// The real waits here are acmeBackoffMin (1m) and
+			// acmeRenewCheckInterval (1h), so a correct loop makes no further
+			// call in this window.
+			time.Sleep(200 * time.Millisecond)
+			cancel()
+			<-p.done
+
+			mu.Lock()
+			got := calls
+			mu.Unlock()
+
+			if got != tc.wantCalls {
+				t.Errorf("issuance called %d times, want %d: %s", got, tc.wantCalls, tc.reason)
+			}
+		})
 	}
 }

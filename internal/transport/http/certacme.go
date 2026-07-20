@@ -122,6 +122,13 @@ type acmeProvider struct {
 	// goroutine behind.
 	stop context.CancelFunc
 	done chan struct{}
+
+	// issue performs one issuance attempt. It is always p.obtain in production
+	// and exists only so a test can drive renewalLoop's trigger and backoff
+	// wiring without a CA: asserting that a certificate eventually appears
+	// proves the artifact, not that the LOOP is what produced it, and a loop
+	// that never fires would leave the process serving nothing after expiry.
+	issue func(context.Context) error
 }
 
 // Compile-time proof that the provider satisfies both contracts it relies on:
@@ -206,6 +213,7 @@ func newACMEProviderWithClient(
 		p.current = cert
 	}
 
+	p.issue = p.obtain
 	go p.renewalLoop(runCtx)
 	return p, nil
 }
@@ -618,7 +626,7 @@ func (p *acmeProvider) renewalLoop(ctx context.Context) {
 
 		wait := acmeRenewCheckInterval
 		if p.needsIssuance() {
-			if err := p.obtain(ctx); err != nil {
+			if err := p.issue(ctx); err != nil {
 				// The error is deliberately NOT logged here: it can carry the
 				// CA's problem document, and the logging track owns redaction.
 				// It is surfaced instead by every ordinary handshake being
