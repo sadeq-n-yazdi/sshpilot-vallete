@@ -137,7 +137,7 @@ func (s *dns01Solver) present(
 //
 // Every exit that is not "the value was observed" is an error. Not a warning,
 // not a shorter wait, not a proceed-and-hope: an expired deadline and a
-// cancelled context both mean the record was never seen, and the only safe
+// canceled context both mean the record was never seen, and the only safe
 // reading of "never seen" is that the CA will not see it either.
 func (s *dns01Solver) awaitPropagation(ctx context.Context, rec dns01.Record) error {
 	deadline, cancel := context.WithTimeout(ctx, s.propagationTimeout)

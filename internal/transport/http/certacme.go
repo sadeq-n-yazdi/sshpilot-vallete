@@ -404,7 +404,7 @@ func (p *acmeProvider) clearChallenge(name string) {
 //
 // Using the order's own context here would break cleanup on the one path where
 // it matters most. Close cancels the renewal loop's context, so a shutdown in
-// the middle of an order would hand cleanup an already-cancelled context: the
+// the middle of an order would hand cleanup an already-canceled context: the
 // DNS provider's DELETE would fail instantly without being sent, and the
 // _acme-challenge TXT record would be left published — a standing
 // authorization, surviving the process that created it, for anyone who can
@@ -597,7 +597,7 @@ func (p *acmeProvider) solveAuthorization(ctx context.Context, authzURL string) 
 
 	// Cleanup is armed BEFORE the challenge is presented, and unconditionally.
 	// The ordering is the point: a solver that publishes a record and then
-	// fails — a propagation timeout, a cancelled context, a panic — has already
+	// fails — a propagation timeout, a canceled context, a panic — has already
 	// created the thing that must be withdrawn. Arming cleanup only after a
 	// successful present would leak exactly on the paths where a leftover
 	// challenge is most likely.
