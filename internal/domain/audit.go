@@ -118,6 +118,13 @@ const (
 	// Deleting audit history is itself an access-affecting administrative event,
 	// so it is recorded like any other.
 	AuditActionAuditPurged AuditAction = "audit.purged"
+	// AuditActionOwnerErased records that an owner's identity was crypto-erased
+	// from the audit log: their identifiers replaced with tombstones and their
+	// salt destroyed. The record proves the erasure happened without naming its
+	// subject — the target ID is written as the owner ID and is tombstoned by
+	// the same pass, so the record survives the erasure it describes rather than
+	// defeating it.
+	AuditActionOwnerErased AuditAction = "owner.erased"
 )
 
 // AuditRecord is an append-only record of an audited action. ActorID and
