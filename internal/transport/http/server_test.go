@@ -67,9 +67,7 @@ func TestNewRefusesSelfSignedInProduction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
-			if len(srv.TLSConfig().Certificates) != 1 {
-				t.Error("server has no certificate")
-			}
+			assertServesCertificate(t, srv)
 		})
 	}
 }
@@ -212,9 +210,7 @@ func TestManualTLSMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if len(srv.TLSConfig().Certificates) != 1 {
-		t.Error("manual mode did not load the certificate")
-	}
+	assertServesCertificate(t, srv)
 
 	cfg.TLS.Manual.CertFile = filepath.Join(dir, "missing.pem")
 	if _, err := New(cfg, nil, okPinger{}, stubPublisher{}); err == nil {
@@ -398,5 +394,33 @@ func writeKeyPair(t *testing.T, certFile, keyFile string) {
 	}
 	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
 		t.Fatalf("write key: %v", err)
+	}
+}
+
+// assertServesCertificate proves the server can actually produce a certificate
+// for a handshake.
+//
+// E2 moved the certificate from tls.Config.Certificates to the GetCertificate
+// callback so that material can be renewed and re-validated per handshake, and
+// Certificates is deliberately left nil so nothing bypasses the validating
+// guard. Asserting through the callback is therefore both the only way to see
+// the certificate and a stronger check than the old field inspection: it
+// exercises the real code path a client triggers.
+func assertServesCertificate(t *testing.T, srv *Server) {
+	t.Helper()
+
+	tlsCfg := srv.TLSConfig()
+	if len(tlsCfg.Certificates) != 0 {
+		t.Error("Certificates must stay nil so no certificate bypasses the guard")
+	}
+	if tlsCfg.GetCertificate == nil {
+		t.Fatal("server has no certificate callback")
+	}
+	cert, err := tlsCfg.GetCertificate(nil)
+	if err != nil {
+		t.Fatalf("GetCertificate: %v", err)
+	}
+	if cert == nil || len(cert.Certificate) == 0 {
+		t.Error("server produced no certificate")
 	}
 }
