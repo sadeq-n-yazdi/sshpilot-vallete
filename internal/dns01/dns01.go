@@ -130,6 +130,8 @@ type Provider interface {
 // already wrapped, so no caller of this package ever holds it in plain form.
 func NewAPIProvider(name string, credential secrets.Redacted, client *http.Client) (Provider, error) {
 	switch name {
+	case "cloudflare":
+		return NewCloudflare(credential, client)
 	default:
 		// The provider NAME is echoed because it came from the operator's own
 		// config file and is the diagnostic. The credential is not touched.
