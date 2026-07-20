@@ -169,6 +169,16 @@ func New(store repository.Store, guard *nameguard.Guard, auditor Auditor, opts .
 	if auditor == nil {
 		return nil, fmt.Errorf("%w: auditor", ErrMissingDependency)
 	}
+	// A non-nil store is not the same as a usable one. Every method here reaches
+	// the handle rows through store.Repos().Handles, so a store assembled with
+	// that repository left nil produces a Service that satisfies every check
+	// above, starts, and panics on the first rename — a nil dereference in the
+	// middle of a quarantine-and-claim, which is precisely the state this
+	// package exists to make atomic. Reading it once here turns that into a
+	// refusal at construction, which is the promise the doc above already makes.
+	if store.Repos().Handles == nil {
+		return nil, fmt.Errorf("%w: handle repository", ErrMissingDependency)
+	}
 	s := &Service{
 		store:      store,
 		guard:      guard,
