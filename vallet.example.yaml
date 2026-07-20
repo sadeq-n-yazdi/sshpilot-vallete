@@ -106,6 +106,21 @@ auth:
   refresh_token_max_age: 90d
   # Required in production. e.g. env:VALLET_TOKEN_SIGNING_KEY
   token_signing_key_ref: ""
+  # HMAC pepper keying the stored digest of every key-set access key.
+  # Must resolve to at least 32 bytes; a shorter or unresolvable value refuses
+  # startup rather than weakening the digests.
+  #
+  #   openssl rand -hex 32   ->   store it, then reference it here
+  #
+  # ROTATION INVALIDATES EVERY EXISTING ACCESS KEY. The pepper keys every stored
+  # digest, so changing it stops every consumer of every protected key set from
+  # verifying, all at once; each one needs a newly minted token. There is no
+  # overlap window and no migration.
+  #
+  # Required in production. Left empty in development the server still starts,
+  # but no access key verifies and every protected key set answers the same 404
+  # an absent set gets. e.g. env:VALLET_ACCESS_KEY_PEPPER
+  access_key_pepper_ref: ""
   providers:
     # At least one provider must be enabled.
     api_token:
