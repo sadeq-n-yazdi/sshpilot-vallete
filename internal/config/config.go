@@ -63,9 +63,50 @@ type TLSConfig struct {
 
 // ACMEConfig configures ACME certificate issuance.
 type ACMEConfig struct {
-	DirectoryURL string        `yaml:"directory_url"`
-	Solver       string        `yaml:"solver"`
-	DNS          ACMEDNSConfig `yaml:"dns"`
+	// DirectoryURL is the CA's ACME directory endpoint. It defaults to Let's
+	// Encrypt production (ADR-0015 §2 names Let's Encrypt as the phase-1 CA)
+	// and is configurable so another ACME CA can be pointed at — including a
+	// staging endpoint while an operator is bringing a deployment up.
+	DirectoryURL string `yaml:"directory_url"`
+
+	Solver string `yaml:"solver"`
+
+	// AccountKeyFile is where the long-lived ACME account key lives, written
+	// 0600. It is deliberately operator-chosen with no default, for the same
+	// reason CSRTLSConfig.KeyFile is: a key file an operator does not know
+	// their server created is a key file nobody protects or backs up.
+	//
+	// The account key is not the certificate key. It is the identity the CA
+	// binds issued certificates and rate-limit accounting to, so losing it
+	// means re-registering, and leaking it lets the holder revoke this
+	// deployment's certificates.
+	AccountKeyFile string `yaml:"account_key_file"`
+
+	// CacheDir is the directory holding the issued certificate and its private
+	// key between restarts.
+	//
+	// Persisting is not an optimization, it is the primary rate-limit control.
+	// Without it every restart is a fresh issuance, so a crash-looping process
+	// becomes an ACME request flood, and Let's Encrypt's duplicate-certificate
+	// limit is measured in a rolling WEEK. A cached certificate that is still
+	// valid is reused and no ACME request is made at all.
+	CacheDir string `yaml:"cache_dir"`
+
+	// ContactEmail is the optional address the CA uses for expiry warnings. It
+	// is sent to the CA as a mailto: contact at registration. Empty means no
+	// contact is registered, which every supported CA permits.
+	ContactEmail string `yaml:"contact_email"`
+
+	// AcceptTOS records that the operator accepts the CA's terms of service.
+	//
+	// It defaults to false and registration is refused without it. RFC 8555
+	// requires the client to assert agreement, and asserting it on an
+	// operator's behalf because they selected a mode would be making a legal
+	// commitment they never made. The refusal is a config error at startup, so
+	// nobody discovers it from a failed issuance.
+	AcceptTOS bool `yaml:"accept_tos"`
+
+	DNS ACMEDNSConfig `yaml:"dns"`
 }
 
 // ACMEDNSConfig configures the DNS-01 solver.
