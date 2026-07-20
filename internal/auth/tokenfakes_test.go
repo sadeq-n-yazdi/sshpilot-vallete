@@ -32,12 +32,18 @@ type fakeStore struct {
 	mu     sync.Mutex
 	creds  map[domain.RefreshCredentialID]*domain.RefreshCredential
 	owners *fakeOwners
+	// pairings and links are set by the enrollment tests, which need a store
+	// that hands out more than credentials. They are nil for the token tests,
+	// which never reach for them.
+	pairings *fakePairings
+	links    *fakeLinkStore
 
 	// Fault injection. Each is returned by the correspondingly named method.
 	createErr        error
 	getByIDErr       error
 	markRotatedErr   error
 	revokeLineageErr error
+	listByLineageErr error
 	withTxErr        error
 
 	// nilRow makes GetByID return (nil, nil), the port violation the service
@@ -65,6 +71,8 @@ func (f *fakeStore) Repos() repository.Repos {
 	return repository.Repos{
 		RefreshCredentials: &fakeCreds{store: f, lock: true},
 		Owners:             f.owners,
+		DevicePairings:     f.pairings,
+		LinkedIdentities:   f.links,
 	}
 }
 
@@ -83,6 +91,8 @@ func (f *fakeStore) WithTx(ctx context.Context, fn func(context.Context, reposit
 	err := fn(ctx, repository.Repos{
 		RefreshCredentials: &fakeCreds{store: f},
 		Owners:             f.owners,
+		DevicePairings:     f.pairings,
+		LinkedIdentities:   f.links,
 	})
 	f.rolledBack = err != nil
 	if err != nil {
@@ -206,6 +216,9 @@ func (r *fakeCreds) ListByOwner(_ context.Context, ownerID domain.OwnerID) ([]do
 
 func (r *fakeCreds) ListByLineage(_ context.Context, ownerID domain.OwnerID, lineageID domain.LineageID) ([]domain.RefreshCredential, error) {
 	defer r.acquire()()
+	if r.store.listByLineageErr != nil {
+		return nil, r.store.listByLineageErr
+	}
 	var out []domain.RefreshCredential
 	for _, c := range r.store.creds {
 		if c.OwnerID == ownerID && c.LineageID == lineageID {
