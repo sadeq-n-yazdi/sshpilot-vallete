@@ -48,6 +48,9 @@ func TestValidateFailures(t *testing.T) {
 		{"missing public url", func(c *Config) { c.Server.PublicBaseURL = "" }, "server.public_base_url"},
 		{"non-https public url", func(c *Config) { c.Server.PublicBaseURL = "http://x.example.com" }, "server.public_base_url"},
 		{"missing tls mode", func(c *Config) { c.TLS.Mode = "" }, "tls.mode"},
+		{"tls min version below floor", func(c *Config) { c.TLS.MinVersion = "1.0" }, "tls.min_version"},
+		{"tls min version empty", func(c *Config) { c.TLS.MinVersion = "" }, "tls.min_version"},
+		{"tls min version unknown", func(c *Config) { c.TLS.MinVersion = "TLSv1.3" }, "tls.min_version"},
 		{"unknown tls mode", func(c *Config) { c.TLS.Mode = "weird" }, "tls.mode"},
 		{"acme missing domain", func(c *Config) { c.TLS.Domain = "" }, "tls.domain"},
 		{"acme ip domain in prod", func(c *Config) { c.TLS.Domain = "203.0.113.5" }, "tls.domain"},
@@ -65,6 +68,15 @@ func TestValidateFailures(t *testing.T) {
 			c.TLS.ACME.DNS.Mode = "api"
 			c.TLS.ACME.DNS.Provider = "cloudflare"
 		}, "tls.acme.dns.credentials_ref"},
+		{"dns_01 missing mode", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+		}, "tls.acme.dns.mode"},
+		{"dns_01 unknown mode", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "automatic"
+			c.TLS.ACME.DNS.Provider = "cloudflare"
+			c.TLS.ACME.DNS.CredentialsRef = "env:X"
+		}, "tls.acme.dns.mode"},
 		{"cloudflare missing token", func(c *Config) {
 			c.TLS.Mode = "cloudflare_origin"
 		}, "tls.cloudflare_origin.api_token_ref"},
@@ -72,6 +84,10 @@ func TestValidateFailures(t *testing.T) {
 			c.TLS.Mode = "manual"
 			c.TLS.Manual.KeyFile = "/k"
 		}, "tls.manual.cert_file"},
+		{"manual missing key", func(c *Config) {
+			c.TLS.Mode = "manual"
+			c.TLS.Manual.CertFile = "/c"
+		}, "tls.manual.key_file"},
 		{"upstream no proxies", func(c *Config) {
 			c.TLS.Mode = "upstream"
 		}, "server.trusted_proxies"},
@@ -157,6 +173,94 @@ func TestValidateFailures(t *testing.T) {
 	}
 }
 
+// TestValidateRefErrorDoesNotLeakValue guards the one validation path that
+// handles fields an operator may have mistakenly filled with a secret instead
+// of a reference to one. The error must name the field so the mistake is
+// fixable, and must not reproduce the value, which would land in startup logs.
+func TestValidateRefErrorDoesNotLeakValue(t *testing.T) {
+	const secretish = "sup3rs3cr3t-password-value"
+
+	tests := []struct {
+		name  string
+		mut   func(c *Config)
+		field string
+	}{
+		{"postgres dsn", func(c *Config) {
+			c.Database.Driver = "postgres"
+			c.Database.Postgres.DSNRef = secretish
+		}, "database.postgres.dsn_ref"},
+		{"signing key", func(c *Config) {
+			c.Auth.TokenSigningKeyRef = secretish
+		}, "auth.token_signing_key_ref"},
+		{"rate limit password", func(c *Config) {
+			c.RateLimit.Shared.PasswordRef = secretish
+		}, "rate_limit.shared.password_ref"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			tc.mut(&c)
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("expected a malformed-reference error for %s", tc.field)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, tc.field) {
+				t.Errorf("error %q does not name the offending field %s", msg, tc.field)
+			}
+			if strings.Contains(msg, secretish) {
+				t.Errorf("error leaks the offending value: %q", msg)
+			}
+		})
+	}
+}
+
+func TestValidateTLSMinVersionAccepted(t *testing.T) {
+	for _, ver := range []string{"1.2", "1.3"} {
+		t.Run(ver, func(t *testing.T) {
+			c := validConfig()
+			c.TLS.MinVersion = ver
+			if err := c.Validate(); err != nil {
+				t.Fatalf("min_version %q should be valid, got: %v", ver, err)
+			}
+		})
+	}
+}
+
+// TestValidateACMEDNSModeAccepted covers the accepting side of the DNS-01 mode
+// gate: both documented modes pass, and the mode is only consulted for the
+// dns_01 solver so a leftover value cannot fail an unrelated solver.
+func TestValidateACMEDNSModeAccepted(t *testing.T) {
+	tests := []struct {
+		name string
+		mut  func(c *Config)
+	}{
+		{"manual mode needs no provider or credentials", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "manual"
+		}},
+		{"api mode with provider and credentials", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "api"
+			c.TLS.ACME.DNS.Provider = "cloudflare"
+			c.TLS.ACME.DNS.CredentialsRef = "env:VALLET_DNS_CREDS"
+		}},
+		{"mode ignored for tls_alpn_01 solver", func(c *Config) {
+			c.TLS.ACME.Solver = "tls_alpn_01"
+			c.TLS.ACME.DNS.Mode = "" // unset must not matter here
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			tc.mut(&c)
+			if err := c.Validate(); err != nil {
+				t.Fatalf("config should be valid, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateTrustedProxies(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -189,6 +293,31 @@ func TestValidateTrustedProxies(t *testing.T) {
 				t.Fatalf("proxies %v should be valid, got: %v", tc.proxies, err)
 			}
 		})
+	}
+}
+
+// TestValidateRateLimitDisabledSkipsTierChecks documents a deliberate
+// zero-is-legitimate decision: when rate limiting is off, the tier requests and
+// windows are not consumed by anything, so a zero or unset tier is not an
+// error. The checks apply only to values that will actually be used.
+func TestValidateRateLimitDisabledSkipsTierChecks(t *testing.T) {
+	c := validConfig()
+	c.RateLimit.Enabled = false
+	c.RateLimit.Store = ""
+	c.RateLimit.Tiers = RateLimitTiers{}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("disabled rate limiting should not require tiers, got: %v", err)
+	}
+}
+
+// TestValidateRateLimitSharedStore covers the shared store's accepted form.
+func TestValidateRateLimitSharedStore(t *testing.T) {
+	c := validConfig()
+	c.RateLimit.Store = "shared"
+	c.RateLimit.Shared.Address = "redis.internal:6379"
+	c.RateLimit.Shared.PasswordRef = "env:VALLET_RL_PASSWORD"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("shared store config should be valid, got: %v", err)
 	}
 }
 
