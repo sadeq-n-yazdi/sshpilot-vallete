@@ -240,6 +240,18 @@ func (s *Service) edit(
 // already present, or removing one that is not, means the administrator's
 // belief about the list disagrees with its contents -- and auditing a change
 // that changed nothing would put a false event in the record.
+//
+// Both edit paths clone current before mutating it, and that clone is
+// DELIBERATE -- not redundant with what the caller hands in. Today op.current()
+// returns a make()-allocated copy (Matcher.Allowlist / Matcher.ExtraTerms build
+// a fresh slice), so the clone is provably unnecessary for correctness against
+// the current callers. It is kept so nextSet stays safe irrespective of what
+// its caller passes: if op.current() were ever changed to return the matcher's
+// live slice -- the natural way to "avoid a copy" -- in-place mutation here
+// would rewrite the in-force allowlist under atomic.Value, outside the audit
+// path every legitimate edit takes, silently punching a hole in a security
+// control from a refactor two levels away. The cost is one allocation on a
+// cold, rarely-taken, audited path; the defensive property is worth it.
 func nextSet(current []string, entry string, add bool) ([]string, error) {
 	sk := blocklist.Skeleton(entry)
 	idx := slices.IndexFunc(current, func(e string) bool {
