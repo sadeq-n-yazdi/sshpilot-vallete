@@ -187,6 +187,50 @@ func TestDNS01RecordIsRemovedWhenPresentFails(t *testing.T) {
 	}
 }
 
+// TestDNS01CancellationIsNotReportedAsATimeout checks that a shutdown mid-wait
+// is diagnosed as a shutdown.
+//
+// Both a canceled parent and an expired budget surface through the same
+// deadline, so without a discriminator a cancellation two seconds in reports
+// "not visible on all authoritative nameservers after 10m0s" — sending the
+// operator to investigate a DNS problem that never existed, and claiming a wait
+// that never happened.
+//
+// The failure itself is unchanged: cancellation still fails the order, because
+// the record was not seen and that is the only safe reading. So both the
+// ErrDNS01Propagation identity and the cancellation cause must be recoverable
+// from the error, which is what the two errors.Is checks below pin.
+func TestDNS01CancellationIsNotReportedAsATimeout(t *testing.T) {
+	t.Parallel()
+
+	solver, _ := testSolver(t, newFakeDNSProvider(), neverPropagates)
+	// A budget far longer than the test, so an elapsed timeout cannot be what
+	// ends the wait — only the cancellation can.
+	solver.propagationTimeout = time.Hour
+
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	err := solver.present(ctx, testACMEClient(t), testChallenge(), testIdentifier)
+	if err == nil {
+		t.Fatal("a canceled wait must still fail the order")
+	}
+	if !errors.Is(err, ErrDNS01Propagation) {
+		t.Errorf("error = %v, want it to keep the ErrDNS01Propagation identity "+
+			"so existing callers matching the sentinel still work", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled recoverable from it", err)
+	}
+	if strings.Contains(err.Error(), solver.propagationTimeout.String()) {
+		t.Errorf("a cancellation is reported as a %s timeout: %v",
+			solver.propagationTimeout, err)
+	}
+}
+
 // TestDNS01RecordIsRemovedOnPropagationTimeout covers the most likely real
 // failure: the record was created, the zone never converged, the order is
 // abandoned. The record must not be abandoned with it.
