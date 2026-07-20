@@ -230,10 +230,29 @@ type PostgresConfig struct {
 // AuthConfig configures management authentication. It is a stub extended by the
 // auth track.
 type AuthConfig struct {
-	AccessTokenTTL     Duration      `yaml:"access_token_ttl"`
-	RefreshTokenMaxAge Duration      `yaml:"refresh_token_max_age"`
-	TokenSigningKeyRef secrets.Ref   `yaml:"token_signing_key_ref"`
-	Providers          AuthProviders `yaml:"providers"`
+	AccessTokenTTL     Duration    `yaml:"access_token_ttl"`
+	RefreshTokenMaxAge Duration    `yaml:"refresh_token_max_age"`
+	TokenSigningKeyRef secrets.Ref `yaml:"token_signing_key_ref"`
+
+	// AccessKeyPepperRef points at the key that peppers every access key
+	// secret digest. It is a reference, never a value: like every other secret
+	// in this file it is resolved at startup from the environment or a file,
+	// so the literal never sits in a config an operator might commit.
+	//
+	// It is REQUIRED whenever retention.access_key_grace_sweep_interval is
+	// positive, because the service that performs that sweep refuses to be
+	// constructed without an adequate pepper. That refusal is not incidental to
+	// the sweep -- the same service verifies bearer tokens, and a construction
+	// path that accepted a weak or absent pepper to satisfy a maintenance job
+	// would be a path to a service that hashes secrets under a key nobody
+	// chose. There is no separate sweep-only pepper for that reason.
+	//
+	// Rotating this value invalidates every access key already issued: the
+	// stored digests were computed under the old one and no presented secret
+	// will match them again. Treat it as long-lived key material.
+	AccessKeyPepperRef secrets.Ref `yaml:"access_key_pepper_ref"`
+
+	Providers AuthProviders `yaml:"providers"`
 }
 
 // AuthProviders toggles the available authentication providers.
@@ -423,16 +442,46 @@ type RetentionConfig struct {
 	// on AuditPurgeInterval: the consequence is reversible and fails closed. A
 	// sweep that never runs leaves a vacated name held by its previous owner
 	// forever, so the name is unavailable rather than handed to a stranger, and
-	// starting the sweep later releases the backlog. That is emphatically NOT
-	// true of every sweep -- a grace-expiry sweep that stops leaves a rotated
-	// credential usable, which fails open -- so an off switch is offered here
-	// and must not be copied to one of those by analogy.
+	// starting the sweep later releases the backlog.
+	//
+	// An earlier version of this comment warned that the access-key grace
+	// sweep, by contrast, fails open. It does not, and the claim is corrected
+	// here rather than deleted because it was load-bearing in two other files:
+	// accesskey.Service.Verify evaluates the grace deadline against the clock
+	// on every request, so a lapsed credential is refused with no sweep in the
+	// picture at all. Both sweeps are therefore safe to disable. What is NOT
+	// safe is moving either deadline comparison out of the request path on the
+	// theory that a sweep covers it -- that is the change that would create the
+	// fail-open shape this note used to describe.
 	HandleQuarantineSweepInterval Duration `yaml:"handle_quarantine_sweep_interval"`
 
 	// HandleQuarantineSweepBatch is how many quarantines one pass releases.
 	// Each release is a separate audited delete, so this bounds both the work
 	// of a pass and the audit rows it can produce.
 	HandleQuarantineSweepBatch int `yaml:"handle_quarantine_sweep_batch"`
+
+	// AccessKeyGraceSweepInterval is how often lapsed rotation grace windows
+	// are retired. 0 disables the sweep, and 0 is the DEFAULT.
+	//
+	// Off by default is deliberate and is a consequence of where the deadline
+	// is enforced. A credential past its grace window is already refused by
+	// Verify at request time, so this sweep changes no access decision; it
+	// moves a dead row to the revoked status so the stored state and the audit
+	// trail stop describing a window that closed. Enabling it costs an operator
+	// a configured pepper (below), and requiring that of every deployment to
+	// obtain a bookkeeping improvement is the wrong trade -- whereas an
+	// operator who turns it on is telling us they have one.
+	AccessKeyGraceSweepInterval Duration `yaml:"access_key_grace_sweep_interval"`
+
+	// AccessKeyGraceSweepBatch is how many credentials one pass retires. Each
+	// retirement is a separate audited write, so this bounds both the work of a
+	// pass and the audit rows it can produce.
+	//
+	// It is validated as strictly positive even when the sweep is off, matching
+	// the handle batch -- but for a stronger reason: the access key repository
+	// REJECTS a non-positive limit outright rather than coercing it, so a 0
+	// that reached it would fail every pass instead of running a small one.
+	AccessKeyGraceSweepBatch int `yaml:"access_key_grace_sweep_batch"`
 
 	MaxSetsPerOwner int `yaml:"max_sets_per_owner"`
 }
