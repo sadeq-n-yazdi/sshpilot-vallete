@@ -31,7 +31,13 @@ MODULE="github.com/sadeq-n-yazdi/sshpilot-vallete"
 PKG="${MODULE}/cmd/vallet-helper"
 
 version=""
-bin_dir="${HOME:-}/.local/bin"
+# Empty rather than a guess when HOME is unset. "${HOME:-}/.local/bin" would
+# collapse to /.local/bin, which a non-root operator cannot create, and any
+# relative fallback such as ./bin would drop an executable into whatever
+# directory the caller happened to be standing in -- not on PATH, and in a
+# container possibly a mount other processes read. The check further down
+# refuses instead; see the die() there.
+bin_dir="${HOME:+${HOME}/.local/bin}"
 dry_run=0
 
 die() {
@@ -44,7 +50,8 @@ usage() {
 usage: install-vallet-helper.sh --version VERSION [--bin-dir DIR] [--dry-run]
 
   --version VERSION  release tag or commit to install (required; no default)
-  --bin-dir DIR      where to place the binary (default ~/.local/bin)
+  --bin-dir DIR      where to place the binary (default ~/.local/bin;
+                     required when HOME is unset -- nothing is guessed)
   --dry-run          print what would happen and install nothing
 EOF
 	exit 2
@@ -59,6 +66,7 @@ while [ "$#" -gt 0 ]; do
 		;;
 	--bin-dir)
 		[ "$#" -ge 2 ] || die "--bin-dir needs a value"
+		[ -n "$2" ] || die "--bin-dir must not be empty"
 		bin_dir="$2"
 		shift 2
 		;;
@@ -84,7 +92,7 @@ esac
 
 command -v go >/dev/null 2>&1 || die "go toolchain not found on PATH; install Go, or fetch a signed release binary instead"
 
-[ -n "${bin_dir}" ] || die "--bin-dir must not be empty"
+[ -n "${bin_dir}" ] || die "cannot determine an install directory: HOME is unset, so pass --bin-dir DIR explicitly"
 
 # A dry run must not touch the filesystem, so it exits before the directory is
 # created and before anything is resolved against it.

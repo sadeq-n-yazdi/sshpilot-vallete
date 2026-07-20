@@ -489,6 +489,31 @@ func shellCode(script string) string {
 	return strings.Join(kept, "\n")
 }
 
+// TestInstallScriptRefusesToGuessAnInstallDirWhenHomeIsUnset runs the script
+// with HOME removed from the environment.
+//
+// The tempting fix for an unset HOME is a relative fallback such as ./bin, and
+// that is what this test exists to prevent: it would drop an executable into
+// whatever directory the operator happened to be standing in, which is not on
+// PATH and, in a container, may be a mount other processes read. The script is
+// fail-closed everywhere else -- unpinned version, missing toolchain -- so it
+// refuses here too and names the flag that fixes it.
+func TestInstallScriptRefusesToGuessAnInstallDirWhenHomeIsUnset(t *testing.T) {
+	t.Parallel()
+
+	res := runInstallScript(t, t.TempDir(), nil, "--version", "v1.2.3")
+
+	if res.err == nil {
+		t.Fatalf("script succeeded with HOME unset; stdout=%q", res.stdout)
+	}
+	if !strings.Contains(res.stderr, "--bin-dir") {
+		t.Errorf("stderr does not tell the operator to pass --bin-dir: %q", res.stderr)
+	}
+	if strings.Contains(res.stdout, "shim-gobin=") {
+		t.Errorf("script reached go install without an install directory: %q", res.stdout)
+	}
+}
+
 // TestInstallScriptResolvesARelativeBinDirToAnAbsolutePath pins the fix for a
 // relative --bin-dir: `go install` rejects a relative GOBIN outright, so the
 // script has to resolve it before exporting or the documented flag simply does
