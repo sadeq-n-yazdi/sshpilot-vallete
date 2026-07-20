@@ -261,7 +261,23 @@ func (s *Service) Rename(ctx context.Context, ownerID domain.OwnerID, name, requ
 		if err != nil {
 			return err
 		}
-		if len(held) >= s.maxNames {
+		// The cap counts claims, so it may only refuse a rename that ADDS one.
+		// Taking back one of the owner's own quarantined holds does not: that
+		// row is already in held, already counted, and claim below reactivates
+		// it in place rather than registering a second one. Applying the cap to
+		// it would strand an owner at the limit, unable to return to a name they
+		// demonstrably still hold and unable to free a slot either, since only
+		// the elapsed-quarantine sweep releases a hold. The squatting loop the
+		// cap exists to stop is untouched: cycling through NEW names still adds
+		// a claim every time and still hits the limit.
+		//
+		// This decides whether the cap APPLIES. It is not the reclaim
+		// authorization — that stays in claim, which re-reads the row by name
+		// and refuses anything that is not the caller's own quarantined hold.
+		// held is owner-scoped by ListByOwner's contract, so another owner's
+		// quarantined name cannot reach this branch; if one ever did, all it
+		// would buy is a cap exemption for a rename claim then refuses anyway.
+		if !reclaims(held, name) && len(held) >= s.maxNames {
 			return ErrTooManyNames
 		}
 
@@ -300,6 +316,26 @@ func (s *Service) Rename(ctx context.Context, ownerID domain.OwnerID, name, requ
 		return nil, err
 	}
 	return result, nil
+}
+
+// reclaims reports whether name is one of the owner's own quarantined holds, so
+// a rename onto it reactivates a claim that is already counted rather than
+// adding one.
+//
+// held MUST be owner-scoped; every caller passes ListByOwner's result, whose
+// contract is exactly that. Passing an unscoped list would let one owner's hold
+// excuse another owner's rename from the cap.
+//
+// Retired rows deliberately do not match. A retired name is one an operator
+// withdrew, and reclaiming it is refused outright a few lines further on; the
+// cap has no business being the thing that reports it.
+func reclaims(held []domain.Handle, name string) bool {
+	for i := range held {
+		if held[i].Name == name && held[i].State == domain.NameStateQuarantined {
+			return true
+		}
+	}
+	return false
 }
 
 // claim establishes name as the owner's active handle, either by reactivating
