@@ -3,6 +3,7 @@ package listadmin
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,70 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
 )
+
+// testNow is the fixed instant the harness stamps persisted overrides with, so
+// an assertion about a recorded timestamp cannot pass by comparing two zero
+// values.
+var testNow = time.Date(2026, 7, 20, 11, 0, 0, 0, time.UTC)
+
+// fakeOverrides is an in-memory ListOverrideRepository. It keys on
+// (list, skeleton) exactly as the real table's primary key does, so a test
+// cannot accidentally observe two rows where production would hold one.
+type fakeOverrides struct {
+	mu     sync.Mutex
+	rows   map[string]domain.ListOverride
+	putErr error
+	putN   int
+}
+
+func newFakeOverrides() *fakeOverrides {
+	return &fakeOverrides{rows: make(map[string]domain.ListOverride)}
+}
+
+func overrideKey(kind domain.ListKind, skeleton string) string {
+	return string(kind) + "\x00" + skeleton
+}
+
+func (f *fakeOverrides) Put(_ context.Context, o *domain.ListOverride) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.putN++
+	if f.putErr != nil {
+		return f.putErr
+	}
+	f.rows[overrideKey(o.List, o.Skeleton)] = *o
+	return nil
+}
+
+func (f *fakeOverrides) List(_ context.Context) ([]domain.ListOverride, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.rows) == 0 {
+		return nil, nil
+	}
+	keys := make([]string, 0, len(f.rows))
+	for k := range f.rows {
+		keys = append(keys, k)
+	}
+	// Sorted, matching the adapter's ORDER BY list, skeleton. The key's NUL
+	// separator makes the string order agree with the column order.
+	sort.Strings(keys)
+	out := make([]domain.ListOverride, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, f.rows[k])
+	}
+	return out, nil
+}
+
+// get returns the stored override for an entry, for assertions.
+func (f *fakeOverrides) get(kind domain.ListKind, entry string) (domain.ListOverride, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	o, ok := f.rows[overrideKey(kind, blocklist.Skeleton(entry))]
+	return o, ok
+}
+
+var _ repository.ListOverrideRepository = (*fakeOverrides)(nil)
 
 // fakeAdmins is an in-memory AdministratorRepository. Only Get is exercised by
 // this package; the rest satisfy the port.
@@ -109,10 +174,11 @@ func disabledAdmin() *domain.Administrator {
 }
 
 type harness struct {
-	svc     *Service
-	sink    *recordingSink
-	admins  *fakeAdmins
-	matcher *blocklist.Matcher
+	svc       *Service
+	sink      *recordingSink
+	admins    *fakeAdmins
+	matcher   *blocklist.Matcher
+	overrides *fakeOverrides
 }
 
 // newHarness wires a Service over a real matcher. The matcher is real, not a
@@ -143,12 +209,19 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("NewEmitter: %v", err)
 	}
 	admins := newFakeAdmins(activeAdmin(), disabledAdmin())
+	overrides := newFakeOverrides()
 
-	svc, err := New(admins, em, m)
+	svc, err := New(Params{
+		Admins:    admins,
+		Overrides: overrides,
+		Emitter:   em,
+		Matcher:   m,
+		Now:       func() time.Time { return testNow },
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return &harness{svc: svc, sink: sink, admins: admins, matcher: m}
+	return &harness{svc: svc, sink: sink, admins: admins, matcher: m, overrides: overrides}
 }
 
 func TestNewRequiresEveryDependency(t *testing.T) {
@@ -163,14 +236,32 @@ func TestNewRequiresEveryDependency(t *testing.T) {
 		t.Fatalf("NewEmitter: %v", err)
 	}
 
-	if _, err := New(nil, em, m); err == nil {
-		t.Error("New accepted a nil administrator repository")
+	full := func() Params {
+		return Params{
+			Admins:    newFakeAdmins(),
+			Overrides: newFakeOverrides(),
+			Emitter:   em,
+			Matcher:   m,
+		}
 	}
-	if _, err := New(newFakeAdmins(), nil, m); err == nil {
-		t.Error("New accepted a nil emitter")
+	cases := map[string]func(*Params){
+		"nil administrator repository": func(p *Params) { p.Admins = nil },
+		"nil override repository":      func(p *Params) { p.Overrides = nil },
+		"nil emitter":                  func(p *Params) { p.Emitter = nil },
+		"nil matcher":                  func(p *Params) { p.Matcher = nil },
 	}
-	if _, err := New(newFakeAdmins(), em, nil); err == nil {
-		t.Error("New accepted a nil matcher")
+	for name, drop := range cases {
+		p := full()
+		drop(&p)
+		if _, err := New(p); err == nil {
+			t.Errorf("New accepted a %s", name)
+		}
+	}
+
+	// A nil clock is the one optional field: it has a single correct default
+	// and is not a security decision the way a missing repository is.
+	if _, err := New(full()); err != nil {
+		t.Errorf("New rejected a nil clock: %v", err)
 	}
 }
 
@@ -569,7 +660,12 @@ func TestApplyFailureIsReportedAfterTheAuditRecord(t *testing.T) {
 		t.Fatalf("NewEmitter: %v", err)
 	}
 	// A zero Matcher is not ready, so every SetAllowlist on it fails.
-	svc, err := New(newFakeAdmins(activeAdmin()), em, &blocklist.Matcher{})
+	svc, err := New(Params{
+		Admins:    newFakeAdmins(activeAdmin()),
+		Overrides: newFakeOverrides(),
+		Emitter:   em,
+		Matcher:   &blocklist.Matcher{},
+	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

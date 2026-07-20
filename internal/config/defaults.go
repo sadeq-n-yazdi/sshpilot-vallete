@@ -8,6 +8,11 @@ const leDirectoryURL = "https://acme-v02.api.letsencrypt.org/directory"
 // day is 24 hours, matching the Duration "d" suffix semantics.
 const day = 24 * time.Hour
 
+// defaultOriginValidityDays is the requested lifetime for a Cloudflare Origin
+// CA certificate. See CloudflareOriginConfig.ValidityDays for why a year is
+// chosen over Cloudflare's 5475-day maximum.
+const defaultOriginValidityDays = 365
+
 // Default returns a Config populated with every built-in default value. It is
 // the single source of truth for defaults; Load starts from Default() and
 // decodes the file and environment over it.
@@ -28,6 +33,11 @@ func Default() Config {
 			MinVersion: "1.2",
 			ACME: ACMEConfig{
 				DirectoryURL: leDirectoryURL,
+			},
+			CloudflareOrigin: CloudflareOriginConfig{
+				// See CloudflareOriginConfig.ValidityDays for why this is a
+				// year and not Cloudflare's 15-year maximum.
+				ValidityDays: defaultOriginValidityDays,
 			},
 			Upstream: UpstreamTLSConfig{
 				RequireForwardedProto: true,
@@ -66,6 +76,12 @@ func Default() Config {
 			},
 			Metrics: MetricsConfig{
 				Prometheus: PrometheusConfig{
+					// Collection is on; SERVING it is not. The empty
+					// ListenAddr is the fail-closed default documented on
+					// PrometheusConfig: no scrape endpoint exists anywhere
+					// until an operator names an address for it, so /metrics
+					// is unreachable on a default deployment and can never
+					// appear on the public API listener.
 					Enabled:    true,
 					ListenAddr: "",
 					Path:       "/metrics",
@@ -75,7 +91,8 @@ func Default() Config {
 				},
 			},
 			Traces: TracesConfig{
-				Enabled: false,
+				Enabled:     false,
+				SampleRatio: 1,
 			},
 		},
 		Onboarding: OnboardingConfig{
