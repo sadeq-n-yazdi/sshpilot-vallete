@@ -197,7 +197,7 @@ func TestUnsupportedDNSProviderIsRefused(t *testing.T) {
 	cfg := acmeTestConfig(t)
 	cfg.TLS.ACME.Solver = "dns_01"
 	cfg.TLS.ACME.DNS.Mode = "api"
-	cfg.TLS.ACME.DNS.Provider = "route53"
+	cfg.TLS.ACME.DNS.Provider = "arvancloud"
 	cfg.TLS.ACME.DNS.CredentialsRef = "env:VALLET_TEST_DNS_TOKEN"
 
 	_, err := newDNSProvider(t.Context(), cfg, nil)

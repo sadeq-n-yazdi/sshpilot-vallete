@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -276,13 +277,22 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 		}
 	}
 
-	// Exactly one Reveal in the whole package, in cloudflare.go's do, where the
-	// value is written into the Authorization header. The constructor's
-	// emptiness check deliberately compares the wrapped value against "" rather
-	// than revealing it, so no second site exists. Any other file, or a second
-	// site here, means a new path to plaintext.
-	want := map[string]int{"cloudflare.go": 1}
-	if len(reveals) != len(want) || reveals["cloudflare.go"] != want["cloudflare.go"] {
+	// One Reveal per provider file, and no Reveal anywhere else in the package.
+	//
+	//   - cloudflare.go: in do, where the token is written into the
+	//     Authorization header. The constructor's emptiness check deliberately
+	//     compares the wrapped value against "" rather than revealing it, so no
+	//     second site exists.
+	//   - route53.go: in splitAWSCredential, which is the single place the
+	//     packed "keyID:secret" pair is unwrapped. It is called from the
+	//     constructor (to fail a malformed credential at startup) and from do
+	//     (to sign), but there is still exactly one line of source that can
+	//     produce plaintext, which is the property this test defends.
+	//
+	// Any other file, or a second site in either of these, means a new path to
+	// plaintext and must be justified by editing this list.
+	want := map[string]int{"cloudflare.go": 1, "route53.go": 1}
+	if !maps.Equal(reveals, want) {
 		t.Errorf("Reveal() call sites = %v, want %v: the plaintext credential must "+
 			"be unwrapped only where it is written into the outbound request", reveals, want)
 	}
@@ -306,7 +316,11 @@ func TestCloudflareRefusesAnEmptyToken(t *testing.T) {
 func TestUnsupportedProviderIsRefused(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"route53", "arvancloud", "", "CLOUDFLARE"} {
+	// Names are chosen to stay unimplemented as E6-E16 land providers, plus
+	// the two shapes that must never be accepted: the empty name, and a
+	// correct name in the wrong case. Matching is exact, so "CLOUDFLARE" and
+	// "ROUTE53" are refusals rather than case-insensitive hits.
+	for _, name := range []string{"arvancloud", "rfc2136", "", "CLOUDFLARE", "ROUTE53"} {
 		if _, err := NewAPIProvider(name, secrets.NewRedacted(testToken), nil); !errors.Is(err, ErrUnsupportedProvider) {
 			t.Errorf("NewAPIProvider(%q) = %v, want ErrUnsupportedProvider", name, err)
 		}
