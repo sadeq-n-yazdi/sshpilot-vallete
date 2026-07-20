@@ -114,6 +114,16 @@ auth:
   # Changing it invalidates every access key already issued: the stored digests
   # were computed under the old value. Treat it as long-lived key material.
   access_key_pepper_ref: ""
+  # How long a rotated access key keeps working after its replacement has been
+  # minted -- the time your deployments have to pick up the new credential.
+  #
+  # Must be POSITIVE; startup fails otherwise. 0 is NOT "no deadline": that
+  # reading would leave every rotated credential live forever, so it is refused
+  # rather than guessed at. For rotation with no overlap at all, mint the
+  # replacement and revoke the old key -- two explicit, separately audited
+  # calls. Shortening this does not shorten a window already in flight; revoke
+  # the key to end one early.
+  access_key_grace_window: 24h
   providers:
     # At least one provider must be enabled.
     api_token:
