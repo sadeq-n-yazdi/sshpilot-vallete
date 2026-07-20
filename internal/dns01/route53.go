@@ -218,16 +218,29 @@ func (p *route53Provider) Present(ctx context.Context, rec Record) (CleanupFunc,
 		ttl = route53ChallengeTTL
 	}
 
-	if err := p.changeRecords(ctx, zoneID, "UPSERT", fqdn, ttl, values); err != nil {
-		return nil, fmt.Errorf("%w: publish txt value for %q: %w", ErrRoute53API, rec.Name, err)
-	}
+	// The cleanup is built BEFORE the write and returned even when the write
+	// reports failure, because a failed write can still have applied: a
+	// response lost to a timeout or a reset connection leaves the change
+	// committed at AWS with nothing here knowing it. Returning nil in that case
+	// leaks a standing _acme-challenge TXT record that no code path can
+	// withdraw — the seam's contract in dns01.go is explicit that a cleanup
+	// MUST come back whenever anything may have been created, including when
+	// Present goes on to fail, and the solver registers it on exactly that
+	// path.
+	//
+	// Returning it early is safe here only because the closure captures
+	// zoneID, fqdn and the value — all known before the call — and nothing
+	// from the response. And returning it when the write genuinely never
+	// applied is harmless because the closure's first act is a read: finding
+	// its value absent, it returns success without submitting any change. So
+	// the pessimistic case costs one GET and cannot disturb a concurrent
+	// challenge at the same name.
+	cleanup := p.removeValue(zoneID, fqdn, rec.Value)
 
-	// The cleanup is returned only after the write succeeded, but note that a
-	// FAILED write can still have applied: a response lost in transit leaves
-	// the change committed. That is why the closure below tolerates both "the
-	// value is there" and "it never was", and why it is safe for the solver to
-	// call it unconditionally.
-	return p.removeValue(zoneID, fqdn, rec.Value), nil
+	if err := p.changeRecords(ctx, zoneID, "UPSERT", fqdn, ttl, values); err != nil {
+		return cleanup, fmt.Errorf("%w: publish txt value for %q: %w", ErrRoute53API, rec.Name, err)
+	}
+	return cleanup, nil
 }
 
 // removeValue returns the cleanup closure for one published value.

@@ -390,7 +390,15 @@ func TestRoute53CleanupReportsAFailure(t *testing.T) {
 }
 
 // TestRoute53PresentReportsAnAPIRejection checks the publish path fails loudly
-// rather than returning a cleanup for a record that was never created.
+// AND still hands back a cleanup.
+//
+// The cleanup is the security-relevant half. A failed write can still have
+// applied — a response lost to a timeout or a reset connection leaves the
+// change committed at AWS with nothing here knowing it — so returning nil would
+// leak a standing _acme-challenge TXT record that no code path can withdraw.
+// The seam's contract requires a cleanup whenever anything may have been
+// created, including when Present fails, and the solver registers it on exactly
+// that path.
 func TestRoute53PresentReportsAnAPIRejection(t *testing.T) {
 	api, provider := newRoute53API(t)
 	api.changeStatus = http.StatusBadRequest
@@ -402,11 +410,56 @@ func TestRoute53PresentReportsAnAPIRejection(t *testing.T) {
 	if !errors.Is(err, ErrRoute53API) {
 		t.Errorf("error = %v, want ErrRoute53API", err)
 	}
-	if cleanup != nil {
-		t.Error("a change that was never applied must not return a cleanup")
+	if cleanup == nil {
+		t.Fatal("Present returned no cleanup for a write that may still have applied: " +
+			"a lost response leaves the record published with nothing able to remove it")
 	}
 	if !strings.Contains(err.Error(), "InvalidChangeBatch") {
 		t.Errorf("error %v does not carry the API's own code, which is the diagnostic", err)
+	}
+}
+
+// TestRoute53CleanupAfterAFailedPublishSubmitsNoChange is the other half of the
+// contract above: the cleanup returned on the error path must be safe to run
+// when the write genuinely never applied.
+//
+// This is what makes returning a cleanup pessimistically harmless rather than a
+// new hazard. Because cleanup reads before it writes, a value that was never
+// created is simply absent, and the closure returns success without submitting
+// any ChangeResourceRecordSets. That matters beyond tidiness: an unconditional
+// write here would be a read-modify-write against a record set this process may
+// never have touched, which could clobber a concurrent challenge at the same
+// name — the exact hazard the set-subtraction design exists to avoid.
+func TestRoute53CleanupAfterAFailedPublishSubmitsNoChange(t *testing.T) {
+	api, provider := newRoute53API(t)
+	const fqdn = "_acme-challenge.vallet.example.com."
+
+	// A concurrent challenge is already standing at the same name.
+	api.records[fqdn] = []string{"someone-elses-challenge"}
+	api.ttls[fqdn] = 60
+
+	api.changeStatus = http.StatusBadRequest
+	cleanup, err := provider.Present(t.Context(), route53Record())
+	if err == nil {
+		t.Fatal("Present accepted a refused change")
+	}
+	if cleanup == nil {
+		t.Fatal("Present returned no cleanup")
+	}
+
+	api.changeStatus = 0
+	api.requests = nil
+	if err := cleanup(t.Context()); err != nil {
+		t.Fatalf("cleanup after a failed publish: %v, want nil", err)
+	}
+
+	for _, req := range api.requests {
+		if strings.HasPrefix(req, http.MethodPost) {
+			t.Errorf("cleanup submitted a change for a value that was never published: %q", req)
+		}
+	}
+	if got := api.records[fqdn]; !slices.Equal(got, []string{"someone-elses-challenge"}) {
+		t.Errorf("cleanup disturbed a concurrent challenge: record set = %v", got)
 	}
 }
 
