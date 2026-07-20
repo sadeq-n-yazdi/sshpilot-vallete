@@ -127,5 +127,13 @@ blocklist:
 
 retention:
   handle_quarantine: 30d
+  # How long audit records are kept. Must be > 0 -- 0 is rejected at startup and
+  # does NOT mean "keep nothing". To stop purging, set audit_purge_interval: 0.
   audit_retention: 365d
+  # How often the retention purge runs. 0 disables purging entirely.
+  audit_purge_interval: 24h
+  # Records removed per transaction, and the ceiling on one pass. A backlog
+  # larger than the ceiling is drained over successive passes.
+  audit_purge_batch: 500
+  audit_purge_max_per_run: 100000
   max_sets_per_owner: 100

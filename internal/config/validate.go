@@ -308,8 +308,25 @@ func (c *Config) validateRetention(v *validator) {
 	if c.Retention.HandleQuarantine.Std() <= 0 {
 		v.add("retention.handle_quarantine", "must be > 0")
 	}
+	// Strictly positive, with no "disabled" reading. A cutoff of now-0 makes
+	// every record eligible, so accepting 0 here would turn a one-character
+	// config typo into the irreversible destruction of the audit log — the very
+	// record an operator would need to investigate the incident. Purging is
+	// switched off through retention.audit_purge_interval instead.
 	if c.Retention.AuditRetention.Std() <= 0 {
-		v.add("retention.audit_retention", "must be > 0")
+		v.add("retention.audit_retention", "must be > 0 (set retention.audit_purge_interval to 0 to disable purging; 0 here does not mean \"keep nothing\")")
+	}
+	// 0 is a valid value here and means "never run a purge". Negative is not a
+	// mode, it is a mistake, and is rejected rather than clamped: silently
+	// repairing it would hide a misconfiguration the operator needs to see.
+	if c.Retention.AuditPurgeInterval.Std() < 0 {
+		v.add("retention.audit_purge_interval", "must be >= 0 (0 disables purging)")
+	}
+	if c.Retention.AuditPurgeBatch < 1 {
+		v.add("retention.audit_purge_batch", "must be >= 1, got %d", c.Retention.AuditPurgeBatch)
+	}
+	if c.Retention.AuditPurgeMaxPerRun < 1 {
+		v.add("retention.audit_purge_max_per_run", "must be >= 1, got %d", c.Retention.AuditPurgeMaxPerRun)
 	}
 	if c.Retention.MaxSetsPerOwner < 1 {
 		v.add("retention.max_sets_per_owner", "must be >= 1, got %d", c.Retention.MaxSetsPerOwner)
