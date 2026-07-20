@@ -648,7 +648,18 @@ func (p *acmeProvider) needsIssuance() bool {
 	cert := p.current
 	p.mu.RUnlock()
 
-	if cert == nil {
+	// The empty-chain half of this guard is depth, not a hole being closed.
+	// Every path that reaches setCurrent runs validateCertificate first, and
+	// that rejects an empty chain, so p.current cannot hold one today. But that
+	// is a derived argument: it stops holding the moment someone adds a fourth
+	// way to set p.current, and what it would cost here is an index panic on
+	// the renewal goroutine -- which takes down issuance for the life of the
+	// process and, once the certificate expires, the listener with it. Two
+	// lines locally is cheaper than a guarantee that lives in another file.
+	//
+	// Reading it as "needs issuance" is also the correct answer on its own
+	// terms: a certificate with no chain is one that cannot be served.
+	if cert == nil || len(cert.Certificate) == 0 {
 		return true
 	}
 	// Re-parsed from DER rather than trusting cert.Leaf, for the same reason

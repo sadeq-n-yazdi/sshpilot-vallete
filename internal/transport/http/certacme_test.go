@@ -717,3 +717,39 @@ func TestACMERenewalLoopDrivesIssuance(t *testing.T) {
 		})
 	}
 }
+
+// TestNeedsIssuanceTreatsAnEmptyChainAsNeedingIssuance pins the empty-chain
+// guard in needsIssuance.
+//
+// The guard is depth: validateCertificate runs on every path that reaches
+// setCurrent and rejects an empty chain, so a live provider cannot hold one.
+// That makes this test the only thing standing behind the guard, which is
+// exactly why it is worth writing — without it the guard reads as dead code and
+// the next reader deletes it.
+//
+// The failure it prevents is not a wrong answer but an index panic on the
+// renewal goroutine. A panic there ends issuance for the life of the process,
+// and once the held certificate expires the listener stops serving with it, so
+// an unservable certificate would take the service down rather than be
+// replaced.
+func TestNeedsIssuanceTreatsAnEmptyChainAsNeedingIssuance(t *testing.T) {
+	t.Parallel()
+
+	p := acmeTestProvider(t, time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC))
+
+	// Set directly rather than through setCurrent: the point is to reach
+	// needsIssuance with a state its callers are supposed to make impossible.
+	p.current = &tls.Certificate{Certificate: nil}
+
+	if !p.needsIssuance() {
+		t.Fatal("needsIssuance() = false for a certificate with an empty chain, want true")
+	}
+
+	// A zero-length non-nil chain is the same condition by a different route,
+	// and indexes just as fatally.
+	p.current = &tls.Certificate{Certificate: [][]byte{}}
+
+	if !p.needsIssuance() {
+		t.Fatal("needsIssuance() = false for a zero-length chain, want true")
+	}
+}
