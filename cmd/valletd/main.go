@@ -105,8 +105,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	// SEAM: the authenticated management surface is mounted but not yet wired.
 	//
-	// httpserver.NewHandler registers the device management routes
-	// unconditionally, and with no httpserver.WithAuthorizer here they are
+	// httpserver.NewHandler registers the device and public key management
+	// routes unconditionally, and with no httpserver.WithAuthorizer here they are
 	// guarded by an authorizer that refuses every credential. That is the
 	// intended interim state: the routes exist, they are documented, and they
 	// answer 401 to everyone, so no request is ever served unauthenticated.
@@ -117,6 +117,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	//
 	//	httpserver.WithAuthorizer(guard),
 	//	httpserver.WithDeviceService(deviceSvc),
+	//	httpserver.WithPublicKeyService(keySvc),
 	//
 	// and nothing else here changes.
 	//
