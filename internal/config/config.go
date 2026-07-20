@@ -241,10 +241,45 @@ type BlocklistConfig struct {
 }
 
 // RetentionConfig configures audit retention and erasure windows (ADR-0024).
+//
+// # Why the window and the schedule are separate knobs
+//
+// AuditRetention says how much history is kept; the AuditPurge* fields say how
+// the purge that enforces it is paced. They are deliberately not collapsed into
+// one setting because they fail in opposite directions. A too-small retention
+// window destroys evidence irrecoverably, so it is validated as strictly
+// positive and there is no value that means "purge everything". A too-small or
+// absent schedule merely lets history accumulate, which is recoverable, so the
+// schedule — and only the schedule — carries the off switch.
 type RetentionConfig struct {
 	HandleQuarantine Duration `yaml:"handle_quarantine"`
-	AuditRetention   Duration `yaml:"audit_retention"`
-	MaxSetsPerOwner  int      `yaml:"max_sets_per_owner"`
+
+	// AuditRetention is the age at which an audit record becomes eligible for
+	// purging. It MUST be > 0: zero would place the cutoff at the present
+	// moment and make every record eligible, so validation rejects it rather
+	// than treating it as "keep nothing" or silently substituting a default.
+	// To stop purging entirely, set AuditPurgeInterval to 0; never this.
+	AuditRetention Duration `yaml:"audit_retention"`
+
+	// AuditPurgeInterval is how often a retention pass runs. 0 disables
+	// purging altogether (records accumulate and are logged about at startup);
+	// any positive value schedules a pass at that cadence. This is the only
+	// retention field whose zero value is a valid operating mode, because the
+	// consequence of it — keeping too much — is reversible.
+	AuditPurgeInterval Duration `yaml:"audit_purge_interval"`
+
+	// AuditPurgeBatch is how many records one purge transaction removes. It
+	// bounds how long a single DELETE holds a write lock, so a large backlog
+	// does not stall every other writer for the duration of one statement.
+	AuditPurgeBatch int `yaml:"audit_purge_batch"`
+
+	// AuditPurgeMaxPerRun caps the total records one pass may remove. Without
+	// it a huge backlog would keep a pass batching indefinitely; with it the
+	// backlog is drained across successive passes instead of monopolising the
+	// database in one.
+	AuditPurgeMaxPerRun int `yaml:"audit_purge_max_per_run"`
+
+	MaxSetsPerOwner int `yaml:"max_sets_per_owner"`
 }
 
 // DocsConfig configures exposure of the self-served API documentation
