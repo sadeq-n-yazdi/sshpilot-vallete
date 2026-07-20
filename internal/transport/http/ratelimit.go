@@ -2,11 +2,13 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/counter"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/ratelimit"
@@ -73,6 +75,141 @@ func newPublishLimiter(cfg *config.Config, store counter.Store) (*ratelimit.Limi
 		return nil, nil //nolint:nilnil // A nil limiter is the documented "disabled" state.
 	}
 	return ratelimit.NewLimiter(store, ratelimit.TierPublish, tiersFromConfig(cfg).Publish)
+}
+
+// newManagementLimiter builds the management tier's limiter, or nil when rate
+// limiting is disabled.
+//
+// It takes the same store as the publish tier rather than building its own.
+// One store is what ADR-0023 describes ("the same store backs the auth
+// revocation denylist"), and it is also what keeps the tiers honest: the
+// Limiter namespaces its keys by tier name, so sharing the store cannot let one
+// tier spend another's budget, while two stores would double the memory and
+// give an operator two things to reason about where the ADR promises one.
+//
+// A nil limiter is the documented "disabled" state, exactly as for publish.
+func newManagementLimiter(cfg *config.Config, store counter.Store) (*ratelimit.Limiter, error) {
+	if store == nil || (cfg != nil && !cfg.RateLimit.Enabled) {
+		return nil, nil //nolint:nilnil // A nil limiter is the documented "disabled" state.
+	}
+	return ratelimit.NewLimiter(store, ratelimit.TierManagement, tiersFromConfig(cfg).Management)
+}
+
+// managementRateLimit enforces the management tier on an already-authorized
+// route.
+//
+// # Why this is a ScopedHandler decorator and not a Middleware
+//
+// ADR-0023 keys this tier PER CREDENTIAL, not per IP, and the credential does
+// not exist until Guardian.Protect has verified the bearer token. An
+// http.Handler middleware wrapped around Protect runs BEFORE that verification,
+// so it could only ever key on the source address -- which is the keying the
+// ADR explicitly rejects here, because an owner's automation legitimately
+// shares one NAT with colleagues who would then throttle each other.
+//
+// The router's original seam comment said the tier would "wrap these
+// registrations", which reads as an outer middleware. That reading is
+// incompatible with per-credential keying, so the tier is mounted inside
+// Protect instead; ADR-0023 decides this, not the comment.
+//
+// # Why the key is the credential id
+//
+// Authorization.CredentialID names the refresh credential the access token was
+// minted from, which is the stable lineage: TokenID changes every time a client
+// refreshes, so keying on it would hand a caller a budget reset for the cost of
+// one refresh. The credential id is a non-guessable random identifier issued by
+// this server and is unique across owners, so one owner's traffic can neither
+// be attributed to nor exhaust another's -- the isolation comes from the
+// identifier's uniqueness rather than from a composite key that would only
+// restate it.
+//
+// # It cannot become an existence oracle
+//
+// The key is derived from the CALLER's verified credential and from nothing in
+// the request path, so the counter a request lands in is identical whether the
+// device or key it names exists, belongs to someone else, or was never created.
+// The 429 body and headers are the same bytes in every case, and the check runs
+// before the handler, so no storage has been consulted when it is written.
+//
+// # Cardinality is bounded by issued credentials
+//
+// Only requests that have already passed Protect reach this, so a key can only
+// be a credential this server itself issued and has not revoked. An
+// unauthenticated caller cannot mint key-space entries at all, which is a
+// stronger bound than the publish tier's per-IP keying enjoys; combined with
+// the store's fixed-window TTLs and sweeps, resident state is bounded by the
+// credentials actually active within one window.
+//
+// # Outage behavior: fail CLOSED
+//
+// The decision comes from ratelimit.Tier.FailOpen, which DefaultTiers sets to
+// false for this tier. Callers here are authenticated account holders receiving
+// a clear 429 with Retry-After, and every mutating route on the surface lives
+// behind it, so refusing during a counter-store outage is the conservative half
+// of a read-available/write-refused degradation. That is why the branch below
+// tests decision.Allowed and never the error: treating "error" as "deny" would
+// silently override the tier's configured policy rather than apply it, and the
+// same code would then be wrong the day a tier chooses to fail open.
+func managementRateLimit(lim *ratelimit.Limiter, logger *slog.Logger) func(ScopedHandler) ScopedHandler {
+	return func(next ScopedHandler) ScopedHandler {
+		if lim == nil {
+			return next
+		}
+		if logger == nil {
+			logger = slog.New(slog.DiscardHandler)
+		}
+
+		return func(w http.ResponseWriter, r *http.Request, a *auth.Authorization) {
+			key := string(a.CredentialID())
+			if key == "" {
+				// An Authorization always carries a credential id -- the signer
+				// refuses to issue a token without one -- so this is
+				// unreachable through Protect. It is a refusal rather than a
+				// pass-through anyway: an unattributable caller must never be
+				// the one caller exempt from the limit, which is the same rule
+				// the per-IP middleware applies to an unresolvable address.
+				logger.LogAttrs(r.Context(), slog.LevelWarn, "rate limit: authorization without a credential id",
+					slog.String("request_id", RequestIDFromContext(r.Context())))
+				writeRateLimited(w, ratelimit.Decision{RetryAfter: lim.Tier().Window})
+				return
+			}
+
+			decision, err := lim.Allow(r.Context(), key)
+			if err != nil {
+				// Logged at Error even when the tier keeps serving, because a
+				// limiter that has stopped limiting must be visible. Neither
+				// the credential nor the owner is logged: an access log travels
+				// far more widely than the request, and this line would
+				// otherwise turn every 429 into a record of which account was
+				// active when.
+				//
+				// A caller who hung up is the exception, and only when the
+				// error IS that cancellation. Testing r.Context().Err()
+				// instead would ask a different question -- "did the client
+				// go away at some point" -- and a store outage that happens to
+				// coincide with a disconnect would be filed at Debug. Under a
+				// fail-closed tier that is worth being careful about: refusals
+				// make clients disconnect, so the coincidence is correlated
+				// with the outage rather than independent of it, and anyone
+				// who can cause disconnects could otherwise mute the signal
+				// that the limiter has stopped working.
+				level := slog.LevelError
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					level = slog.LevelDebug
+				}
+				logger.LogAttrs(r.Context(), level, "rate limit: counter store unavailable",
+					slog.String("request_id", RequestIDFromContext(r.Context())),
+					slog.Bool("serving", decision.Allowed),
+					slog.String("error", err.Error()))
+			}
+
+			if !decision.Allowed {
+				writeRateLimited(w, decision)
+				return
+			}
+			next(w, r, a)
+		}
+	}
 }
 
 // newLimitStore builds the counter store backing the rate-limit tiers.

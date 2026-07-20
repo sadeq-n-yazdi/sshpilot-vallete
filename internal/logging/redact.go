@@ -54,8 +54,17 @@ const RedactedMarker = "[REDACTED]"
 // bound fails closed, like every other branch here.
 const maxDepth = 8
 
-// RedactHandler is a slog.Handler middleware that filters every attribute
-// before passing the record to the next handler.
+// Policy is the redaction engine: the allowlist plus the value rules applied
+// to anything that passes it.
+//
+// It is exported because logs are not the only sink that carries attributes.
+// Trace spans (ADR-0025) carry key/value pairs into a telemetry backend that is
+// shipped, retained, and read at least as widely as a log stream, and a second
+// redaction implementation for that sink would be a second policy — which means
+// one of the two is wrong, and nobody finds out which until a value leaks
+// through the weaker one. Every sink therefore calls Redact on THIS type, so
+// there is exactly one allowlist and exactly one set of value rules in the
+// process.
 //
 // Policy, in order of application:
 //
@@ -65,10 +74,39 @@ const maxDepth = 8
 //  3. An allowlisted key's value must additionally be of a kind that can be
 //     rendered safely; anything else is redacted (see leafValue).
 //
+// The zero value is not usable; construct with NewPolicy.
+type Policy struct {
+	allow map[string]struct{}
+}
+
+// NewPolicy builds the redaction policy from the default allowlist (see
+// allowlist.go) plus any extra keys the caller declares.
+//
+// extraAllowed exists so that a package which emits its own vocabulary can
+// widen the policy at the point it is wired up, rather than editing a central
+// list from a distance. Widening is always an explicit, reviewable call.
+func NewPolicy(extraAllowed ...string) *Policy {
+	allow := make(map[string]struct{}, len(defaultAllowedKeys)+len(extraAllowed))
+	for _, k := range defaultAllowedKeys {
+		allow[k] = struct{}{}
+	}
+	for _, k := range extraAllowed {
+		allow[strings.ToLower(strings.TrimSpace(k))] = struct{}{}
+	}
+	return &Policy{allow: allow}
+}
+
+// Redact applies the policy to one attribute, returning the value that may be
+// rendered. It is the entry point every sink shares.
+func (p *Policy) Redact(a slog.Attr) slog.Attr { return p.redact(a, 0) }
+
+// RedactHandler is a slog.Handler middleware that filters every attribute
+// through a Policy before passing the record to the next handler.
+//
 // The zero value is not usable; construct with NewRedactHandler.
 type RedactHandler struct {
-	next  slog.Handler
-	allow map[string]struct{}
+	next   slog.Handler
+	policy *Policy
 }
 
 // Compile-time proof that the middleware satisfies the interface it wraps.
@@ -76,19 +114,8 @@ var _ slog.Handler = (*RedactHandler)(nil)
 
 // NewRedactHandler wraps next with the default allowlist (see allowlist.go),
 // plus any extra keys the caller declares.
-//
-// extraAllowed exists so that a package which logs its own vocabulary can widen
-// the policy at the point it is wired up, rather than editing a central list
-// from a distance. Widening is always an explicit, reviewable call.
 func NewRedactHandler(next slog.Handler, extraAllowed ...string) *RedactHandler {
-	allow := make(map[string]struct{}, len(defaultAllowedKeys)+len(extraAllowed))
-	for _, k := range defaultAllowedKeys {
-		allow[k] = struct{}{}
-	}
-	for _, k := range extraAllowed {
-		allow[strings.ToLower(k)] = struct{}{}
-	}
-	return &RedactHandler{next: next, allow: allow}
+	return &RedactHandler{next: next, policy: NewPolicy(extraAllowed...)}
 }
 
 // Enabled delegates: level filtering is the wrapped handler's business.
@@ -106,7 +133,7 @@ func (h *RedactHandler) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *RedactHandler) Handle(ctx context.Context, r slog.Record) error {
 	out := slog.NewRecord(r.Time, r.Level, scrubURLCredentials(r.Message), r.PC)
 	r.Attrs(func(a slog.Attr) bool {
-		out.AddAttrs(h.redact(a, 0))
+		out.AddAttrs(h.policy.Redact(a))
 		return true
 	})
 	return h.next.Handle(ctx, out)
@@ -121,9 +148,9 @@ func (h *RedactHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 	redacted := make([]slog.Attr, 0, len(attrs))
 	for _, a := range attrs {
-		redacted = append(redacted, h.redact(a, 0))
+		redacted = append(redacted, h.policy.Redact(a))
 	}
-	return &RedactHandler{next: h.next.WithAttrs(redacted), allow: h.allow}
+	return &RedactHandler{next: h.next.WithAttrs(redacted), policy: h.policy}
 }
 
 // WithGroup opens a namespace on the wrapped handler.
@@ -135,11 +162,11 @@ func (h *RedactHandler) WithGroup(name string) slog.Handler {
 	if name == "" {
 		return h
 	}
-	return &RedactHandler{next: h.next.WithGroup(name), allow: h.allow}
+	return &RedactHandler{next: h.next.WithGroup(name), policy: h.policy}
 }
 
 // redact applies the policy to one attribute, recursing through groups.
-func (h *RedactHandler) redact(a slog.Attr, depth int) slog.Attr {
+func (p *Policy) redact(a slog.Attr, depth int) slog.Attr {
 	if depth >= maxDepth {
 		return slog.String(a.Key, RedactedMarker)
 	}
@@ -154,12 +181,12 @@ func (h *RedactHandler) redact(a slog.Attr, depth int) slog.Attr {
 		subs := v.Group()
 		out := make([]slog.Attr, 0, len(subs))
 		for _, sub := range subs {
-			out = append(out, h.redact(sub, depth+1))
+			out = append(out, p.redact(sub, depth+1))
 		}
 		return slog.Attr{Key: a.Key, Value: slog.GroupValue(out...)}
 	}
 
-	if !h.allowed(a.Key) {
+	if !p.allowed(a.Key) {
 		return slog.String(a.Key, RedactedMarker)
 	}
 	return slog.Attr{Key: a.Key, Value: leafValue(v)}
@@ -168,8 +195,8 @@ func (h *RedactHandler) redact(a slog.Attr, depth int) slog.Attr {
 // allowed reports whether a key is declared loggable. Matching is
 // case-insensitive so that "Authorization" and "authorization" cannot be
 // different keys as far as the policy is concerned.
-func (h *RedactHandler) allowed(key string) bool {
-	_, ok := h.allow[strings.ToLower(key)]
+func (p *Policy) allowed(key string) bool {
+	_, ok := p.allow[strings.ToLower(key)]
 	return ok
 }
 
