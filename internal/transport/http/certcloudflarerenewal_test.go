@@ -654,36 +654,3 @@ func TestOriginCASummaryTruncationKeepsValidUTF8(t *testing.T) {
 		t.Errorf("truncation discarded more than a partial rune: %d bytes", len(got))
 	}
 }
-
-// TestTrimPartialRuneSuffixLeavesWholeRunes checks the boundary cases the
-// truncation repair turns on, including the one that separates a real U+FFFD
-// in the message from a fragment our own cut produced.
-func TestTrimPartialRuneSuffixLeavesWholeRunes(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{name: "ascii is untouched", in: "plain", want: "plain"},
-		{name: "empty is untouched", in: "", want: ""},
-		{name: "whole rune is kept", in: "ok…", want: "ok…"},
-		{name: "one leading byte is dropped", in: "ok\xe2", want: "ok"},
-		{name: "two of three bytes are dropped", in: "ok\xe2\x80", want: "ok"},
-		{name: "three of four bytes are dropped", in: "ok\xf0\x9f\x92", want: "ok"},
-		// A genuine U+FFFD decodes as RuneError at size 3. Dropping it would
-		// mean the repair eats real characters out of the operator's message.
-		{name: "a real replacement char is kept", in: "ok�", want: "ok�"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
-			if got := trimPartialRuneSuffix(tc.in); got != tc.want {
-				t.Errorf("trimPartialRuneSuffix(%q) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}

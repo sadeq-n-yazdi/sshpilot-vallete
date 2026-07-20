@@ -412,7 +412,20 @@ func decodeKeySetJSON(w http.ResponseWriter, r *http.Request, into any) error {
 // vague (nameguard never renders which curated term fired) and there is no
 // reason for the transport to widen it.
 //
-// Everything else -> 500 with the reason logged and never returned.
+// A canceled or timed-out request -> still 500, but logged at Info. The status
+// is deliberately unchanged: the caller has gone away or stopped waiting, so
+// nothing reads it, and the two codes usually proposed here are both wrong for
+// this server. 499 is an nginx invention rather than a registered status, and
+// 504 describes a gateway that got no answer from an upstream, which this
+// process is not — it is the origin, timing out against its own datastore.
+//
+// The LEVEL is the part that matters. A client that hangs up is ordinary
+// operation, not a system fault, and recording it at Error lets any
+// authenticated caller fill the error log at will simply by canceling
+// requests: the signal operators reach for during an incident, drowned out by a
+// client's normal behavior.
+//
+// Everything else -> 500 with the reason logged at Error and never returned.
 func writeKeySetError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error, msg string) {
 	switch {
 	// Matched on the DOMAIN sentinel rather than keyset.ErrNotFound, which
@@ -433,6 +446,15 @@ func writeKeySetError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 		writeKeySetConflict(w, reasonConfirmationRequired)
 	case errors.Is(err, domain.ErrBlockedName), errors.Is(err, domain.ErrInvalidInput):
 		writeKeySetStatus(w, http.StatusBadRequest)
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		// Checked on the returned error rather than on r.Context().Err(): the
+		// deadline that expired may be one the service imposed on its own work,
+		// which the request context knows nothing about.
+		logger.LogAttrs(r.Context(), slog.LevelInfo, msg,
+			slog.String("request_id", RequestIDFromContext(r.Context())),
+			slog.String("error", err.Error()),
+		)
+		writeKeySetStatus(w, http.StatusInternalServerError)
 	default:
 		logger.LogAttrs(r.Context(), slog.LevelError, msg,
 			slog.String("request_id", RequestIDFromContext(r.Context())),

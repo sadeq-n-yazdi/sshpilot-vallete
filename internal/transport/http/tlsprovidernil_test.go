@@ -3,12 +3,14 @@ package httpserver
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
 // TestNewCertProviderReturnsNilInterfaceOnError pins the one property a caller
@@ -102,11 +104,81 @@ func TestNewCertProviderReturnsNilInterfaceOnError(t *testing.T) {
 			wantErr: ErrACMETermsNotAccepted,
 		},
 		{
+			// This row was written with "dns_01" as the unimplemented solver.
+			// The DNS-01 branch implements it, so leaving it would have left the
+			// row passing while asserting nothing about the default branch it
+			// exists for -- the same silently-vacuous failure this table's own
+			// doc warns a later case will cause. Switched to a solver that is
+			// still genuinely unimplemented.
 			name: "acme with unimplemented solver",
 			setup: func(_ *testing.T, _ string) *config.Config {
 				cfg := &config.Config{}
 				cfg.TLS.Mode = "acme"
+				cfg.TLS.ACME.Solver = "http_01"
+				return cfg
+			},
+			wantErr: ErrTLSModeUnsupported,
+		},
+		{
+			// dns_01 now reaches a real constructor, so it needs its own row
+			// covering the IMPLEMENTED path rather than the default branch. An
+			// unset dns mode refuses inside newDNSProvider before any network
+			// or filesystem work, so the row is deterministic.
+			name: "acme dns_01 with an unset dns mode",
+			setup: func(_ *testing.T, _ string) *config.Config {
+				cfg := &config.Config{}
+				cfg.TLS.Mode = "acme"
 				cfg.TLS.ACME.Solver = "dns_01"
+				return cfg
+			},
+			wantErr: ErrTLSModeUnsupported,
+		},
+		{
+			// THE row that pins the typed-nil guard on the dns_01 path. The two
+			// rows above fail inside newDNSProvider and return an explicit nil,
+			// so they never reach the line where a concrete *acmeProvider is
+			// converted to a CertProvider -- they passed even with the guard
+			// removed. This one uses the manual dns mode, which needs no
+			// credential and SUCCEEDS, so the failure happens inside
+			// newACMEProvider, at the conversion site itself.
+			//
+			// Verified by mutation: drop asCertProvider from
+			// newDNS01ACMEProvider and only this row fails.
+			name: "acme dns_01 reaching the acme constructor without accepted TOS",
+			setup: func(_ *testing.T, dir string) *config.Config {
+				cfg := &config.Config{}
+				cfg.TLS.Mode = "acme"
+				cfg.TLS.ACME.Solver = "dns_01"
+				cfg.TLS.ACME.DNS.Mode = "manual"
+				cfg.TLS.ACME.AcceptTOS = false
+				cfg.TLS.ACME.CacheDir = filepath.Join(dir, "acme")
+				cfg.TLS.ACME.AccountKeyFile = filepath.Join(dir, "acme", "account.key")
+				return cfg
+			},
+			wantErr: ErrACMETermsNotAccepted,
+		},
+		{
+			// The other dns_01 failure shape: a provider name this build does
+			// not implement, reached only after the solver and dns mode are
+			// both accepted. It exercises the deepest error path that still
+			// returns through asCertProvider.
+			name: "acme dns_01 with an unsupported provider",
+			setup: func(t *testing.T, dir string) *config.Config {
+				t.Helper()
+				cfg := &config.Config{}
+				cfg.TLS.Mode = "acme"
+				cfg.TLS.ACME.Solver = "dns_01"
+				cfg.TLS.ACME.DNS.Mode = "api"
+				cfg.TLS.ACME.DNS.Provider = "no-such-provider"
+				// A file-backed credential rather than an env one: the table
+				// runs its rows in parallel, and t.Setenv is incompatible with
+				// t.Parallel. The credential must RESOLVE for this row to reach
+				// the provider-name check it exists to exercise.
+				credFile := filepath.Join(dir, "dns-credential")
+				if err := os.WriteFile(credFile, []byte("token-value"), 0o600); err != nil {
+					t.Fatalf("write credential file: %v", err)
+				}
+				cfg.TLS.ACME.DNS.CredentialsRef = secrets.Ref("file:" + credFile)
 				return cfg
 			},
 			wantErr: ErrTLSModeUnsupported,
@@ -142,7 +214,7 @@ func TestNewCertProviderReturnsNilInterfaceOnError(t *testing.T) {
 
 			cfg := tc.setup(t, t.TempDir())
 
-			provider, err := newCertProvider(context.Background(), cfg, time.Now)
+			provider, err := newCertProvider(context.Background(), cfg, time.Now, slog.New(slog.DiscardHandler))
 
 			// Asserted first: a row that stopped failing would otherwise make
 			// the nil check below unreachable and the case silently vacuous.
