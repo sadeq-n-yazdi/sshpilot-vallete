@@ -28,14 +28,26 @@ func fullOwnerScopes() []domain.Scope {
 // owner.
 func newService(t *testing.T) (*fakeStore, *auth.TokenService) {
 	t.Helper()
+	store, svc, _ := newServiceWithDenylist(t)
+	return store, svc
+}
+
+// newServiceWithDenylist is newService with the denylist exposed, for the tests
+// that assert on revocation taking effect before a token's own expiry. The
+// denylist's clock is wound to baseTime so its entry lifetimes line up with the
+// timestamps the token tests use.
+func newServiceWithDenylist(t *testing.T) (*fakeStore, *auth.TokenService, *denylistFixture) {
+	t.Helper()
 	store := newFakeStore(&fakeOwners{rows: map[domain.OwnerID]*domain.Owner{
 		testOwner: activeOwner(testOwner),
 	}})
-	svc, err := auth.NewTokenService(store, newSigner(t, 1))
+	f := newDenylistFixture(t)
+	f.now = baseTime
+	svc, err := auth.NewTokenService(store, newSigner(t, 1), f.dl)
 	if err != nil {
 		t.Fatalf("NewTokenService: %v", err)
 	}
-	return store, svc
+	return store, svc, f
 }
 
 // issue mints a first credential pair for the standard owner.
@@ -76,11 +88,19 @@ func TestNewTokenServiceRejectsMissingDependencies(t *testing.T) {
 	signer := newSigner(t, 1)
 	store := newFakeStore(&fakeOwners{})
 
-	if _, err := auth.NewTokenService(nil, signer); !errors.Is(err, domain.ErrInvalidInput) {
+	dl := newDenylistFixture(t).dl
+
+	if _, err := auth.NewTokenService(nil, signer, dl); !errors.Is(err, domain.ErrInvalidInput) {
 		t.Fatalf("nil store: error = %v, want ErrInvalidInput", err)
 	}
-	if _, err := auth.NewTokenService(store, nil); !errors.Is(err, domain.ErrInvalidInput) {
+	if _, err := auth.NewTokenService(store, nil, dl); !errors.Is(err, domain.ErrInvalidInput) {
 		t.Fatalf("nil signer: error = %v, want ErrInvalidInput", err)
+	}
+	// A service built without a denylist would verify revoked access tokens,
+	// which is the failure the denylist exists to prevent. It is a wiring bug
+	// and must stop the process, not degrade the check.
+	if _, err := auth.NewTokenService(store, signer, nil); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("nil denylist: error = %v, want ErrInvalidInput", err)
 	}
 }
 
@@ -164,7 +184,7 @@ func TestIssuePopulatesTheRootCredential(t *testing.T) {
 	}
 	// The access token must be usable and must carry the owner binding and the
 	// scopes, which is what B5 will enforce against.
-	claims, err := svc.Verify(got.AccessToken, baseTime)
+	claims, err := svc.Verify(context.Background(), got.AccessToken, baseTime)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
@@ -281,7 +301,7 @@ func TestRotationCarriesTheLineageForward(t *testing.T) {
 	}
 	// Rotation must never widen a grant: the new access token carries exactly
 	// the scopes the lineage was issued with.
-	claims, err := svc.Verify(second.AccessToken, baseTime.Add(time.Hour))
+	claims, err := svc.Verify(context.Background(), second.AccessToken, baseTime.Add(time.Hour))
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
