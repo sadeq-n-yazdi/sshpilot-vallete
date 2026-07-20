@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -12,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"os"
@@ -93,6 +95,54 @@ func TestOriginCAFailsClosedOnIssuanceFailures(t *testing.T) {
 				t.Fatal("a provider with no certificate must not be returned")
 			}
 		})
+	}
+}
+
+// TestOriginCARefusesUnsuccessfulEnvelopeCarryingACertificate checks that the
+// success flag is enforced on its own.
+//
+// The envelope says success=false while carrying a perfectly valid, correctly
+// keyed certificate. Every other guard in the issuance path is satisfied, so
+// this is the only case in which the success check is load-bearing — and
+// without it a response the API explicitly marked as a failure would be
+// adopted and served.
+//
+// The distinction matters because the neighboring table cases all happen to
+// carry no certificate, which means the empty-chain check catches them and the
+// success flag could be deleted without any of them noticing.
+func TestOriginCARefusesUnsuccessfulEnvelopeCarryingACertificate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	cfg := originTestConfig(t)
+	ca := newFakeOriginCA(t)
+
+	p, err := newOriginCAProviderWithClient(t.Context(), cfg, staticClock(now),
+		secrets.NewRedacted("v1.0-testkey"),
+		doerFunc(func(req *http.Request) (*http.Response, error) {
+			signed := ca.sign(t, req, now.Add(-time.Hour), now.Add(365*24*time.Hour))
+			body, err := io.ReadAll(signed.Body)
+			if err != nil {
+				t.Fatalf("read signed envelope: %v", err)
+			}
+			var envelope map[string]any
+			if err := json.Unmarshal(body, &envelope); err != nil {
+				t.Fatalf("decode signed envelope: %v", err)
+			}
+			// Same certificate, but the API reports failure.
+			envelope["success"] = false
+			envelope["errors"] = []map[string]any{{"code": 1100, "message": "hostname not in zone"}}
+			out, err := json.Marshal(envelope)
+			if err != nil {
+				t.Fatalf("encode envelope: %v", err)
+			}
+			return jsonResponse(http.StatusOK, string(out)), nil
+		}))
+	if !errors.Is(err, ErrOriginCAIssuance) {
+		t.Fatalf("err = %v, want ErrOriginCAIssuance", err)
+	}
+	if p != nil {
+		t.Fatal("a certificate the api marked as a failed request must not be served")
 	}
 }
 
@@ -301,6 +351,61 @@ func TestOriginCACachesAcrossRestarts(t *testing.T) {
 	}
 	if !bytesEqual(firstCert.Certificate[0], secondCert.Certificate[0]) {
 		t.Error("the cached certificate must be the one adopted after a restart")
+	}
+}
+
+// TestOriginCADoesNotAdoptAnExpiredCachedCertificate checks that the cache is
+// validated before it is trusted.
+//
+// A process that was down while its certificate expired must issue a new one on
+// the next start, not adopt the dead one. Adopting it would be served to the
+// first handshake — the guard would refuse it, so the failure mode is a
+// listener that accepts connections and rejects every single one, which reads
+// as a network fault rather than an expired certificate.
+//
+// The assertion is that a NEW certificate is obtained and served, not merely
+// that something was returned: the stale one is still on disk throughout.
+func TestOriginCADoesNotAdoptAnExpiredCachedCertificate(t *testing.T) {
+	t.Parallel()
+
+	cfg := originTestConfig(t)
+
+	// Issue at a time when a short-lived certificate is still valid.
+	issued := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	stale := newOriginTestProvider(t, cfg, issued, issued.Add(-time.Hour), issued.Add(24*time.Hour))
+	staleCert, err := stale.GetCertificate(helloFrom("192.0.2.10:44321"))
+	if err != nil {
+		t.Fatalf("first issuance: %v", err)
+	}
+	staleDER := append([]byte(nil), staleCert.Certificate[0]...)
+
+	// Restart well after that certificate expired.
+	later := issued.Add(72 * time.Hour)
+	ca := newFakeOriginCA(t)
+	requested := false
+	fresh, err := newOriginCAProviderWithClient(t.Context(), cfg, staticClock(later),
+		secrets.NewRedacted("v1.0-testkey"),
+		doerFunc(func(req *http.Request) (*http.Response, error) {
+			requested = true
+			return ca.sign(t, req, later.Add(-time.Hour), later.Add(365*24*time.Hour)), nil
+		}))
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.Close() })
+
+	if !requested {
+		t.Fatal("an expired cached certificate must trigger a new issuance")
+	}
+	freshCert, err := fresh.GetCertificate(helloFrom("192.0.2.10:44321"))
+	if err != nil {
+		t.Fatalf("GetCertificate after restart: %v", err)
+	}
+	if bytes.Equal(freshCert.Certificate[0], staleDER) {
+		t.Fatal("the expired cached certificate must not be adopted")
+	}
+	if err := validateCertificate(freshCert, later); err != nil {
+		t.Fatalf("the replacement must be valid: %v", err)
 	}
 }
 
