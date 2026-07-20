@@ -37,14 +37,13 @@ const (
 	labelRoute  = "route"
 	labelMethod = "method"
 	labelStatus = "status"
-
-	// spanAttrRequestID correlates a span with the access-log line for the same
-	// request. It is the one high-cardinality value recorded anywhere in this
-	// package, and it is recorded ONLY as a span attribute, never as a metric
-	// label: a span is a single record with a retention window, while a label
-	// value is a permanent series.
-	spanAttrRequestID = "request_id"
 )
+
+// The span attribute catalog is the metric labels above plus request_id, which
+// is recorded ONLY on a span and never as a metric label: a span is one record
+// with a retention window, while a label value is a permanent time series. The
+// span attributes are set in internal/transport/http, at the one place that has
+// the request, so the names live there rather than being re-exported here.
 
 // Instruments are the process's metric instruments, created once at startup.
 //
