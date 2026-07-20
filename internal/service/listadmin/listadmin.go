@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/blocklist"
@@ -51,34 +52,65 @@ const maxEntryLen = blocklist.MaxInputBytes
 // other's entry, and the loser's change would vanish while its audit record
 // claimed it had been applied.
 type Service struct {
-	admins  repository.AdministratorRepository
-	emitter *audit.Emitter
-	matcher *blocklist.Matcher
+	admins    repository.AdministratorRepository
+	overrides repository.ListOverrideRepository
+	emitter   *audit.Emitter
+	matcher   *blocklist.Matcher
+	now       audit.Clock
 
 	mu sync.Mutex
+}
+
+// Params are the dependencies a Service needs. They are named rather than
+// positional because every one of them is required and several share a shape:
+// two repositories side by side in a positional signature are a transposition
+// away from a Service that authorizes against the wrong table.
+type Params struct {
+	// Admins is the authority the edit is checked against.
+	Admins repository.AdministratorRepository
+	// Overrides is where an edit is durably recorded before it takes effect.
+	Overrides repository.ListOverrideRepository
+	// Emitter writes the audit record.
+	Emitter *audit.Emitter
+	// Matcher is the live policy the edit is applied to.
+	Matcher *blocklist.Matcher
+	// Now stamps the persisted override. Optional; time.Now is used when nil,
+	// since a missing clock has a single obviously-correct default and is not a
+	// security decision the way a missing repository is.
+	Now audit.Clock
 }
 
 // New returns a Service, or an error if a dependency is missing.
 //
 // Every dependency is required and a nil one is refused rather than tolerated.
-// A Service with no administrator repository could not authorize, and one with
-// no emitter could not audit; either would be an unaccountable edit path, which
-// is precisely what this package exists to prevent. Refusing at construction
-// makes that a startup failure instead of a silent runtime hole.
-func New(
-	admins repository.AdministratorRepository,
-	emitter *audit.Emitter,
-	matcher *blocklist.Matcher,
-) (*Service, error) {
+// A Service with no administrator repository could not authorize, one with no
+// emitter could not audit, and one with no override repository could not make
+// an edit survive a restart -- each would be an unaccountable or a
+// silently-reverting edit path, which is precisely what this package exists to
+// prevent. Refusing at construction makes that a startup failure instead of a
+// silent runtime hole.
+func New(p Params) (*Service, error) {
 	switch {
-	case admins == nil:
+	case p.Admins == nil:
 		return nil, fmt.Errorf("listadmin: administrator repository is required")
-	case emitter == nil:
+	case p.Overrides == nil:
+		return nil, fmt.Errorf("listadmin: list override repository is required")
+	case p.Emitter == nil:
 		return nil, fmt.Errorf("listadmin: audit emitter is required")
-	case matcher == nil:
+	case p.Matcher == nil:
 		return nil, fmt.Errorf("listadmin: matcher is required")
 	}
-	return &Service{admins: admins, emitter: emitter, matcher: matcher}, nil
+	now := p.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Service{
+		admins:    p.Admins,
+		overrides: p.Overrides,
+		emitter:   p.Emitter,
+		matcher:   p.Matcher,
+		now:       now,
+	}, nil
 }
 
 // AddAllowlistEntry exempts entry from the blocklist, on the acting
@@ -89,6 +121,7 @@ func (s *Service) AddAllowlistEntry(
 	return s.edit(ctx, actor, entry, listOp{
 		target:  domain.TargetTypeAllowlistEntry,
 		action:  domain.AuditActionAllowlistEntryAdded,
+		kind:    domain.ListKindAllowlist,
 		current: s.matcher.Allowlist,
 		apply:   s.matcher.SetAllowlist,
 		add:     true,
@@ -112,6 +145,7 @@ func (s *Service) RemoveAllowlistEntry(
 	return s.edit(ctx, actor, entry, listOp{
 		target:  domain.TargetTypeAllowlistEntry,
 		action:  domain.AuditActionAllowlistEntryRemoved,
+		kind:    domain.ListKindAllowlist,
 		current: s.matcher.Allowlist,
 		apply:   s.matcher.SetAllowlist,
 	})
@@ -124,6 +158,7 @@ func (s *Service) AddBlocklistTerm(
 	return s.edit(ctx, actor, entry, listOp{
 		target:  domain.TargetTypeBlocklistEntry,
 		action:  domain.AuditActionBlocklistEntryAdded,
+		kind:    domain.ListKindBlocklistTerm,
 		current: s.matcher.ExtraTerms,
 		apply:   s.matcher.SetExtraTerms,
 		add:     true,
@@ -140,6 +175,7 @@ func (s *Service) RemoveBlocklistTerm(
 	return s.edit(ctx, actor, entry, listOp{
 		target:  domain.TargetTypeBlocklistEntry,
 		action:  domain.AuditActionBlocklistEntryRemoved,
+		kind:    domain.ListKindBlocklistTerm,
 		current: s.matcher.ExtraTerms,
 		apply:   s.matcher.SetExtraTerms,
 	})
@@ -157,6 +193,7 @@ func (s *Service) BlocklistTerms() []string { return s.matcher.ExtraTerms() }
 type listOp struct {
 	target  domain.TargetType
 	action  domain.AuditAction
+	kind    domain.ListKind
 	current func() []string
 	apply   func([]string) error
 	add     bool
@@ -221,10 +258,41 @@ func (s *Service) edit(
 		return fmt.Errorf("listadmin: audit the edit before applying it: %w", err)
 	}
 
+	// Persist BEFORE applying, and refuse the edit outright if the write fails.
+	//
+	// This is the same reasoning as the audit ordering, applied to durability.
+	// An edit recorded durably but not applied in memory is corrected by the
+	// next restart, when replay installs it. An edit applied in memory but never
+	// recorded is a change that silently disappears at the next restart while
+	// the audit log still claims it happened -- and for an allowlist removal
+	// that reversion re-permits an identifier an administrator refused. So the
+	// unsafe direction is made unreachable rather than merely detected: an edit
+	// that cannot be recorded is an edit that did not happen.
+	if err := s.overrides.Put(ctx, &domain.ListOverride{
+		List:     op.kind,
+		Skeleton: blocklist.Skeleton(entry),
+		Entry:    entry,
+		State:    op.state(),
+		ActorID:  actor,
+		// The service supplies the timestamp; repositories hold no clock.
+		UpdatedAt: s.now().UTC(),
+	}); err != nil {
+		return fmt.Errorf("listadmin: persist the edit before applying it: %w", err)
+	}
+
 	if err := op.apply(next); err != nil {
 		return fmt.Errorf("listadmin: apply the edit: %w", err)
 	}
 	return nil
+}
+
+// state is the durable state this operation records: an addition puts the entry
+// in force, a removal lays a tombstone that outranks the seed at replay.
+func (o listOp) state() domain.ListOverrideState {
+	if o.add {
+		return domain.ListOverridePresent
+	}
+	return domain.ListOverrideRemoved
 }
 
 // nextSet computes the list contents after adding or removing entry, or reports
