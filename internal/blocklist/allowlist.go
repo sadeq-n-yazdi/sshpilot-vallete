@@ -104,6 +104,74 @@ func (m *Matcher) Allowlist() []string {
 	return out
 }
 
+// ExtraListName is the value reported in Result.List when an identifier was
+// blocked by an administrator-added term rather than by a curated default.
+// Keeping it distinct from the built-in list names is what lets a reviewer tell
+// a policy decision somebody made at runtime from one that shipped with the
+// service.
+const ExtraListName = "administrator"
+
+// SetExtraTerms replaces the administrator-added blocklist terms.
+//
+// These are whole-skeleton terms, matching the mode ADR-0017 assigns to routing
+// and impersonation words. Substring mode is deliberately not offered at
+// runtime: a substring term blocks every identifier containing it, so a single
+// mistyped entry could refuse a large share of the namespace, and the curated
+// substring list in lists.go is reviewed precisely because that power needs
+// review. An administrator who needs a substring term changes the curated data.
+//
+// The same all-or-nothing and atomic-swap properties as SetAllowlist apply, and
+// for the same reasons; see SetAllowlist. The failure direction differs though,
+// and is worth stating: an extra-terms set that fails to load leaves the
+// matcher blocking only the curated defaults, which is LESS blocking than
+// intended. That is the opposite of the allowlist's failure direction and it is
+// not a contradiction -- in both cases the safe answer is the one that keeps
+// the deliberate exemptions closed and falls back to reviewed policy.
+func (m *Matcher) SetExtraTerms(terms []string) error {
+	if m == nil || !m.ready {
+		return fmt.Errorf("blocklist: extra terms set on an unbuilt matcher")
+	}
+
+	cl := compiledList{
+		name:  ExtraListName,
+		mode:  MatchWholeSkeleton,
+		whole: make(map[string]compiledTerm, len(terms)),
+	}
+	seen := make(map[string]string, len(terms))
+	for _, raw := range terms {
+		sk := Skeleton(raw)
+		if sk == "" {
+			return fmt.Errorf("blocklist: extra term %q has an empty skeleton", raw)
+		}
+		if prev, dup := seen[sk]; dup {
+			return fmt.Errorf("blocklist: extra terms %q and %q share a skeleton", prev, raw)
+		}
+		seen[sk] = raw
+		cl.whole[sk] = compiledTerm{skeleton: sk, raw: raw}
+	}
+
+	m.extra.Store(&cl)
+	return nil
+}
+
+// ExtraTerms returns the administrator-added terms in their original spelling,
+// sorted for a stable listing. The slice is a copy.
+func (m *Matcher) ExtraTerms() []string {
+	if m == nil || !m.ready {
+		return nil
+	}
+	cl := m.extra.Load()
+	if cl == nil {
+		return nil
+	}
+	out := make([]string, 0, len(cl.whole))
+	for _, term := range cl.whole {
+		out = append(out, term.raw)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // allowlisted reports whether skeleton is exempt, and under which entry.
 //
 // # Exact skeleton equality, never substring

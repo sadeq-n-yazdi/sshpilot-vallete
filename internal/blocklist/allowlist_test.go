@@ -362,3 +362,144 @@ func TestAllowlistPointerIdentityIsStable(t *testing.T) {
 		t.Error("a runtime allowlist edit did not reach a previously captured matcher")
 	}
 }
+
+// TestExtraTermsBlockAtRuntime is the runtime blocklist-edit path: a term added
+// after construction takes effect on the matcher callers already hold.
+func TestExtraTermsBlockAtRuntime(t *testing.T) {
+	t.Parallel()
+	m := blockedMatcher(t)
+	captured := m
+
+	if res := captured.Check("sadeq"); res.Blocked() {
+		t.Fatal("precondition failed: \"sadeq\" was already blocked")
+	}
+
+	if err := m.SetExtraTerms([]string{"sadeq"}); err != nil {
+		t.Fatalf("SetExtraTerms: %v", err)
+	}
+
+	res := captured.Check("sadeq")
+	if !res.Blocked() {
+		t.Fatal("a runtime blocklist term did not reach a previously captured matcher")
+	}
+	if res.Reason != ReasonBlockedTerm {
+		t.Errorf("Reason = %v, want ReasonBlockedTerm", res.Reason)
+	}
+	// Reported under its own list name, so a reviewer can tell a runtime
+	// decision from one that shipped with the service.
+	if res.List != ExtraListName {
+		t.Errorf("List = %q, want %q", res.List, ExtraListName)
+	}
+	if res.Term != "sadeq" {
+		t.Errorf("Term = %q, want the term as typed", res.Term)
+	}
+}
+
+// TestExtraTermsBlockEvasiveSpellings pins that a runtime term gets the same
+// confusable and leetspeak coverage a curated one does. An entry worth less
+// than the ones in lists.go would be a trap for the administrator adding it.
+func TestExtraTermsBlockEvasiveSpellings(t *testing.T) {
+	t.Parallel()
+	m := blockedMatcher(t)
+	if err := m.SetExtraTerms([]string{"sadeq"}); err != nil {
+		t.Fatalf("SetExtraTerms: %v", err)
+	}
+
+	for _, spelling := range []string{"sadeq", "s-a-d-e-q", "SADEQ", "s4deq"} {
+		if res := m.Check(spelling); !res.Blocked() {
+			t.Errorf("%q not blocked by the runtime term for \"sadeq\"", spelling)
+		}
+	}
+	// Whole-skeleton, so a longer name containing it is unaffected.
+	if res := m.Check("sadeqsson"); res.Blocked() {
+		t.Error("a whole-skeleton runtime term blocked a longer identifier")
+	}
+}
+
+// TestAllowlistTakesPrecedenceOverExtraTerms pins ADR-0017's ordering: the
+// allowlist wins over the blocklist, including over a term an administrator
+// added at runtime.
+func TestAllowlistTakesPrecedenceOverExtraTerms(t *testing.T) {
+	t.Parallel()
+	m := blockedMatcher(t)
+
+	if err := m.SetExtraTerms([]string{"sadeq"}); err != nil {
+		t.Fatalf("SetExtraTerms: %v", err)
+	}
+	if err := m.SetAllowlist([]string{"sadeq"}); err != nil {
+		t.Fatalf("SetAllowlist: %v", err)
+	}
+
+	res := m.Check("sadeq")
+	if res.Blocked() {
+		t.Fatal("the allowlist did not take precedence over a runtime term")
+	}
+	if res.Reason != ReasonAllowlisted {
+		t.Errorf("Reason = %v, want ReasonAllowlisted", res.Reason)
+	}
+}
+
+func TestSetExtraTermsValidation(t *testing.T) {
+	t.Parallel()
+	m := blockedMatcher(t)
+
+	if err := m.SetExtraTerms([]string{"ok", "---"}); err == nil {
+		t.Error("SetExtraTerms accepted a term with an empty skeleton")
+	}
+	if err := m.SetExtraTerms([]string{"admin", "adm1n"}); err == nil {
+		t.Error("SetExtraTerms accepted two terms sharing a skeleton")
+	}
+	// A rejected set must not partially apply.
+	if res := m.Check("ok"); res.Blocked() {
+		t.Error("a rejected SetExtraTerms partially applied its terms")
+	}
+
+	var zero Matcher
+	if err := zero.SetExtraTerms([]string{"x"}); err == nil {
+		t.Error("SetExtraTerms on a zero Matcher returned no error")
+	}
+	if got := zero.ExtraTerms(); got != nil {
+		t.Errorf("ExtraTerms() on a zero Matcher = %v, want nil", got)
+	}
+	var nilM *Matcher
+	if err := nilM.SetExtraTerms([]string{"x"}); err == nil {
+		t.Error("SetExtraTerms on a nil Matcher returned no error")
+	}
+	if got := nilM.ExtraTerms(); got != nil {
+		t.Errorf("ExtraTerms() on a nil Matcher = %v, want nil", got)
+	}
+}
+
+func TestExtraTermsListingIsSortedAndCopied(t *testing.T) {
+	t.Parallel()
+	m := blockedMatcher(t)
+
+	if err := m.SetExtraTerms([]string{"charlie", "alpha", "bravo"}); err != nil {
+		t.Fatalf("SetExtraTerms: %v", err)
+	}
+	got := m.ExtraTerms()
+	want := []string{"alpha", "bravo", "charlie"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ExtraTerms() = %v, want %v", got, want)
+		}
+	}
+	got[0] = "mutated"
+	if again := m.ExtraTerms(); again[0] != "alpha" {
+		t.Error("mutating the returned slice changed the matcher's terms")
+	}
+}
+
+// TestNoExtraTermsLeavesCuratedListsIntact is the fail direction for the
+// blocklist side: with no runtime terms loaded the curated lists still apply.
+func TestNoExtraTermsLeavesCuratedListsIntact(t *testing.T) {
+	t.Parallel()
+	m := blockedMatcher(t)
+
+	if got := m.ExtraTerms(); len(got) != 0 {
+		t.Errorf("ExtraTerms() = %v, want empty", got)
+	}
+	if res := m.Check("admin"); !res.Blocked() {
+		t.Error("the curated lists stopped applying when no runtime terms were set")
+	}
+}

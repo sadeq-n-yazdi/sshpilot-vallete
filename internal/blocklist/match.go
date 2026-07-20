@@ -353,6 +353,11 @@ type Matcher struct {
 	// failed to load behaves as though the allowlist were empty: an unavailable
 	// allowlist must block more, never less. See allowlisted.
 	allow atomic.Pointer[allowSet]
+
+	// extra holds the administrator-added blocklist terms, or nil when none
+	// have been set. Nil means the curated lists alone apply. See
+	// SetExtraTerms.
+	extra atomic.Pointer[compiledList]
 }
 
 // NewMatcher compiles lists into a Matcher, or reports why it cannot.
@@ -515,6 +520,23 @@ func (m *Matcher) Check(input string) Result {
 	candidates, ok := candidateSkeletons(skeleton)
 	if !ok {
 		return Result{Allowed: false, Reason: ReasonTooAmbiguous}
+	}
+
+	// Administrator-added terms are consulted before the curated lists, so a
+	// term added at runtime takes effect immediately and is reported under its
+	// own list name. They are whole-skeleton, so they share the precedence the
+	// Matcher documentation gives that mode; placing them first within it means
+	// a runtime decision is the one reported when it overlaps a default.
+	//
+	// The candidate expansion applies here exactly as it does to the curated
+	// lists: an administrator who blocks a word must get its evasive spellings
+	// blocked too, or the entry would be worth less than the one in lists.go.
+	if extra := m.extra.Load(); extra != nil {
+		for _, candidate := range candidates {
+			if term, hit := extra.whole[candidate]; hit {
+				return blockedBy(*extra, term)
+			}
+		}
 	}
 
 	// Lists stay the outer loop, so the precedence documented on Matcher --
