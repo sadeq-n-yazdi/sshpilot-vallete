@@ -203,7 +203,7 @@ type listOp struct {
 // means the authorization check, the audit and the ordering between them cannot
 // drift between the four operations.
 //
-// # The order is authorize, then audit, then apply
+// # The order is authorize, then audit, then persist, then apply
 //
 // The audit record is written BEFORE the change takes effect, never after. The
 // two failure modes are not symmetric. A record written for a change that then
@@ -217,12 +217,31 @@ type listOp struct {
 //
 // An audit failure aborts the edit outright rather than proceeding unrecorded.
 //
-// This is the weaker of the two orderings ADR-0007 permits. Writing both in one
-// transaction would be stronger, and it is what the storage-backed version of
-// this should do; the runtime lists live in memory in this slice, so there is
-// no shared transaction to enlist the swap in, and "audit first, abort on
-// failure" is the strongest available ordering that never produces the
-// unrecorded direction.
+// This is the weaker of the two orderings ADR-0007 permits, and it stays that
+// way deliberately now that the edit is storage-backed.
+//
+// The audit write and the override write are two separate auto-commits, not one
+// transaction, so one window remains: a crash between them leaves an audit
+// record of an edit that no tombstone backs, and the entry returns at the next
+// restart. That is the over-record direction -- the audit log claims more than
+// happened, an investigator can reconcile it against the composed policy, and
+// for a removal the entry stays blocked, because a removal that did not persist
+// simply never took effect. The reverse direction, an applied edit with no
+// durable record, is the one that silently re-opens a hole, and the
+// persist-then-apply step below makes it unreachable.
+//
+// Collapsing the two writes into one transaction would close the remaining
+// window, and it is not done here because the audit sink is deliberately the
+// narrow, self-committing repository.AuditAppender (see sqlite.Store's
+// AuditAppender). Enlisting the audit write in this service's transaction would
+// mean holding the full repository.AuditRepository, which also exposes the
+// ADR-0024 maintenance operations -- so buying atomicity here would hand
+// list-editing code the ability to purge and pseudonymize the very log that
+// records what it did. That trade is not worth a window whose only outcome is an
+// over-record.
+//
+// The apply step is last because it is the only one that cannot be undone: the
+// matcher swap is an atomic.Value store with no rollback.
 func (s *Service) edit(
 	ctx context.Context, actor domain.AdministratorID, entry string, op listOp,
 ) error {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -469,6 +470,47 @@ func TestReplayDoesNotDuplicateASeededEntry(t *testing.T) {
 	second := boot(t, cfg, ov, sink)
 	if got := second.matcher.Allowlist(); len(got) != 1 {
 		t.Errorf("allowlist = %v, want exactly one entry", got)
+	}
+}
+
+// TestLoadPolicyRefusesAMalformedSeed covers the other direction of the abort
+// rule: LoadPolicy must fail startup on an unreadable seed exactly as ApplySeed
+// does, and must not install the overrides on their own. Replaying tombstones
+// over a seed that never loaded would compose a policy from half its inputs --
+// an operator would see their runtime edits in force and silently lose every
+// term the seed file was supposed to block.
+func TestLoadPolicyRefusesAMalformedSeed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	ov := newFakeOverrides()
+	if err := ov.Put(ctx, &domain.ListOverride{
+		List:      domain.ListKindBlocklistTerm,
+		Skeleton:  blocklist.Skeleton("runtime"),
+		Entry:     "runtime",
+		State:     domain.ListOverridePresent,
+		ActorID:   activeAdminID,
+		UpdatedAt: testNow,
+	}); err != nil {
+		t.Fatalf("seed the override: %v", err)
+	}
+
+	m := seedMatcher(t)
+	path := writeSeed(t, "extra_entries:\n  - good\n  - [unclosed\n")
+
+	err := LoadPolicy(ctx, m, config.BlocklistConfig{SeedFile: path}, ov)
+	if err == nil {
+		t.Fatal("LoadPolicy accepted a malformed seed file")
+	}
+	if !strings.Contains(err.Error(), "parse blocklist seed file") {
+		t.Errorf("error = %v, want it to mention the seed parse failure", err)
+	}
+
+	if got := m.ExtraTerms(); len(got) != 0 {
+		t.Errorf("extra terms = %v after a failed load, want none applied", got)
+	}
+	if got := m.Allowlist(); len(got) != 0 {
+		t.Errorf("allowlist = %v after a failed load, want none applied", got)
 	}
 }
 
