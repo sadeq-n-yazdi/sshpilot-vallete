@@ -61,3 +61,111 @@ func (r Redacted) MarshalYAML() (any, error) {
 func (r Redacted) LogValue() slog.Value {
 	return slog.StringValue(redactedMarker)
 }
+
+// --- Ref redaction ------------------------------------------------------
+//
+// A Ref is not itself a secret: it is supposed to name one ("env:VALLET_PG_DSN").
+// But the realistic operator error is pasting the secret *into* a *_ref field --
+// a Postgres DSN like "postgres://user:pass@host/db" is syntactically a valid
+// scheme:opaque reference, so it survives config validation and then reaches
+// exactly the code paths that format a reference into an error or a log line.
+// Rendering a Ref therefore redacts the opaque half unconditionally, so that a
+// future %v/%q/slog use of a Ref is safe by construction rather than by every
+// caller remembering.
+//
+// Scheme-echo policy: the scheme is preserved in the rendered form. It is the
+// key diagnostic -- seeing "postgres:[REDACTED]" tells an operator immediately
+// that they pasted a DSN rather than a reference to one -- and for every
+// supported scheme ("env", "file") it is a fixed, public constant. schemeShaped
+// additionally filters out text that is not identifier-shaped, so a pasted PEM
+// block or prose does not have its first colon-delimited chunk echoed.
+//
+// Accepted residual risk: schemeShaped does NOT make the echo provably safe.
+// A pasted "user:pass" credential pair is identifier-shaped and would surface
+// the *username*. That is accepted deliberately: the credential half stays
+// redacted, so the leaked fragment is not usable on its own, a username alone is
+// low severity, and losing the scheme would leave the operator with an error
+// they cannot act on. The sensitive half is never echoed under any input.
+//
+// Note that these methods only govern *rendering*. An explicit string(ref)
+// conversion bypasses them by design, because some callers legitimately need
+// the real reference (a provider must receive the opaque part to resolve it).
+// Such conversions must never be handed to a formatter or logger.
+
+// maxSchemeLen bounds an echoed scheme. Real schemes are short; anything longer
+// is pasted content rather than a scheme, and is redacted whole.
+const maxSchemeLen = 32
+
+// schemeShaped reports whether s looks like a URI scheme (RFC 3986: an ASCII
+// letter followed by letters, digits, '+', '-' or '.') and is short enough to
+// be a scheme rather than pasted payload.
+func schemeShaped(s string) bool {
+	if s == "" || len(s) > maxSchemeLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case i > 0 && (c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.'):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// redacted returns the display form of a reference: the scheme preserved and
+// the opaque part replaced by the redaction marker ("env:[REDACTED]"). A
+// reference with no parseable, identifier-shaped scheme renders as the bare
+// marker. This is the single place the render policy lives; every Ref rendering
+// method and every error message in this package goes through it.
+func (r Ref) redacted() string {
+	scheme, _, ok := r.split()
+	if !ok || !schemeShaped(scheme) {
+		return redactedMarker
+	}
+	return scheme + ":" + redactedMarker
+}
+
+// String implements fmt.Stringer.
+func (r Ref) String() string { return r.redacted() }
+
+// GoString implements fmt.GoStringer so that the %#v verb also redacts.
+func (r Ref) GoString() string { return r.redacted() }
+
+// Format implements fmt.Formatter. It takes precedence over String and GoString
+// for every verb, which is what catches the realistic leak path: a Ref printed
+// as part of a surrounding config struct with %v/%+v/%#v.
+func (r Ref) Format(f fmt.State, _ rune) {
+	_, _ = f.Write([]byte(r.redacted()))
+}
+
+// MarshalJSON implements json.Marshaler. Besides json.Marshal itself this
+// covers slog's JSONHandler, which marshals a struct field rather than
+// consulting LogValue: without it, a Ref inside a struct logged via
+// slog.Any("config", cfg) would still render in full.
+func (r Ref) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + r.redacted() + `"`), nil
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (r Ref) MarshalText() ([]byte, error) {
+	return []byte(r.redacted()), nil
+}
+
+// MarshalYAML implements yaml.Marshaler for gopkg.in/yaml.v3.
+//
+// Redacting on marshal is safe here because nothing in this project serializes
+// a Config back out; there is no config-dump path whose fidelity this could
+// break. Code that ever needs to write a real reference back to disk must use
+// string(ref) explicitly rather than relying on marshaling.
+func (r Ref) MarshalYAML() (any, error) {
+	return r.redacted(), nil
+}
+
+// LogValue implements slog.LogValuer so structured logging redacts a Ref passed
+// directly as an attribute value.
+func (r Ref) LogValue() slog.Value {
+	return slog.StringValue(r.redacted())
+}

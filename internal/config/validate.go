@@ -107,8 +107,17 @@ var tlsModes = map[string]bool{
 	"csr": true, "upstream": true, "self_signed": true,
 }
 
+// tlsMinVersions is the set of accepted minimum TLS versions. ADR-0015 sets the
+// floor at TLS 1.2, so 1.0 and 1.1 are not selectable: an operator who asks for
+// one is asking to weaken the transport, and an unrecognized string would leave
+// the floor to whatever the TLS stack defaults to.
+var tlsMinVersions = map[string]bool{"1.2": true, "1.3": true}
+
 func (c *Config) validateTLS(v *validator, prod bool) {
 	t := c.TLS
+	if !tlsMinVersions[t.MinVersion] {
+		v.add("tls.min_version", "must be 1.2 or 1.3, got %q", t.MinVersion)
+	}
 	if t.Mode == "" {
 		v.add("tls.mode", "required (one of acme, cloudflare_origin, manual, csr, upstream, self_signed)")
 		return
@@ -160,13 +169,33 @@ func (c *Config) validateACME(v *validator, prod bool) {
 	default:
 		v.add("tls.acme.solver", "unknown solver %q", a.Solver)
 	}
-	if a.Solver == "dns_01" && a.DNS.Mode == "api" {
-		if a.DNS.Provider == "" {
+	if a.Solver == "dns_01" {
+		c.validateACMEDNS(v)
+	}
+}
+
+// validateACMEDNS fails closed on the DNS-01 solving mode. ADR-0015 defines
+// exactly two: "manual" (emit the _acme-challenge TXT records and wait for the
+// operator) and "api" (drive a DNS provider's API). There is deliberately no
+// default: an unset or unrecognized mode previously fell through this function
+// silently, leaving the solver with no way to answer the challenge and skipping
+// the provider/credentials requirements below, so a misconfigured issuance path
+// reached production and only failed at renewal time.
+func (c *Config) validateACMEDNS(v *validator) {
+	d := c.TLS.ACME.DNS
+	switch d.Mode {
+	case "manual":
+	case "api":
+		if d.Provider == "" {
 			v.add("tls.acme.dns.provider", "required for dns_01 api mode")
 		}
-		if a.DNS.CredentialsRef.IsZero() {
+		if d.CredentialsRef.IsZero() {
 			v.add("tls.acme.dns.credentials_ref", "required for dns_01 api mode")
 		}
+	case "":
+		v.add("tls.acme.dns.mode", "required for dns_01 solver (manual or api)")
+	default:
+		v.add("tls.acme.dns.mode", "unknown mode %q (want manual or api)", d.Mode)
 	}
 }
 
@@ -180,6 +209,25 @@ func isFQDN(host string) bool {
 		return false
 	}
 	return strings.Contains(host, ".")
+}
+
+// ValidateDatabase validates ONLY the database section.
+//
+// It exists for offline administrative commands that open the datastore but
+// never bind a listener or issue a token. Running the full Validate there would
+// demand a TLS mode, a public base URL, and a token signing key that such a
+// command has no use for, which would either block a legitimate operation or —
+// far worse — push an operator into inventing throwaway production values just
+// to get past the check. Narrowing the gate to what the command actually
+// touches keeps the strict whole-config validation meaningful for the server
+// path, where every one of those settings is load-bearing.
+func (c *Config) ValidateDatabase() error {
+	v := &validator{}
+	c.validateDatabase(v)
+	if len(v.errs) == 0 {
+		return nil
+	}
+	return v.errs
 }
 
 func (c *Config) validateDatabase(v *validator) {
@@ -271,13 +319,21 @@ func (c *Config) validateRetention(v *validator) {
 // validateRefs checks that every non-empty secret reference in the config is
 // syntactically well-formed (scheme:opaque). Empty refs are allowed here;
 // mode-specific requiredness is enforced by the per-section validators above.
+//
+// The error deliberately does NOT include the offending value, and does not
+// wrap the underlying secrets error, which quotes it. A reference is normally
+// not sensitive, but the branch that reports one as malformed is exactly the
+// branch an operator reaches by pasting the secret itself into a *_ref field
+// (a raw DSN into database.postgres.dsn_ref, a token into a token ref). Echoing
+// the value there would copy credential material into startup logs, so the
+// message names the field and the expected shape instead.
 func (c *Config) validateRefs(v *validator) {
 	for _, r := range c.allRefs() {
 		if r.ref.IsZero() {
 			continue
 		}
 		if err := r.ref.Validate(); err != nil {
-			v.add(r.field, "malformed secret reference: %v", err)
+			v.add(r.field, "malformed secret reference: want scheme:opaque (for example env:VAR or file:/path)")
 		}
 	}
 }

@@ -72,7 +72,7 @@ func TestStageCompatibilityRanges(t *testing.T) {
 		{"math italic", "\U0001d44e\U0001d451\U0001d45a\U0001d456\U0001d45b", "admin"},
 		{"math double struck", "\U0001d552\U0001d555\U0001d55e\U0001d55a\U0001d55f", "admin"},
 		{"math monospace", "\U0001d68a\U0001d68d\U0001d696\U0001d692\U0001d697", "admin"},
-		{"math reserved hole italic h", "\U0001d455", "h"},
+		{"math italic planck h", "\u210e", "h"},
 		{"math digits reach leetspeak", "\U0001d7ce\U0001d7cf", "oi"},
 		{"circled smalls", "ⓐⓓⓜⓘⓝ", "admin"},
 		{"circled capitals", "ⒶⒹⓂⒾⓃ", "admin"},

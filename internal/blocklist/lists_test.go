@@ -352,13 +352,21 @@ func TestKnownLeetGapForTheLetterL(t *testing.T) {
 // makes ambiguousReadings a single entry rather than one per source codepoint.
 //
 // Every codepoint that draws a bare vertical stroke already converges on "i" by
-// the time the pipeline finishes -- the ASCII digit through leetspeak, capital
-// I through the case fold, the fullwidth, circled, superscript and mathematical
-// digits through foldRange chaining into leetspeak, and dotless ı, Greek iota
-// and script capital ℐ through confusables. Keying the ambiguity on the output
+// the time the pipeline finishes -- the ASCII digit through leetspeak; capital
+// I through the case fold; the fullwidth, circled, superscript and mathematical
+// digits through NFKD into ASCII "1" and then leetspeak; script capital ℐ and
+// the mathematical capital I forms through NFKD into ASCII "I"; and dotless ı,
+// Greek iota and the mathematical dotless-i and iota forms through confusables,
+// which NFKD cannot reach on its own. Keying the ambiguity on the output
 // therefore covers all of them at once. If a future table change breaks that
 // convergence, this test says so rather than leaving a source silently
 // unexpanded.
+//
+// The mathematical dotless i and mathematical iota cases are the ones that
+// guard the confusables dependency: NFKD decomposes them to ı (U+0131) and Ι
+// (U+0399), not to ASCII, so they only finish the journey to i because the 'ı'
+// and 'ι' confusable entries exist. Removing those entries would break these
+// two subtests and nothing else.
 func TestAmbiguousExpansionCoversEveryStrokeShapedSource(t *testing.T) {
 	m := defaultMatcher(t)
 
@@ -372,6 +380,13 @@ func TestAmbiguousExpansionCoversEveryStrokeShapedSource(t *testing.T) {
 		"dotless i":        "heıp",
 		"greek iota":       "heιp",
 		"script capital i": "heℐp",
+		// NFKD sends these to ı and Ι rather than to ASCII; they reach i only
+		// through the confusables entries. See the comment above.
+		"mathematical dotless i": "he\U0001D6A4p",
+		"mathematical iota":      "he\U0001D6EAp",
+		"mathematical capital i": "he\U0001D408p",
+		"fullwidth capital i":    "heＩp",
+		"roman numeral one":      "heⅰp",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := Skeleton(spelling); got != "heip" {

@@ -25,23 +25,14 @@
 //
 // This package implements the normalization step ONLY. It contains no
 // blocklists, no allowlist, no matching, and no enforcement.
-//
-// # Not NFKC
-//
-// The Unicode standard's answer to stage one would be NFKC. The Go standard
-// library does not ship a normalizer and this module deliberately takes no new
-// dependency, so what follows is a curated compatibility-and-confusable fold
-// built from explicit, hand-auditable tables (see tables.go). It covers the
-// compatibility forms that matter for identifier spoofing -- fullwidth,
-// mathematical alphanumerics, circled, superscript, ligatures -- rather than
-// the whole of NFKC. Coverage is intentionally finite and is expected to grow;
-// see TableVersion.
 package blocklist
 
 import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // TableVersion identifies the revision of the folding tables and of the
@@ -66,73 +57,64 @@ import (
 // the whole Mathematical Greek block at U+1D6A8..U+1D7CB. Every styled Greek
 // letter previously survived unfolded, so "𝛂dmin" did not match "admin".
 //
-// Version 4: ambiguousReadings and the candidate expansion the match stage
+// Version 4: Rework stage 1 to use standard NFKD normalization from the
+// golang.org/x/text/unicode/norm package, replacing hand-maintained
+// range-folding tables. foldRange and its tables are gone; the compatibility
+// forms it enumerated by arithmetic -- fullwidth, mathematical alphanumerics,
+// circled, superscript, ligatures -- are now decomposed by NFKD, which also
+// covers the ones the hand table had not reached yet.
+//
+// Version 5: ambiguousReadings and the candidate expansion the match stage
 // performs with it. Skeleton itself is unchanged and still returns exactly one
 // string; what changed is that a skeleton is no longer compared only as itself.
 // The digit one and every codepoint that folds to "i" alongside it draw a glyph
 // with two readings, i and l, and a fold to a single output can only keep one.
-// Version 3 kept i, which is what makes "4dm1n" equal "admin" -- and which left
-// every reserved word containing an l spellable past the list: "he1p", "1ogin",
-// "bi11ing", "officia1" were all permitted. The match stage now expands the
-// discarded reading back out; see ambiguousReadings in tables.go. This changes
-// which identifiers the system refuses, so it is a table revision even though
-// no folding table entry moved.
-const TableVersion = 4
+// Every version through 4 kept i, which is what makes "4dm1n" equal "admin" --
+// and which left every reserved word containing an l spellable past the list:
+// "he1p", "1ogin", "bi11ing", "officia1" were all permitted. The match stage
+// now expands the discarded reading back out; see ambiguousReadings in
+// tables.go. This changes which identifiers the system refuses, so it is a
+// table revision even though no folding table entry moved.
+const TableVersion = 5
 
 // Skeleton reduces s to its canonical comparison form. The result is a lossy,
 // one-way projection of s; see the package documentation.
 //
-// The pipeline runs once per rune, in this order. The order is deliberate:
+// The pipeline runs in this order. The order is deliberate:
 //
-//  1. Ignorables. Invalid UTF-8, combining marks (Mn) and format characters
-//     (Cf, e.g. zero-width space/joiner and soft hyphen) are dropped. Doing
-//     this first means "a<ZWSP>dmin" and decomposed "ádmin" cannot hide behind
-//     an invisible codepoint for the rest of the pipeline.
-//  2. Case folding, via unicode.ToLower, which applies the full Unicode simple
-//     lowercase mapping (Cyrillic А->а, Greek Α->α, fullwidth Ａ->ａ), not just
-//     ASCII. Folding here means every later table needs lowercase keys only,
-//     which halves them and halves what a reviewer must audit. The case the
-//     simple mapping does not cover is handled by table instead: dotless ı
-//     (U+0131) has no lowercase mapping to i. Its companion İ (U+0130) does
-//     fold to a bare "i" under the per-rune simple mapping, so it needs no
-//     entry; note this differs from the full string-level Unicode mapping,
-//     which yields "i" plus a combining dot.
-//  3. Compatibility ranges: algorithmically contiguous blocks (fullwidth,
-//     mathematical alphanumerics, circled) are mapped by arithmetic to ASCII.
+//  1. Compatibility Decomposition (NFKD). Compatibility characters (such as
+//     mathematical letters/digits, fullwidth forms, circled letters/digits,
+//     and ligatures) and accents are decomposed to their base form and
+//     combining marks.
+//  2. Ignorables. Invalid UTF-8, combining marks (Mn) and format characters
+//     (Cf, e.g. zero-width space/joiner and soft hyphen) are dropped.
+//  3. Case folding, via unicode.ToLower, which applies the full Unicode simple
+//     lowercase mapping.
 //  4. Confusables: the arbitrary, non-algorithmic visual equivalences --
-//     Cyrillic, Greek, ligatures, accented Latin -- from an explicit table.
+//     Cyrillic, Greek lookalikes, and Latin exceptions -- from an explicit table.
 //  5. Leetspeak: digit and symbol substitutions.
 //  6. Separators: the padding characters an attacker inserts to break a
 //     substring compare.
-//
-// Stages 3, 4 and 5 chain deliberately: fullwidth "４" becomes ASCII "4" in
-// stage 3 and then "a" in stage 5, so "４dmin" and "admin" agree.
-//
-// No character surviving the pipeline is a key of any table or a separator.
-// Stage 4 emits only ASCII letters and digits; stage 3 emits ASCII except for
-// the mathematical Greek rule, which emits a plain Greek letter so that stage 4
-// can reduce the ones with a Latin look-alike. The Greek letters that stage 4
-// does not reduce -- beta, gamma, theta and the rest, which have no Latin
-// reading to give them -- survive to the output, and they are fixed points too:
-// none is a key of any table, a leet source or a separator. Every digit and
-// symbol with a leet reading is consumed by stage 5. Every output character is
-// therefore a fixed point of the pipeline, which makes
-// Skeleton(Skeleton(s)) == Skeleton(s) true by construction rather than by
-// accident. Skeleton is pure and deterministic.
-//
-// A skeleton is consequently not guaranteed to be ASCII. It is guaranteed to be
-// canonical: two inputs that draw the same glyphs share one skeleton.
-//
-// The result is always valid UTF-8. Empty, whitespace-only, and
-// entirely-foldable inputs all return "". Callers MUST treat an empty
-// skeleton as "carries no comparable content" and reject such identifiers on
-// that ground rather than treating them as matching nothing.
 func Skeleton(s string) string {
-	// A strings.Builder rather than a []rune accumulator: runes cost four bytes
-	// each and the final string(out) conversion allocates a second time, while
-	// Grow reserves one byte-sized buffer that String() hands over without
-	// copying. Grow(len(s)) is a hint, not a bound -- a confusables entry may
-	// expand one rune into several -- so the Builder still grows when it must.
+	// Fast path: if the input is already a canonical skeleton (lowercase ASCII
+	// letters a-z and unmapped digits 2, 6, 8, 9), return it directly to avoid
+	// allocations.
+	fast := true
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || c == '2' || c == '6' || c == '8' || c == '9' {
+			continue
+		}
+		fast = false
+		break
+	}
+	if fast && len(s) > 0 {
+		return s
+	}
+
+	// Stage 1: NFKD normalization
+	s = norm.NFKD.String(s)
+
 	var out strings.Builder
 	out.Grow(len(s))
 	for _, r := range s {
@@ -148,9 +130,6 @@ func Skeleton(s string) string {
 
 		r = unicode.ToLower(r)
 
-		if folded, ok := foldRange(r); ok {
-			r = folded
-		}
 		if mapped, ok := confusables[r]; ok {
 			// Each rune the table produced re-enters the remaining stages, so
 			// a superscript "¹" becomes "1" here and then "i" below. Without
