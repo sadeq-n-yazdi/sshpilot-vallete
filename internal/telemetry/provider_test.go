@@ -14,25 +14,43 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 )
 
-// blackholeEndpoint returns a URL pointing at a port nothing is listening on.
+// blackholeEndpoint returns the URL of a collector that accepts connections and
+// then never answers.
 //
-// A closed port is the wrong failure to test with -- a connection refused comes
-// back instantly and would let a synchronous exporter look fast. This binds a
-// listener, takes its address, and closes it only after the test has the
-// address, then uses an address in a range that drops rather than refuses where
-// possible; in practice the refusal path is still enough to catch a synchronous
-// exporter, because any per-request export at all shows up against the bound.
+// A CLOSED port is the wrong failure to test with, and this test learned that
+// the hard way: connection-refused comes back in microseconds, so a synchronous
+// exporter still looks fast and the mutation that puts export back on the
+// request goroutine SURVIVED against it. The realistic outage -- a collector
+// whose host is up but whose process is wedged, or a firewall that drops -- makes
+// the export block until it times out. That is what this simulates: every
+// connection is accepted and then held open in silence until the test ends.
 func blackholeEndpoint(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	addr := ln.Addr().String()
-	if err := ln.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	return "http://" + addr
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		var held []net.Conn
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			// Accepted, never read from, never written to, never closed: the
+			// client's export blocks on a response that never comes.
+			held = append(held, conn)
+		}
+	}()
+
+	return "http://" + ln.Addr().String()
 }
 
 func tracingConfig(endpoint string) *config.Config {
@@ -56,19 +74,28 @@ func TestUnreachableExporterDoesNotDelayTheRequestPath(t *testing.T) {
 	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
 
 	tracer := p.Tracer()
-	// A budget generous enough not to flake on a loaded CI box, yet far below
-	// any dial or export timeout: otlpExportTimeout alone is 10s, so a
-	// synchronous exporter cannot fit 200 spans into this.
+	// Generous enough not to flake on a loaded CI box, far below the 10s export
+	// timeout a single synchronous export burns against a silent collector.
 	const budget = 2 * time.Second
 
-	start := time.Now()
-	for range 200 {
-		_, span := tracer.Start(context.Background(), "GET /{handle}")
-		span.End()
-	}
-	if elapsed := time.Since(start); elapsed > budget {
-		t.Fatalf("200 spans against an unreachable collector took %v (budget %v); "+
-			"export must not run on the goroutine that ends the span", elapsed, budget)
+	// The work runs on its own goroutine and the budget is enforced by a
+	// select, not measured afterwards. A synchronous exporter blocks for the
+	// full export timeout on EVERY span, so a loop that had to finish before
+	// the assertion ran would take hours instead of failing.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 200 {
+			_, span := tracer.Start(context.Background(), "GET /{handle}")
+			span.End()
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(budget):
+		t.Fatalf("200 spans against a collector that never answers exceeded %v; "+
+			"export must not run on the goroutine that ends the span", budget)
 	}
 }
 

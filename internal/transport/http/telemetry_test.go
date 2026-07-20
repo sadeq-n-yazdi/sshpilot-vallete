@@ -192,13 +192,29 @@ func TestHandlerNeverServesTheScrapeEndpoint(t *testing.T) {
 		"no telemetry":   NewHandler(&cfg, nil, okPinger{}, stubPublisher{}),
 	} {
 		t.Run(name, func(t *testing.T) {
+			// A request is served first so the histogram exists and a mounted
+			// scrape handler would have something to report. Without it, "the
+			// body contains no metric" passes against a genuinely mounted
+			// endpoint that simply had nothing to say yet -- the artifact
+			// rather than the mechanism, and the mutation survived that way.
+			h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/healthz", nil))
+
+			// Note what is NOT asserted: a 404. "/metrics" matches the publish
+			// route GET /{handle} like any other one-segment path -- ADR-0017
+			// reserves the identifier at the blocklist, not at the mux -- so a
+			// 200 from the publish handler is correct and says nothing about
+			// metrics. What must never happen is this handler answering with a
+			// Prometheus EXPOSITION, which is what a mounted scrape handler
+			// returns and nothing else here can produce.
 			for _, path := range []string{"/metrics", "/metrics/", "/debug/metrics"} {
 				resp := httptest.NewRecorder()
 				h.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
 				body, _ := io.ReadAll(resp.Result().Body)
-				if strings.Contains(string(body), "http_server_request_duration") {
-					t.Fatalf("the public handler served metrics at %s; the scrape endpoint "+
-						"must exist only on its own listener", path)
+				for _, marker := range []string{"http_server_request_duration", "# HELP", "# TYPE"} {
+					if strings.Contains(string(body), marker) {
+						t.Fatalf("GET %s on the public handler returned a Prometheus exposition (%q); "+
+							"the scrape endpoint must exist only on its own listener", path, marker)
+					}
 				}
 			}
 		})
