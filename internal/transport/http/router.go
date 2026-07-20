@@ -144,7 +144,13 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 		guardian.Protect(DeviceAccess, revokeDeviceHandler(o.devices, logger)))
 
 	// Outermost first: every response carries the transport policy, then every
-	// request gets an ID, then is logged, then is protected from panics.
+	// request gets an ID, then a span and a metric, then is logged, then is
+	// protected from panics.
+	//
+	// telemetryMiddleware sits INSIDE requestIDMiddleware so the span can carry
+	// the correlation ID, and OUTSIDE loggingMiddleware so the span covers the
+	// whole handler. It never mounts a route; the scrape endpoint is a separate
+	// listener (telemetry.MetricsServer), never a path on this mux.
 	//
 	// hstsMiddleware is outermost so the header is set before any inner layer
 	// can write — including the 500 that recoveryMiddleware writes for a
@@ -153,6 +159,7 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	return chain(mux,
 		hstsMiddleware(newHSTSPolicy(cfg)),
 		requestIDMiddleware,
+		telemetryMiddleware(o.telemetry, o.telemetry.NewInstruments()),
 		loggingMiddleware(logger),
 		recoveryMiddleware(logger),
 	)
