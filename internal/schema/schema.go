@@ -21,10 +21,13 @@
 // out-of-range value. Timestamps are stored as RFC3339 UTC text to match the
 // ledger and adapter convention.
 //
-// The one table that is deliberately not owner-scoped is audit_records: the
-// audit log is a cross-owner system record whose rows must outlive the owners
-// they mention, so it carries neither an owner_id nor a foreign key to owners.
-// See migration0004AuditRecords for the full rationale.
+// Two tables deliberately carry no foreign key to owners. audit_records is the
+// cross-owner system record whose rows must outlive the owners they mention, so
+// it has neither an owner_id nor an FK. owner_erasure_salts is keyed by owner
+// but has no FK either, because its row must be destroyable on a schedule the
+// erasure flow controls rather than one the owner row's lifetime dictates. See
+// migration0004AuditRecords and migration0005OwnerErasureSalts for the full
+// rationale.
 package schema
 
 import "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
@@ -39,6 +42,7 @@ func Registry() (*migrate.Registry, error) {
 		migration0002Devices(),
 		migration0003KeySets(),
 		migration0004AuditRecords(),
+		migration0005OwnerErasureSalts(),
 	)
 }
 
@@ -366,6 +370,77 @@ func migration0004AuditRecords() migrate.Migration {
 		Down: migrate.Steps{
 			SQLite:   []string{`DROP TABLE audit_records`},
 			Postgres: []string{`DROP TABLE audit_records`},
+		},
+	}
+}
+
+// migration0005OwnerErasureSalts creates the per-owner salt table that makes
+// audit crypto-erasure possible (ADR-0024).
+//
+// # The erasure model
+//
+// An owner's audit trail must survive that owner's deletion — the point of an
+// audit log is that the event stays provable — while the owner's identity must
+// become unrecoverable. Deleting the records would destroy the evidence;
+// blanking the IDs would destroy the ability to tell two subjects apart in the
+// surviving trail. The resolution is a tombstone: each of the owner's
+// polymorphic IDs is replaced by HMAC-SHA256(salt, id) under a salt held only
+// for that owner, and erasure is performed by DESTROYING THE SALT.
+//
+// This table is where that salt lives, and the row is the entire secret. While
+// the row exists the mapping is reproducible: given a candidate ID, recomputing
+// the HMAC and comparing to the tombstone confirms or refutes it, which is what
+// lets an operator still answer "did this owner do that?" before erasure.
+// Once the row is deleted, that check is no longer computable by anyone. The
+// tombstone is a 256-bit HMAC output over a 256-bit random key, so recovering
+// the subject from the record needs the key; it cannot be brute-forced from the
+// ID space the way an unsalted hash of a short identifier could be. Destroying
+// the salt is therefore not bookkeeping — it IS the erasure.
+//
+// Note the honest limit: DELETE removes the row logically, and the bytes may
+// persist in freelist pages or a WAL until the database reclaims them. Erasure
+// is complete against anyone reading through the database; a forensic reader of
+// the raw file needs a VACUUM (or full-disk encryption) to be excluded too.
+//
+// # Why no foreign key to owners(id)
+//
+// For the same reason audit_records has none, and one more. An FK would tie the
+// salt's lifetime to the owner row, so deleting the owner would either be
+// blocked by the salt or silently cascade it away — and a cascade would destroy
+// the salt at a moment not chosen by the erasure flow, possibly before the
+// records that depend on it have been rewritten. That ordering is exactly what
+// must stay under explicit control: pseudonymize first, then destroy the salt.
+// The salt is also created for an owner that may already be mid-deletion, so
+// requiring a live owner row would make the erasure path fail when it is needed
+// most. A salt row for an owner that no longer exists is harmless — it is
+// nothing but entropy — whereas a salt destroyed too early is an un-erasable
+// audit trail, permanently.
+func migration0005OwnerErasureSalts() migrate.Migration {
+	return migrate.Migration{
+		ID:   "0005",
+		Name: "owner_erasure_salts",
+		Preconditions: []migrate.Precondition{
+			migrate.TableAbsent("owner_erasure_salts"),
+		},
+		Up: migrate.Steps{
+			SQLite: []string{
+				`CREATE TABLE owner_erasure_salts (
+	owner_id TEXT PRIMARY KEY,
+	salt BLOB NOT NULL,
+	created_at TEXT NOT NULL
+)`,
+			},
+			Postgres: []string{
+				`CREATE TABLE owner_erasure_salts (
+	owner_id TEXT PRIMARY KEY,
+	salt BYTEA NOT NULL,
+	created_at TEXT NOT NULL
+)`,
+			},
+		},
+		Down: migrate.Steps{
+			SQLite:   []string{`DROP TABLE owner_erasure_salts`},
+			Postgres: []string{`DROP TABLE owner_erasure_salts`},
 		},
 	}
 }
