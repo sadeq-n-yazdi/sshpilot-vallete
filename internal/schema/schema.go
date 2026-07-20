@@ -828,7 +828,10 @@ func migration0010AccessKeys() migrate.Migration {
 	grace_until TEXT,
 	replaced_by_id TEXT
 )`
-		indexOwner      = `CREATE INDEX ix_access_keys_owner_id ON access_keys (owner_id)`
+		// No standalone owner_id index: owner_id is the leftmost column of
+		// indexOwnerSet, so an owner-only lookup such as ListByOwner uses that
+		// index already. A second index on the same prefix would be written on
+		// every insert and delete and read by nothing.
 		indexOwnerSet   = `CREATE INDEX ix_access_keys_owner_key_set ON access_keys (owner_id, key_set_id)`
 		indexGraceUntil = `CREATE INDEX ix_access_keys_grace_until ON access_keys (status, grace_until)`
 	)
@@ -841,8 +844,8 @@ func migration0010AccessKeys() migrate.Migration {
 			migrate.TableAbsent("access_keys"),
 		},
 		Up: migrate.Steps{
-			SQLite:   []string{createSQLite, indexOwner, indexOwnerSet, indexGraceUntil},
-			Postgres: []string{createPostgres, indexOwner, indexOwnerSet, indexGraceUntil},
+			SQLite:   []string{createSQLite, indexOwnerSet, indexGraceUntil},
+			Postgres: []string{createPostgres, indexOwnerSet, indexGraceUntil},
 		},
 		Down: migrate.Steps{
 			SQLite:   []string{`DROP TABLE access_keys`},

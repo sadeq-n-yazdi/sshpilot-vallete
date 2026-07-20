@@ -53,7 +53,6 @@ var namedIndexes = []string{
 	"ix_device_pairings_user_code_hash",
 	"ix_device_pairings_owner_id",
 	"ix_device_pairings_expires_at",
-	"ix_access_keys_owner_id",
 	"ix_access_keys_owner_key_set",
 	"ix_access_keys_grace_until",
 }
