@@ -459,3 +459,54 @@ func TestRotateSurfacesAnAuditFailureAndWithholdsTheToken(t *testing.T) {
 		t.Fatal("Rotate handed back a token for a rotation it could not record")
 	}
 }
+
+// TestRotateRefusesARevokedCredentialWithoutRelyingOnTheAdapter is the test
+// that attributes the refusal correctly, and it was added because its absence
+// was caught by mutation: deleting the service's status guard entirely left
+// TestRotateRefusesARevokedCredential still passing, because the SQLite
+// adapter's MarkRotated excludes revoked rows in SQL and refused on the
+// service's behalf.
+//
+// That is genuine defense in depth and it should stay. But a refusal only the
+// storage layer performs is one a different adapter — a future Postgres
+// predicate written slightly differently, a cache, an in-memory port — can lose
+// without any test noticing, and what it would lose is a revoked credential
+// coming back to life as a grace row. So the transition here is made
+// permissive: MarkRotated reports success without enforcing anything, and the
+// only thing left that can refuse is this package.
+func TestRotateRefusesARevokedCredentialWithoutRelyingOnTheAdapter(t *testing.T) {
+	f := newFixture(t)
+	owner := f.seedOwner("alice")
+	old, oldToken := f.mint(owner.OwnerID, owner.KeySetID, "ci")
+
+	if err := f.svc.Revoke(context.Background(), owner.OwnerID, old.ID, "req-2"); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	faulty := f.withFaultyKeys(t)
+	faulty.markRotatedNoop = true
+
+	k, token, err := f.svc.Rotate(context.Background(), owner.OwnerID, old.ID, "req-3")
+	denied(t, "Rotate on a revoked credential with a permissive adapter", err)
+	if k != nil || token.Reveal() != "" {
+		t.Fatal("the service minted a replacement for a revoked credential; the refusal was the adapter's alone")
+	}
+
+	// Nothing was written: a replacement that committed would be a live
+	// credential descended from a revoked one.
+	keys, err := f.store.Repos().AccessKeys.ListByOwner(context.Background(), owner.OwnerID)
+	if err != nil {
+		t.Fatalf("ListByOwner: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("owner holds %d credentials, want only the revoked original", len(keys))
+	}
+	if keys[0].Status != domain.AccessKeyStatusRevoked {
+		t.Errorf("status = %q, want it to stay revoked", keys[0].Status)
+	}
+
+	f.svc = newFixtureService(t, f)
+	if f.verifies(t, owner.KeySetID, owner.OwnerID, oldToken) {
+		t.Fatal("the revoked credential is live again")
+	}
+}

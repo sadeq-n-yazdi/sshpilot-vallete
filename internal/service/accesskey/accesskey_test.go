@@ -544,6 +544,12 @@ type faultyKeys struct {
 	createErr      error
 	revokeErr      error
 	markRotatedErr error
+	// markRotatedNoop makes MarkRotated report success without performing the
+	// transition, standing in for a storage adapter that does NOT enforce the
+	// state predicate the SQLite one enforces in SQL. It exists so a test can
+	// attribute a refusal to this package rather than to the adapter beneath
+	// it: with it set, anything the service failed to refuse itself commits.
+	markRotatedNoop bool
 }
 
 func (f *faultyKeys) Create(ctx context.Context, k *domain.AccessKey) error {
@@ -563,6 +569,9 @@ func (f *faultyKeys) Revoke(ctx context.Context, ownerID domain.OwnerID, id doma
 func (f *faultyKeys) MarkRotated(ctx context.Context, ownerID domain.OwnerID, id, replacedBy domain.AccessKeyID, graceUntil time.Time) error {
 	if f.markRotatedErr != nil {
 		return f.markRotatedErr
+	}
+	if f.markRotatedNoop {
+		return nil
 	}
 	return f.AccessKeyRepository.MarkRotated(ctx, ownerID, id, replacedBy, graceUntil)
 }
@@ -596,6 +605,7 @@ func (s *faultyStore) WithTx(ctx context.Context, fn func(context.Context, repos
 			createErr:           s.faulty.createErr,
 			revokeErr:           s.faulty.revokeErr,
 			markRotatedErr:      s.faulty.markRotatedErr,
+			markRotatedNoop:     s.faulty.markRotatedNoop,
 		}
 		return fn(ctx, r)
 	})
