@@ -13,11 +13,26 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/device"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
 )
+
+// mustGuard builds a guard over the real curated lists, so a blocked name
+// reaching this environment travels the same normalization the server would
+// apply. (The identically-named helper in e2e_test.go belongs to the internal
+// test package and is not visible here.)
+func mustGuard(t *testing.T) *nameguard.Guard {
+	t.Helper()
+
+	g, err := nameguard.Default()
+	if err != nil {
+		t.Fatalf("nameguard.Default: %v", err)
+	}
+	return g
+}
 
 // --- environment ---
 
@@ -72,7 +87,7 @@ func newDeviceEnvWithLogger(t *testing.T, logger *slog.Logger) *deviceEnv {
 	if err != nil {
 		t.Fatalf("audit.NewEmitter: %v", err)
 	}
-	svc, err := device.New(env.repo, emitter, device.WithClock(func() time.Time { return env.now }))
+	svc, err := device.New(env.repo, emitter, mustGuard(t), device.WithClock(func() time.Time { return env.now }))
 	if err != nil {
 		t.Fatalf("device.New: %v", err)
 	}
