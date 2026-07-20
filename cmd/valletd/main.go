@@ -126,11 +126,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	// SEAM: the authenticated management surface is mounted but not yet wired.
 	//
-	// httpserver.NewHandler registers the device and public key management
-	// routes unconditionally, and with no httpserver.WithAuthorizer here they are
-	// guarded by an authorizer that refuses every credential. That is the
-	// intended interim state: the routes exist, they are documented, and they
-	// answer 401 to everyone, so no request is ever served unauthenticated.
+	// httpserver.NewHandler registers the device, public key and key set
+	// management routes unconditionally, and with no httpserver.WithAuthorizer
+	// here they are guarded by an authorizer that refuses every credential. That
+	// is the intended interim state: the routes exist, they are documented, and
+	// they answer 401 to everyone, so no request is ever served unauthenticated.
 	//
 	// Completing the wiring needs an *auth.Guard, which needs the token
 	// verifier and the credential denylist, whose storage adapters are still in
@@ -139,8 +139,21 @@ func run(args []string, stdout, stderr io.Writer) error {
 	//	httpserver.WithAuthorizer(guard),
 	//	httpserver.WithDeviceService(deviceSvc),
 	//	httpserver.WithPublicKeyService(keySvc),
+	//	httpserver.WithKeySetService(setSvc),
 	//
 	// and nothing else here changes.
+	//
+	// SEAM: the key set service needs a *nameguard.Guard, which is the ONLY way
+	// the reserved-identifier blocklist (ADR-0017, Fb4) reaches a set-name
+	// create or rename. keyset.New refuses a nil one, so the service cannot be
+	// built without it and there is no unchecked path to build. But no matcher
+	// is constructed in this function today -- nameguard.Default() is called
+	// only by the bootstrap-owner subcommand -- and constructing one here would
+	// pick a source (the curated defaults, or the defaults plus the operator's
+	// configured extra and allow lists via listadmin.ApplySeed) that is a
+	// deployment decision tracked separately. So the choice is deliberately not
+	// made here; setSvc above is built by whoever completes this wiring, with
+	// the guard the blocklist-wiring task settles on.
 	//
 	// The behavior described above is pinned by
 	// TestManagementRoutesFailClosedWithoutAnAuthorizer, which builds a handler

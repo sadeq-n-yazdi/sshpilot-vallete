@@ -209,7 +209,7 @@ func TestRevokeHandlesTheWriteFailingAfterTheReadSucceeded(t *testing.T) {
 				ID: "dev-1", OwnerID: "owner-a", Name: "laptop", Status: domain.DeviceStatusActive,
 			}
 			repo := revokeFailingRepo{fakeRepo: base, revokeErr: tc.fail}
-			svc, err := device.New(repo, &fakeAuditor{})
+			svc, err := device.New(repo, &fakeAuditor{}, mustGuard(t))
 			if err != nil {
 				t.Fatalf("device.New: %v", err)
 			}
