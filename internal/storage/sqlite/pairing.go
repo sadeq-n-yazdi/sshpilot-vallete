@@ -114,7 +114,6 @@ FROM device_pairings WHERE owner_id = ? ORDER BY created_at ASC, id ASC`
 	if err != nil {
 		return nil, mapError(err)
 	}
-	defer func() { _ = rows.Close() }()
 	return collectPairings(rows)
 }
 
@@ -343,8 +342,17 @@ func decPairingScopes(s string) ([]domain.Scope, error) {
 	return scopes, nil
 }
 
-// collectPairings drains rows into a slice. An empty result yields a nil slice.
+// collectPairings drains rows into a slice, mapping any iteration error through
+// mapError and always closing the cursor. An empty result yields a nil slice,
+// never an empty one.
+//
+// The cursor is closed here rather than at the call site so the helper is safe
+// by construction: a future caller cannot leak a connection by forgetting the
+// defer. This matches collectDevices, collectPublicKeys and every other
+// collector in this package.
 func collectPairings(rows *sql.Rows) ([]domain.DevicePairing, error) {
+	defer func() { _ = rows.Close() }()
+
 	var out []domain.DevicePairing
 	for rows.Next() {
 		p, err := scanPairing(rows)
