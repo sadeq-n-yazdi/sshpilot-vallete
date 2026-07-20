@@ -162,29 +162,21 @@ func revokeDeviceHandler(svc DeviceService, logger *slog.Logger) ScopedHandler {
 			return
 		}
 
-		// The id comes from DeviceAccess -- the SAME function the Guardian used
-		// to decide what this request was allowed to touch -- rather than from a
-		// second, independent read of the request.
+		// The id is read from the path, through the same devicePathValue
+		// constant DeviceAccess uses. That shared constant is what keeps the
+		// authorized device and the acted-on device the same one: if they could
+		// diverge, this handler would mutate a device the scope check never
+		// approved while the scope check passed honestly -- the confused-deputy
+		// shape.
 		//
-		// This is what closes the confused-deputy gap structurally. If the
-		// handler derived the id on its own, authorization and action would be
-		// two separate answers to "which device?", and any divergence between
-		// them would mutate a device the scope check never approved while the
-		// scope check passed honestly. Sharing one derivation means there is no
-		// second answer to diverge: anything that changes the id the handler
-		// acts on necessarily changes the id that was authorized, so the scope
-		// check sees it.
-		//
-		// A test cannot establish this by naming the channels an attacker might
-		// use -- that is a blocklist, and the next channel is not on it. The
-		// property has to come from there being one derivation, not two.
-		access, err := DeviceAccess(r)
-		if err != nil {
-			writeDeviceStatus(w, http.StatusNotFound)
-			return
-		}
-		id := domain.DeviceID(access.ResourceID)
-
+		// This is a convention, not an enforced invariant. Nothing structurally
+		// prevents a future edit here from taking the id from a header or a
+		// query parameter instead, and mutation testing confirms it: mutants
+		// that inject a new steering channel survive, because no test can
+		// exercise a channel it does not know the name of. Reviewers of this
+		// handler should treat "where does the id come from?" as the question
+		// that matters.
+		id := domain.DeviceID(r.PathValue(devicePathValue))
 		if err := svc.Revoke(r.Context(), a.Owner(), id, RequestIDFromContext(r.Context())); err != nil {
 			writeDeviceError(w, r, logger, err, "device revocation failed")
 			return
