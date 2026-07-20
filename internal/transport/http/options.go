@@ -15,6 +15,7 @@ import (
 type handlerOptions struct {
 	authorizer Authorizer
 	devices    DeviceService
+	keys       PublicKeyService
 }
 
 // HandlerOption configures NewHandler.
@@ -31,6 +32,11 @@ func WithAuthorizer(a Authorizer) HandlerOption {
 // WithDeviceService supplies the device management service.
 func WithDeviceService(s DeviceService) HandlerOption {
 	return func(o *handlerOptions) { o.devices = s }
+}
+
+// WithPublicKeyService supplies the public key management service.
+func WithPublicKeyService(s PublicKeyService) HandlerOption {
+	return func(o *handlerOptions) { o.keys = s }
 }
 
 // managementGuardian builds the Guardian for the management routes.

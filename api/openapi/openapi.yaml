@@ -107,6 +107,11 @@ tags:
     description: |
       The owner's device inventory. Every operation is scoped to the owner
       carried by the bearer token.
+  - name: keys
+    description: |
+      The owner's SSH public keys. Every operation is scoped to the owner
+      carried by the bearer token. Public key material only (ADR-0002): private
+      key material is refused, never stored, and never echoed.
 paths:
   /healthz:
     get:
@@ -463,6 +468,122 @@ paths:
           $ref: "#/components/responses/ManagementNotFound"
         "500":
           $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/keys:
+    get:
+      tags: [keys]
+      operationId: listPublicKeys
+      summary: List the token owner's public keys.
+      description: |
+        Returns every public key belonging to the owner the bearer token
+        identifies, including revoked ones — the owner is entitled to see its
+        own history, and hiding revoked keys would make a revoked one
+        indistinguishable from one that was never enrolled.
+
+        No other owner's key can appear, and there is no parameter by which
+        another owner's keys could be requested.
+
+        The key material itself is **not** returned. A key is identified by its
+        fingerprint, which is what an owner recognizes it by; the blob is what
+        the publish path serves, and there is no management question it answers
+        that the fingerprint does not.
+
+        Requires a token that is not bound to a single resource.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/PublicKeyList"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+    post:
+      tags: [keys]
+      operationId: addPublicKey
+      summary: Enroll a public key on one of the token owner's devices.
+      description: |
+        Accepts one `authorized_keys`-style public key line and attaches it to a
+        device the bearer token's owner owns.
+
+        The submission is validated by a single ingest layer and is stored
+        canonically (ADR-0006): the algorithm, blob, comment, fingerprint, and
+        bit length are all derived by the server from the parsed key. A client
+        cannot assert any of them, because a client-asserted fingerprint would
+        be a client-asserted identity for the key.
+
+        Refused with `400`: private key material (ADR-0002 — the submission is
+        detected before parsing, is never stored, and is never echoed back),
+        `authorized_keys` options of any kind (ADR-0006), an algorithm outside
+        the allowlist, an RSA key below the 3072-bit floor, more than one key,
+        and an oversized submission.
+
+        A `device_id` that is unknown, belongs to another owner, or names a
+        revoked device answers `404`, identically to one another — see the
+        enumeration note in the API description.
+
+        Requires a token that permits mutation and is not bound to a single
+        resource.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddPublicKeyRequest"
+            example:
+              device_id: PBQKV3XZ2YJ7N4M8RTFC6WDGHA
+              public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExa work laptop"
+      responses:
+        "201":
+          $ref: "#/components/responses/PublicKeyCreated"
+        "400":
+          $ref: "#/components/responses/PublicKeyRejected"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ManagementNotFound"
+        "409":
+          $ref: "#/components/responses/PublicKeyDuplicate"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/keys/{keyID}:
+    parameters:
+      - $ref: "#/components/parameters/KeyID"
+    delete:
+      tags: [keys]
+      operationId: revokePublicKey
+      summary: Revoke one of the token owner's public keys.
+      description: |
+        Marks the key revoked. The key is not deleted; it remains in the owner's
+        list with a `revoked` status and a `revoked_at` timestamp, and stops
+        being served by the publish path.
+
+        `204` is returned only for the transition from active to revoked.
+        Repeating the call answers `404`, identically to an unknown identifier
+        and to another owner's identifier. Repeating is therefore safe: it
+        changes nothing, and it discloses nothing about whether the key ever
+        existed.
+
+        Requires a token that permits mutation and is not bound to a single
+        resource.
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          $ref: "#/components/responses/PublicKeyRevoked"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ManagementNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
 components:
   securitySchemes:
     bearerAuth:
@@ -495,6 +616,17 @@ components:
         The device's opaque, unguessable identifier, as returned by the register
         and list operations. It is not derived from the device's name or from
         anything else a caller could reconstruct.
+      schema:
+        type: string
+    KeyID:
+      name: keyID
+      in: path
+      required: true
+      description: |
+        The key's opaque, unguessable identifier, as returned by the add and
+        list operations. It is not derived from the key's fingerprint, comment,
+        or material, so it cannot be reconstructed from a key a caller has seen
+        elsewhere.
       schema:
         type: string
     IfNoneMatch:
@@ -758,6 +890,107 @@ components:
       headers:
         Vary:
           $ref: "#/components/headers/VaryAuthorization"
+    PublicKeyList:
+      description: The owner's public keys. An owner with none gets an empty array, not a `404`.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PublicKeyList"
+          example:
+            keys:
+              - id: 7GQ2XR4TZBM9KNHVCW5JDPFY6A
+                device_id: PBQKV3XZ2YJ7N4M8RTFC6WDGHA
+                algorithm: ssh-ed25519
+                comment: work laptop
+                fingerprint: "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+                bit_len: 256
+                status: active
+                created_at: "2026-07-20T12:00:00Z"
+                updated_at: "2026-07-20T12:00:00Z"
+    PublicKeyCreated:
+      description: The key was enrolled.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PublicKey"
+          example:
+            id: 7GQ2XR4TZBM9KNHVCW5JDPFY6A
+            device_id: PBQKV3XZ2YJ7N4M8RTFC6WDGHA
+            algorithm: ssh-ed25519
+            comment: work laptop
+            fingerprint: "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+            bit_len: 256
+            status: active
+            created_at: "2026-07-20T12:00:00Z"
+            updated_at: "2026-07-20T12:00:00Z"
+    PublicKeyRevoked:
+      description: |
+        The key was revoked. The response carries no body: there is nothing to
+        report beyond the fact of the transition, and a body would be a place
+        for detail this operation deliberately does not disclose.
+      headers:
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+    PublicKeyRejected:
+      description: |
+        The submission is not an acceptable public key, or the body is not
+        well-formed JSON.
+
+        This is the one management response that carries a reason, and it is
+        safe here because it reports on the bytes the caller just sent and on
+        nothing the system holds. The reason is drawn from a fixed set of
+        strings that never reflect the submission — in particular, a body that
+        contained private key material produces a fixed instruction to submit
+        the `.pub` file instead, and none of the pasted content is echoed,
+        stored, or logged.
+
+        A malformed body produces the reasonless `Error` body instead, because
+        a JSON decoder's message can quote the bytes it choked on.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/KeyRejected"
+          example:
+            status: error
+            reason: "keys: authorized_keys options are not permitted: domain: invalid input"
+    PublicKeyDuplicate:
+      description: |
+        The owner already holds a key with this fingerprint.
+
+        Unlike the not-found response this one is distinguishable, and safely
+        so: the uniqueness constraint is per-owner, so the only key it can
+        report on is one the caller already holds and can already see in its own
+        list. It discloses nothing about any other owner, and it is what stops a
+        client from retrying an enrollment that will never succeed.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
     Unauthenticated:
       description: |
         No usable credential was presented, or the token is expired, revoked, or
@@ -967,4 +1200,110 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/Device"
+      additionalProperties: false
+    AddPublicKeyRequest:
+      type: object
+      description: |
+        A key enrollment. It names a device and carries one public key line.
+
+        `additionalProperties: false` is the contract, and the server enforces
+        it by rejecting the request rather than dropping the extra field. There
+        is no owner property, so a body attempting to name one is refused
+        instead of silently having its claim ignored — and there is no
+        algorithm, fingerprint, or bit-length property either, because those are
+        derived from the key by the server and are not a client's to assert.
+      required: [device_id, public_key]
+      properties:
+        device_id:
+          type: string
+          description: |
+            The device the key belongs to. It must be an active device of the
+            token's owner; anything else answers `404`.
+        public_key:
+          type: string
+          maxLength: 16384
+          description: |
+            One `authorized_keys`-style public key line: an algorithm, a
+            base64 blob, and an optional comment. Exactly one key. No
+            `authorized_keys` options. Never a private key.
+      additionalProperties: false
+    PublicKey:
+      type: object
+      description: |
+        A public key in the owner's inventory.
+
+        It carries no owner field, for the reason `Device` does not, and no key
+        blob: the fingerprint identifies the key, and the material is what the
+        publish path serves.
+      required: [id, device_id, algorithm, comment, fingerprint, bit_len, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          description: The opaque, unguessable key identifier.
+        device_id:
+          type: string
+        algorithm:
+          type: string
+          enum:
+            - ssh-ed25519
+            - ecdsa-sha2-nistp256
+            - ecdsa-sha2-nistp384
+            - ecdsa-sha2-nistp521
+            - ssh-rsa
+            - sk-ssh-ed25519@openssh.com
+            - sk-ecdsa-sha2-nistp256@openssh.com
+          description: |
+            The algorithm the server parsed out of the key. `ssh-dss` is absent
+            deliberately and is refused at ingest.
+        comment:
+          type: string
+          description: The trailing comment, normalized. Empty when the key carried none.
+        fingerprint:
+          type: string
+          description: The key's SHA-256 fingerprint, in OpenSSH's `SHA256:` form.
+        bit_len:
+          type: integer
+          description: The key's strength in bits. RSA below 3072 is refused at ingest.
+        status:
+          type: string
+          enum: [active, revoked]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          description: Present only when the key is revoked.
+      additionalProperties: false
+    PublicKeyList:
+      type: object
+      description: |
+        The keys are wrapped in an object rather than returned as a bare array,
+        so the response can gain fields later without breaking consumers.
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicKey"
+      additionalProperties: false
+    KeyRejected:
+      type: object
+      description: |
+        The ingest rejection body. It is a distinct schema from `Error` rather
+        than `Error` with an optional field, so that no other error response on
+        this surface can start carrying a reason by accident.
+      required: [status, reason]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        reason:
+          type: string
+          description: |
+            A fixed string naming which ingest rule the submission broke. It
+            never contains any part of the submission.
       additionalProperties: false
