@@ -22,6 +22,7 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/erasure"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/logging"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/sweep"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
 	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/version"
@@ -103,6 +104,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	// Likewise built before the listener binds: a sweep that cannot be
+	// constructed is a startup failure, not something to discover at the first
+	// tick of a server already taking traffic.
+	sweeps, err := newSweepRunner(cfg, logger, store, store.AuditAppender())
+	if err != nil {
+		return err
+	}
+
 	// Telemetry is built before the server so the handler can carry the
 	// middleware, and it never returns an error: an exporter that cannot be
 	// constructed is logged and omitted (see telemetry.New). A monitoring
@@ -127,7 +136,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		slog.String("tls_mode", cfg.TLS.Mode),
 	)
 
-	return serve(srv, metricsSrv, logger, purge)
+	return serve(srv, metricsSrv, logger, purge, sweeps)
 }
 
 // shutdownTelemetry flushes the exporters on the way out, under its own bounded
@@ -151,7 +160,7 @@ func shutdownTelemetry(tel *telemetry.Provider, logger *slog.Logger) {
 // signal.NotifyContext restores the default disposition on return, so a second
 // SIGINT during the drain terminates the process immediately -- an operator who
 // asks twice should not have to wait out the grace period.
-func serve(srv *httpserver.Server, metricsSrv *telemetry.MetricsServer, logger *slog.Logger, purge *erasure.Scheduler) error {
+func serve(srv *httpserver.Server, metricsSrv *telemetry.MetricsServer, logger *slog.Logger, purge *erasure.Scheduler, sweeps *sweep.Runner) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -160,6 +169,10 @@ func serve(srv *httpserver.Server, metricsSrv *telemetry.MetricsServer, logger *
 	// returns, so no purge is still holding a transaction when run closes the
 	// database.
 	joinPurge := startRetention(ctx, purge)
+	// The maintenance sweeps share the same signal context and the same join
+	// discipline, for the same reason: a release holds a write transaction and
+	// must be finished before run closes the database.
+	joinSweeps := startSweeps(ctx, sweeps)
 	// stop() is called before the join, and both are in one deferred func on
 	// purpose. Deferred calls run last-registered-first, so a plain
 	// "defer joinPurge()" here would run before the "defer stop()" above and
@@ -170,6 +183,7 @@ func serve(srv *httpserver.Server, metricsSrv *telemetry.MetricsServer, logger *
 	defer func() {
 		stop()
 		joinPurge()
+		joinSweeps()
 	}()
 
 	errCh := make(chan error, 1)

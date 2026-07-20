@@ -433,6 +433,24 @@ type RetentionConfig struct {
 	// database in one.
 	AuditPurgeMaxPerRun int `yaml:"audit_purge_max_per_run"`
 
+	// HandleQuarantineSweepInterval is how often the release sweep returns
+	// elapsed handle quarantines to the pool. 0 disables the sweep.
+	//
+	// The zero value is a valid operating mode here for the same reason it is
+	// on AuditPurgeInterval: the consequence is reversible and fails closed. A
+	// sweep that never runs leaves a vacated name held by its previous owner
+	// forever, so the name is unavailable rather than handed to a stranger, and
+	// starting the sweep later releases the backlog. That is emphatically NOT
+	// true of every sweep -- a grace-expiry sweep that stops leaves a rotated
+	// credential usable, which fails open -- so an off switch is offered here
+	// and must not be copied to one of those by analogy.
+	HandleQuarantineSweepInterval Duration `yaml:"handle_quarantine_sweep_interval"`
+
+	// HandleQuarantineSweepBatch is how many quarantines one pass releases.
+	// Each release is a separate audited delete, so this bounds both the work
+	// of a pass and the audit rows it can produce.
+	HandleQuarantineSweepBatch int `yaml:"handle_quarantine_sweep_batch"`
+
 	MaxSetsPerOwner int `yaml:"max_sets_per_owner"`
 }
 
