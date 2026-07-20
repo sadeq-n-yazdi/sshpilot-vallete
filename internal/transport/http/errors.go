@@ -44,6 +44,17 @@ var (
 	// process that will not start is visible to the operator immediately.
 	ErrTLSCertificateExpired = errors.New("httpserver: tls certificate outside its validity window")
 
+	// ErrTLSCertificateUnavailable is returned when a CertProvider could not
+	// supply a certificate for a handshake.
+	//
+	// Unlike its neighbors this one is NOT construction-time: it surfaces from
+	// the tls.Config.GetCertificate callback, so it aborts a single handshake
+	// rather than startup. That is the point — ADR-0015 §4 requires the listener
+	// to stop serving when certificate material goes bad while the process runs,
+	// and refusing each handshake is how a provider failure becomes a refusal
+	// instead of a downgrade to a self-signed or plaintext fallback.
+	ErrTLSCertificateUnavailable = errors.New("httpserver: no tls certificate available")
+
 	// ErrNilPinger is returned when a readiness pinger is required but absent.
 	ErrNilPinger = errors.New("httpserver: nil readiness pinger")
 

@@ -1,72 +1,62 @@
 package httpserver
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"fmt"
-	"math/big"
-	"net"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 )
 
-// selfSignedValidity is how long a development certificate is accepted.
-//
-// It is deliberately short. The key never leaves memory and is regenerated on
-// every start, so a long validity buys nothing; a short one bounds the damage
-// if a developer pins or copies the certificate somewhere it does not belong.
-const selfSignedValidity = 24 * time.Hour
-
 // buildTLSConfig assembles the server's TLS configuration from operator config,
 // failing closed on anything it cannot serve safely.
 //
-// Only two of the configured modes are implemented in this track: self_signed
-// (development bring-up) and manual (operator-supplied files). ACME, Cloudflare
-// origin, CSR, and upstream termination are later tracks and return
-// [ErrTLSModeUnsupported] rather than silently degrading to a weaker
-// certificate.
+// The certificate SOURCE is a [CertProvider]; the certificate POLICY (minimum
+// version, cipher allowlist, ALPN) is set here and applies to whatever any
+// provider returns. Adding a provider therefore cannot weaken the negotiated
+// connection — that separation is the point of the seam.
 //
-// The now argument is the validity clock for certificate checks. It is a
-// parameter rather than a call to time.Now so that expiry behavior is
-// deterministically testable; production passes the real clock.
+// Only two modes are implemented in this track: self_signed (development
+// bring-up) and manual (operator-supplied files). ACME, Cloudflare origin, CSR
+// and upstream termination are later tracks and return [ErrTLSModeUnsupported]
+// rather than silently degrading to a weaker certificate.
 //
-// Scope note — certificates are read ONCE, here, at startup. There is
-// deliberately no hot reload and no on-disk watch in this track: an operator who
-// replaces the certificate files must restart the process for the new material
-// to be served. Consequently the fail-closed-on-expiry check below is a STARTUP
-// check. A certificate that expires while the process is running will continue
-// to be presented until the process restarts; ADR-0015 §4 requires the listener
-// to stop serving in that case, and implementing it belongs with the renewal
-// scheduler in the later certificate-provider tracks (a tls.Config.GetCertificate
-// callback re-validating per handshake is the intended hook). Stating the gap
-// explicitly is preferred to leaving the reload story ambiguous.
-func buildTLSConfig(cfg *config.Config, now time.Time) (*tls.Config, error) {
+// The now argument is the validity clock, a function rather than an instant
+// because certificates are re-checked on every handshake and may be renewed
+// while the process runs. Production passes time.Now; tests pass a clock they
+// control.
+//
+// Startup behavior: the provider is asked for a certificate once, here, so that
+// an operator whose material is missing, mismatched or expired learns at startup
+// rather than from the first client's failed handshake. That check is NOT the
+// only one — the same guard runs again on every handshake, which is what closes
+// the gap E1 documented, where a certificate expiring mid-process kept being
+// served until restart.
+func buildTLSConfig(cfg *config.Config, now func() time.Time) (*tls.Config, error) {
 	minVersion, err := parseMinVersion(cfg.TLS.MinVersion)
 	if err != nil {
 		return nil, err
 	}
 
-	var cert tls.Certificate
-	switch cfg.TLS.Mode {
-	case "self_signed":
-		cert, err = selfSignedCertificate(cfg, now)
-	case "manual":
-		cert, err = manualCertificate(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile, now)
-	default:
-		err = fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
-	}
+	provider, err := newCertProvider(cfg, now)
 	if err != nil {
 		return nil, err
 	}
 
+	guard := newCertGuard(provider, now)
+	if _, err := guard.GetCertificate(nil); err != nil {
+		return nil, err
+	}
+
 	return &tls.Config{
-		MinVersion:   minVersion,
-		Certificates: []tls.Certificate{cert},
-		CipherSuites: tls12CipherSuites(),
+		MinVersion: minVersion,
+		// GetCertificate, with Certificates left NIL. Every certificate this
+		// server presents is therefore produced by a provider and validated by
+		// the guard on the way out; populating Certificates as well would create
+		// a second, unvalidated path that crypto/tls would fall back to.
+		GetCertificate: guard.GetCertificate,
+		CipherSuites:   tls12CipherSuites(),
 		// CurvePreferences is deliberately LEFT UNSET.
 		//
 		// The obvious "hardening" here is to pin a list such as
@@ -88,6 +78,24 @@ func buildTLSConfig(cfg *config.Config, now time.Time) (*tls.Config, error) {
 		// negotiation of anything the handler stack has not been reviewed for.
 		NextProtos: []string{"h2", "http/1.1"},
 	}, nil
+}
+
+// newCertProvider selects the certificate provider for the configured mode.
+//
+// The default branch refuses. Config validation already restricts tls.mode to a
+// known set, so an unimplemented-but-valid mode lands here — and the only two
+// alternatives to refusing would be serving a self-signed certificate the
+// operator did not ask for, or no TLS at all. Both are the silent downgrade
+// ADR-0015 exists to prevent.
+func newCertProvider(cfg *config.Config, now func() time.Time) (CertProvider, error) {
+	switch cfg.TLS.Mode {
+	case "self_signed":
+		return newSelfSignedProvider(cfg, now)
+	case "manual":
+		return newManualProvider(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile)
+	default:
+		return nil, fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
+	}
 }
 
 // tls12CipherSuites is the allowlist of TLS 1.2 cipher suites the server will
@@ -130,81 +138,67 @@ func tls12CipherSuites() []uint16 {
 	}
 }
 
-// manualCertificate loads and validates an operator-supplied certificate and
-// private key, refusing anything it cannot serve safely.
+// manualProvider serves an operator-supplied certificate and key.
 //
-// This is the operator-provided mode of ADR-0015 §2: the operator owns renewal,
-// so the server's job is to be unambiguous about material it will not serve.
-// Every defect is a startup failure:
+// This is the operator-provided mode of ADR-0015 §2: the operator owns renewal.
+// The files are read ONCE, at startup — there is deliberately no on-disk watch,
+// so replacing them requires a restart — but the resulting certificate is still
+// re-validated by the guard on every handshake. That matters for the expiry
+// rule: ADR-0015 §4 applies fail-closed-on-expiry to the operator-owned modes
+// too, and a long-running process holding a certificate that expires underneath
+// it must stop serving rather than present it.
+type manualProvider struct {
+	cert tls.Certificate
+}
+
+// newManualProvider loads and structurally checks the operator's PEM files.
 //
-//   - missing, unreadable, or malformed PEM  -> ErrTLSCertificateInvalid
-//   - private key does not match the cert    -> ErrTLSCertificateInvalid
-//   - outside the validity window            -> ErrTLSCertificateExpired
-//
-// The first two come free from [tls.LoadX509KeyPair], which parses both files
-// and verifies that the key matches the leaf's public key. The third does NOT:
-// LoadX509KeyPair is perfectly happy to load a certificate that expired years
-// ago, so the validity window is checked here explicitly. Without this check the
-// fail-closed-on-expiry requirement would appear to be met while doing nothing.
-//
-// Validity is checked against the leaf only. Intermediates in the chain are the
-// issuing CA's business and are validated by the client against its own trust
-// store; rejecting on an intermediate the operator cannot fix would fail closed
-// on someone else's clock.
+// Loading is separated from validity checking on purpose. Everything that can
+// only be decided from the FILES (are they present, is the PEM well-formed, does
+// the key match the certificate) is decided here, once, at startup, because
+// re-reading two files on every handshake would be a needless I/O path in the
+// connection hot loop. Everything that depends on the CLOCK is left to the
+// guard, because it changes while the process runs.
 //
 // Note on secret handling: the private key reaches this process only inside
 // tls.Certificate.PrivateKey, as a crypto.PrivateKey. It is never read into a
-// string, never formatted, and never logged. Errors below are built from file
-// paths and certificate timestamps — a path is not a secret, but key bytes are,
-// so no error here ever quotes file contents.
-func manualCertificate(certFile, keyFile string, now time.Time) (tls.Certificate, error) {
+// string, never formatted, and never logged. The error below is built from the
+// crypto/tls message and file paths — a path is not a secret, but key bytes are,
+// so nothing here ever quotes file contents.
+func newManualProvider(certFile, keyFile string) (*manualProvider, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		// %w on the crypto/tls error preserves "failed to find any PEM data",
 		// "private key does not match public key", and the os path errors,
 		// which are what an operator needs to fix the problem. None of them
 		// echo key material.
-		return tls.Certificate{}, fmt.Errorf("%w: %w", ErrTLSCertificateInvalid, err)
+		return nil, fmt.Errorf("%w: %w", ErrTLSCertificateInvalid, err)
 	}
 
-	// Leaf is populated by LoadX509KeyPair as of Go 1.23, but a nil Leaf would
-	// turn the expiry check below into a silent no-op — precisely the failure
-	// mode this function exists to prevent — so it is re-parsed rather than
-	// trusted. The GODEBUG x509keypairleaf=0 setting can still restore the old
-	// nil-Leaf behavior, which makes this a reachable state, not paranoia.
-	// The two error branches inside this block are unreachable in practice and
-	// are therefore the only statements in this file without test coverage:
-	// LoadX509KeyPair has already parsed the leaf to verify the key match, so
-	// by the time it returns nil error the chain is non-empty and its first
-	// element parses. They are kept because "cannot happen" is an argument for
-	// cheap defense, not against it — the cost of being wrong here is skipping
-	// the expiry check entirely.
-	leaf := cert.Leaf
-	if leaf == nil {
-		if len(cert.Certificate) == 0 {
-			return tls.Certificate{}, fmt.Errorf("%w: %s contains no certificate", ErrTLSCertificateInvalid, certFile)
-		}
-		leaf, err = x509.ParseCertificate(cert.Certificate[0])
+	// Leaf is populated by LoadX509KeyPair as of Go 1.23, but GODEBUG
+	// x509keypairleaf=0 can restore the old nil-Leaf behavior, so it is
+	// re-parsed rather than trusted. The guard re-parses from DER regardless;
+	// this keeps the field consistent for anything else that reads it.
+	if cert.Leaf == nil && len(cert.Certificate) > 0 {
+		leaf, err := x509.ParseCertificate(cert.Certificate[0])
 		if err != nil {
-			return tls.Certificate{}, fmt.Errorf("%w: parse leaf of %s: %w", ErrTLSCertificateInvalid, certFile, err)
+			return nil, fmt.Errorf("%w: parse leaf of %s: %w", ErrTLSCertificateInvalid, certFile, err)
 		}
 		cert.Leaf = leaf
 	}
 
-	// Both ends of the window are enforced. A not-yet-valid certificate is just
-	// as unservable as an expired one (clients reject both), and it is the
-	// normal symptom of a badly skewed server clock, so it gets the same
-	// treatment rather than being waved through.
-	if now.Before(leaf.NotBefore) {
-		return tls.Certificate{}, fmt.Errorf("%w: %s is not valid before %s",
-			ErrTLSCertificateExpired, certFile, leaf.NotBefore.UTC().Format(time.RFC3339))
-	}
-	if now.After(leaf.NotAfter) {
-		return tls.Certificate{}, fmt.Errorf("%w: %s expired at %s",
-			ErrTLSCertificateExpired, certFile, leaf.NotAfter.UTC().Format(time.RFC3339))
-	}
+	return &manualProvider{cert: cert}, nil
+}
 
-	return cert, nil
+// Name identifies the mode for diagnostics.
+func (p *manualProvider) Name() string { return "manual" }
+
+// GetCertificate returns the operator's certificate. The same material is
+// returned for every handshake — renewal in this mode means an operator
+// replacing the files and restarting — but the guard still re-checks its
+// validity window each time, so expiry stops the listener without a restart.
+func (p *manualProvider) GetCertificate(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return &p.cert, nil
 }
 
 // parseMinVersion maps the configured tls.min_version onto a crypto/tls
@@ -220,91 +214,4 @@ func parseMinVersion(v string) (uint16, error) {
 	default:
 		return 0, fmt.Errorf("%w: %q (want 1.2 or 1.3)", ErrTLSMinVersion, v)
 	}
-}
-
-// selfSignedCertificate returns an ephemeral development certificate, refusing
-// to produce one in production without an explicit opt-in.
-//
-// A self-signed certificate offers no way for a client to tell this server from
-// an interceptor, which defeats the point of serving TLS at all. Development
-// bring-up still needs *some* certificate, so it is allowed there — but
-// production must set tls.allow_self_signed_in_production, making the weakened
-// posture a recorded, deliberate decision rather than an accident of a copied
-// config file.
-func selfSignedCertificate(cfg *config.Config, now time.Time) (tls.Certificate, error) {
-	if cfg.Server.Environment == "production" && !cfg.TLS.AllowSelfSignedInProduction {
-		return tls.Certificate{}, fmt.Errorf(
-			"%w: set tls.allow_self_signed_in_production to override", ErrSelfSignedInProduction)
-	}
-	return newSelfSignedCert(certHosts(cfg), now)
-}
-
-// certHosts returns the names the development certificate should cover: the
-// configured domain and SANs, defaulting to loopback when neither is set.
-func certHosts(cfg *config.Config) []string {
-	hosts := make([]string, 0, len(cfg.TLS.SANs)+1)
-	if cfg.TLS.Domain != "" {
-		hosts = append(hosts, cfg.TLS.Domain)
-	}
-	hosts = append(hosts, cfg.TLS.SANs...)
-	if len(hosts) == 0 {
-		hosts = []string{"localhost", "127.0.0.1", "::1"}
-	}
-	return hosts
-}
-
-// newSelfSignedCert generates an in-memory ed25519 self-signed certificate.
-//
-// ed25519 is used for speed and for having no parameter choices to get wrong.
-// The key is never written to disk: it exists for the lifetime of the process
-// only, so there is no key file to leak, and every restart invalidates whatever
-// the previous run issued.
-func newSelfSignedCert(hosts []string, now time.Time) (tls.Certificate, error) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("httpserver: generate key: %w", err)
-	}
-
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("httpserver: generate serial: %w", err)
-	}
-
-	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{Organization: []string{"sshpilot-vallet development"}},
-		NotBefore:    now.Add(-time.Minute), // tolerate small clock skew
-		NotAfter:     now.Add(selfSignedValidity),
-		// An end-entity certificate, NOT a CA: it is self-issued only because
-		// there is no issuer to ask. Setting IsCA/KeyUsageCertSign would mean
-		// that a developer who added this cert to a trust store granted it the
-		// power to vouch for arbitrary other names, so the capability is
-		// withheld even though the key is ephemeral and in-memory.
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-	for _, h := range hosts {
-		if ip := net.ParseIP(h); ip != nil {
-			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
-			continue
-		}
-		tmpl.DNSNames = append(tmpl.DNSNames, h)
-	}
-
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("httpserver: create certificate: %w", err)
-	}
-
-	leaf, err := x509.ParseCertificate(der)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("httpserver: parse certificate: %w", err)
-	}
-
-	return tls.Certificate{
-		Certificate: [][]byte{der},
-		PrivateKey:  priv,
-		Leaf:        leaf,
-	}, nil
 }
