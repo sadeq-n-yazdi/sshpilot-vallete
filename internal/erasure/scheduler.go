@@ -147,6 +147,22 @@ func (s *Scheduler) Run(ctx context.Context) {
 	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
 
+	// One pass immediately, before waiting for the first tick.
+	//
+	// Waiting for a tick makes purging depend on the process outliving the
+	// interval, and with the 24h default it very often does not: deploys,
+	// autoscaling and node replacement restart a service daily or oftener, so
+	// the tick is never reached and retention is silently off precisely in the
+	// environments that churn most. Nothing surfaces that -- the startup log
+	// above still announces the policy -- which is the failure mode this whole
+	// scheduler is shaped to avoid.
+	//
+	// Guarded on ctx so a Run that starts already-canceled destroys nothing:
+	// shutdown must not be able to trigger a deletion on its way out.
+	if ctx.Err() == nil {
+		s.pass(ctx)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():

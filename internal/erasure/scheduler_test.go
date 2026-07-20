@@ -119,28 +119,77 @@ func TestSchedulerCancellationStopsLoopPromptly(t *testing.T) {
 	}
 }
 
+// TestSchedulerPurgesImmediatelyOnStart is the "a daily restart still purges"
+// proof.
+//
+// The interval is an hour, so no tick can fire during the test: if the loop
+// only purged on ticks, nothing would ever reach the repository and this would
+// time out. That is the real deployment shape -- a 24h interval in a service
+// that restarts on every deploy -- where waiting for the first tick means
+// retention never runs at all.
+func TestSchedulerPurgesImmediatelyOnStart(t *testing.T) {
+	t.Parallel()
+
+	purged := make(chan struct{}, 1)
+	repo := &scriptedAudit{hook: func(context.Context, time.Time, int) (int64, error) {
+		select {
+		case purged <- struct{}{}:
+		default:
+		}
+		return 0, nil
+	}}
+	s, results := newTestScheduler(t, repo, time.Hour, WithBatchSize(1), WithMaxPerRun(10))
+	_, stop := runInBackground(t, s)
+	defer stop()
+
+	select {
+	case <-purged:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no purge reached the repository before the first tick; a process shorter-lived than the interval would never purge")
+	}
+	if got := awaitPass(t, results); got.err != nil {
+		t.Fatalf("startup pass err = %v, want nil", got.err)
+	}
+}
+
 // TestSchedulerCancellationBeforeFirstTickReturns covers shutdown arriving
-// while the loop is idle between ticks.
+// before the loop has done anything, and pins that it purges nothing on the
+// way out: a Run handed an already-canceled context must destroy no records.
+//
+// The assertion is on the pass hook rather than on the repository, and that is
+// deliberate. PurgeOnce checks the context before its first batch, so a pass
+// started on a dead context never reaches the repository either way -- only the
+// completed-pass hook distinguishes "no pass was started" from "a pass ran and
+// found the context dead".
 func TestSchedulerCancellationBeforeFirstTickReturns(t *testing.T) {
 	t.Parallel()
 
 	repo := &scriptedAudit{hook: func(context.Context, time.Time, int) (int64, error) {
-		t.Error("no pass should run: the interval is longer than the test")
+		t.Error("no pass should reach the repository: the context is canceled before Run starts")
 		return 0, nil
 	}}
-	s, _ := newTestScheduler(t, repo, time.Hour, WithBatchSize(1), WithMaxPerRun(10))
+	s, results := newTestScheduler(t, repo, time.Hour, WithBatchSize(1), WithMaxPerRun(10))
 
 	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
 		s.Run(ctx)
 	}()
-	cancel()
 	select {
 	case <-returned:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Run did not return when canceled while idle")
+		t.Fatal("Run did not return when handed an already-canceled context")
+	}
+
+	// onPass fires synchronously inside Run, so by the time Run has returned
+	// any pass that ran has already reported.
+	select {
+	case got := <-results:
+		t.Fatalf("a pass ran (deleted=%d err=%v) on an already-canceled context; shutdown must not trigger a purge", got.deleted, got.err)
+	default:
 	}
 }
 
