@@ -204,12 +204,15 @@ func newOriginCAProvider(
 		// which one to fix.
 		return nil, fmt.Errorf("%w: tls.cloudflare_origin.api_token_ref: %w", ErrOriginCACredential, err)
 	}
-	if token.Reveal() == "" {
-		// Defense in depth: the env and file providers both reject an empty
-		// value already. An empty credential would produce an unauthenticated
-		// request, and Cloudflare's rejection of it is a worse place to learn
-		// this than startup.
-		return nil, fmt.Errorf("%w: tls.cloudflare_origin.api_token_ref resolved to an empty value", ErrOriginCACredential)
+	if token.IsBlank() {
+		// Defense in depth: the env and file providers both reject a blank value
+		// already. This guard is still reachable on its own, because the resolver
+		// is injected and a future provider need not repeat the check. A blank
+		// credential would produce an unauthenticated request, and Cloudflare's
+		// rejection of it is a worse place to learn this than startup. IsBlank
+		// also removes the Reveal this line used to perform for a comparison
+		// that never needed the plaintext.
+		return nil, fmt.Errorf("%w: tls.cloudflare_origin.api_token_ref resolved to a blank value (empty or whitespace only)", ErrOriginCACredential)
 	}
 
 	if err := os.MkdirAll(o.CacheDir, originCACacheDirMode); err != nil {

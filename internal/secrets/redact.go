@@ -3,6 +3,7 @@ package secrets
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // redactedMarker is the single string every redaction path emits. A secret
@@ -25,6 +26,34 @@ func NewRedacted(value string) Redacted { return Redacted(value) }
 // Reveal returns the underlying secret value. This is the ONLY exit from a
 // Redacted; callers must treat the result as sensitive and never log it.
 func (r Redacted) Reveal() string { return string(r) }
+
+// IsBlank reports whether the secret is empty or consists only of whitespace.
+//
+// A blank value is not a credential. It carries no authentication material, so
+// accepting one can only produce an unauthenticated request that the remote
+// side rejects — at first use, which for a certificate credential is the first
+// issuance or renewal, weeks after the deploy that introduced it. Every gate in
+// this project that used to compare against "" alone let "   " and "\n" through
+// and failed exactly that late; this predicate is what those gates check now.
+//
+// It tests the value AFTER trimming but deliberately does NOT trim the stored
+// secret. Rejecting a blank value cannot destroy anything an operator meant to
+// supply, because a blank value holds no information. Trimming a value like
+// " abc " is a different act: it silently rewrites a secret the operator
+// supplied, on a guess about which bytes were intended, and this project does
+// not mutate secrets it was given. Such a value is accepted here unchanged and
+// fails, if it is wrong, at the remote API — visibly, and with the operator's
+// own bytes intact.
+//
+// Whitespace is Unicode whitespace as [unicode.IsSpace] defines it, which
+// covers ASCII space and tab, NEL (U+0085), NBSP (U+00A0) and the Unicode Zs
+// spaces including U+3000. It does NOT cover the zero-width space (U+200B),
+// which Unicode classes as a format character rather than whitespace; a
+// credential of only zero-width characters is not blank by this definition.
+//
+// Reveal is called on the value but nothing is returned from it: the result is
+// a bool, so no caller can obtain plaintext through this method.
+func (r Redacted) IsBlank() bool { return strings.TrimSpace(string(r)) == "" }
 
 // String implements fmt.Stringer.
 func (r Redacted) String() string { return redactedMarker }

@@ -53,8 +53,8 @@ func NewFileProvider(opts FileOptions) *FileProvider {
 func (p *FileProvider) Scheme() string { return fileScheme }
 
 // Resolve reads the referenced file, strips one trailing newline, and returns
-// the contents as a Redacted value. An empty file (after stripping) is an
-// error. World-readable permissions are an error in PermError mode and a
+// the contents as a Redacted value. A file that is blank (empty or whitespace
+// only, see [Redacted.IsBlank]) is an error. World-readable permissions are an error in PermError mode and a
 // warning in PermWarn mode. Errors name the reference (the path), never the
 // contents.
 //
@@ -104,11 +104,18 @@ func (p *FileProvider) Resolve(_ context.Context, opaque string) (Redacted, erro
 		return "", fmt.Errorf("secrets: cannot read file for reference %q: %w", ref, err)
 	}
 
-	value := stripOneTrailingNewline(string(data))
-	if value == "" {
-		return "", fmt.Errorf("secrets: file for reference %q is empty", ref)
+	// The trailing-newline strip above is a documented normalization of how a
+	// secret is written to a file, and it stays. The blank check below is a
+	// separate question and is deliberately NOT a second normalization: a file
+	// of spaces, tabs or several newlines holds no credential, so it is refused
+	// here rather than signing a request with whitespace, while a file whose
+	// content merely has surrounding whitespace is returned with the operator's
+	// bytes unchanged. See [Redacted.IsBlank].
+	secret := Redacted(stripOneTrailingNewline(string(data)))
+	if secret.IsBlank() {
+		return "", fmt.Errorf("secrets: file for reference %q is blank (empty or whitespace only)", ref)
 	}
-	return Redacted(value), nil
+	return secret, nil
 }
 
 // stripOneTrailingNewline removes a single trailing "\n" (and a preceding "\r"

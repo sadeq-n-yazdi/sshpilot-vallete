@@ -120,12 +120,13 @@ var _ Provider = (*dnsimpleProvider)(nil)
 // parameter exists so a test can supply a transport pointed at a local fake and
 // so an operator's proxy settings can be honored later.
 func NewDNSimple(token secrets.Redacted, client *http.Client) (Provider, error) {
-	// The emptiness check compares the WRAPPED value against "" rather than
-	// revealing it, exactly as the Cloudflare and DigitalOcean constructors do,
-	// so this file keeps a single plaintext-unwrap site. Refused at construction,
-	// where the operator sees it, rather than at the first renewal months later.
-	if token == "" {
-		return nil, fmt.Errorf("%w: empty api token", ErrDNSimpleAPI)
+	// The blank check asks the WRAPPED value rather than revealing it, exactly
+	// as the Cloudflare and DigitalOcean constructors do, so this file keeps a
+	// single plaintext-unwrap site. Whitespace-only counts as blank: it is not a
+	// credential. Refused at construction, where the operator sees it, rather
+	// than at the first renewal months later.
+	if token.IsBlank() {
+		return nil, fmt.Errorf("%w: blank api token (empty or whitespace only)", ErrDNSimpleAPI)
 	}
 	if client == nil {
 		client = &http.Client{

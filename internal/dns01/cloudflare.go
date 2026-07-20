@@ -90,8 +90,13 @@ var _ Provider = (*cloudflareProvider)(nil)
 // parameter exists so a test can supply a transport pointed at a local fake and
 // so an operator's proxy settings can be honored later.
 func NewCloudflare(token secrets.Redacted, client *http.Client) (Provider, error) {
-	if token == "" {
-		return nil, fmt.Errorf("%w: empty api token", ErrCloudflareAPI)
+	// A whitespace-only token is refused as firmly as an empty one: it is not a
+	// credential, and accepting it would send "Bearer    " and learn nothing
+	// until Cloudflare rejected the first challenge. IsBlank answers this
+	// without unwrapping the token here, so this file keeps a single plaintext
+	// unwrap site.
+	if token.IsBlank() {
+		return nil, fmt.Errorf("%w: blank api token (empty or whitespace only)", ErrCloudflareAPI)
 	}
 	if client == nil {
 		client = &http.Client{
