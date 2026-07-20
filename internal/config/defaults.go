@@ -66,6 +66,12 @@ func Default() Config {
 			},
 			Metrics: MetricsConfig{
 				Prometheus: PrometheusConfig{
+					// Collection is on; SERVING it is not. The empty
+					// ListenAddr is the fail-closed default documented on
+					// PrometheusConfig: no scrape endpoint exists anywhere
+					// until an operator names an address for it, so /metrics
+					// is unreachable on a default deployment and can never
+					// appear on the public API listener.
 					Enabled:    true,
 					ListenAddr: "",
 					Path:       "/metrics",
@@ -75,7 +81,8 @@ func Default() Config {
 				},
 			},
 			Traces: TracesConfig{
-				Enabled: false,
+				Enabled:     false,
+				SampleRatio: 1,
 			},
 		},
 		Onboarding: OnboardingConfig{
