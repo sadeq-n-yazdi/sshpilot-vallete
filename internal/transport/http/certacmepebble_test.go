@@ -111,6 +111,14 @@ func TestACMEEndToEndAgainstPebble(t *testing.T) {
 	}
 	defer func() { _ = p.Close() }()
 
+	// Quiesce the renewal loop. It starts an order immediately, and this test
+	// drives issuance explicitly so it can assert each step; leaving the loop
+	// running would race the before-issuance refusal below against a background
+	// order, and would place orders this test never asked for against a real
+	// CA's rate limits. Close is idempotent, so the deferred one still holds.
+	p.stop()
+	<-p.done
+
 	// The listener serves through the production path: the guard in front of
 	// the provider, and the challenge ALPN advertised only because the provider
 	// asked for it.
