@@ -22,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
@@ -535,9 +536,44 @@ func originCAErrorSummary(resp originCAResponse, token secrets.Redacted) string 
 		s = strings.ReplaceAll(s, raw, "[REDACTED]")
 	}
 
+	// Truncation runs AFTER the replacement above, and the order is load-bearing
+	// rather than incidental. Cutting first would let a credential straddling
+	// the boundary be split in two, and ReplaceAll does not match a fragment, so
+	// the surviving prefix would reach the logs unscrubbed. Scrub, then cut.
 	const maxSummary = 512
 	if len(s) > maxSummary {
-		return s[:maxSummary] + "..."
+		return trimPartialRuneSuffix(s[:maxSummary]) + "..."
+	}
+	return s
+}
+
+// trimPartialRuneSuffix drops a partial UTF-8 rune left at the end of a string
+// that was cut at a byte offset.
+//
+// Slicing remote-controlled text at a fixed byte count can land mid-rune, and
+// the resulting invalid UTF-8 gets mangled by the JSON encoder downstream. The
+// obvious fix is []rune(s) then slice by rune count, and it is NOT used here on
+// purpose: that converts the WHOLE string before truncating, allocating about
+// four bytes per input byte on text whose length an attacker influences. It
+// would widen the exact thing the truncation exists to narrow. This walks back
+// from the end instead — no allocation, and bounded by the longest UTF-8
+// encoding rather than by the input.
+//
+// At most three bytes can be a fragment, so the loop is capped there. A cut
+// cannot introduce more than that, and anything still invalid past it was
+// invalid in the input already; sanitizing that is not this function's job.
+func trimPartialRuneSuffix(s string) string {
+	for range utf8.UTFMax - 1 {
+		if s == "" {
+			return s
+		}
+		// A size of 1 with RuneError means the tail is a fragment. A genuine
+		// U+FFFD in the message decodes as RuneError too, but at size 3, so
+		// testing the size is what separates a real character from a stub.
+		if r, size := utf8.DecodeLastRuneInString(s); r != utf8.RuneError || size != 1 {
+			return s
+		}
+		s = s[:len(s)-1]
 	}
 	return s
 }

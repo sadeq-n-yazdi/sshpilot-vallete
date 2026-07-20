@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
@@ -608,5 +609,81 @@ func TestOriginCAIsNotAnInBandChallengeSolver(t *testing.T) {
 	}
 	if p.Name() != "cloudflare_origin" {
 		t.Errorf("Name = %q, want cloudflare_origin", p.Name())
+	}
+}
+
+// TestOriginCASummaryTruncationKeepsValidUTF8 checks that cutting an
+// over-length error summary does not split a multi-byte character.
+//
+// The summary is built from remote-controlled text and cut at a fixed BYTE
+// offset, so a multi-byte rune straddling the boundary would leave a fragment
+// that is not valid UTF-8. That reaches the JSON log encoder, which mangles it
+// — a remote party choosing message lengths should not be able to corrupt this
+// server's log encoding. The case is constructed so the boundary is guaranteed
+// to land mid-rune rather than left to chance.
+func TestOriginCASummaryTruncationKeepsValidUTF8(t *testing.T) {
+	t.Parallel()
+
+	// "…" is three bytes, and the rendered prefix "1 x" is three, so the 512-byte
+	// boundary lands two bytes into a character. The offset is NOT taken on
+	// trust: the first assertion below proves a naive cut would be invalid, so
+	// this test cannot quietly stop exercising the case it exists for. An
+	// earlier draft did exactly that — the prefix was a byte shorter and 512 fell
+	// exactly on a boundary, and the test passed against the unfixed code.
+	msg := "x" + strings.Repeat("…", 400)
+	resp := originCAResponse{Errors: []struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}{{Code: 1, Message: msg}}}
+
+	if raw := fmt.Sprintf("%d %s", 1, msg); utf8.ValidString(raw[:512]) {
+		t.Fatal("test setup no longer splits a rune at the cut; adjust the message")
+	}
+
+	got := originCAErrorSummary(resp, secrets.NewRedacted("v1.0-key"))
+
+	if !utf8.ValidString(got) {
+		t.Errorf("truncated summary is not valid UTF-8: %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Errorf("an over-length summary must be marked as truncated: %q", got)
+	}
+	// Trimming a fragment must cost at most the 3 bytes a partial rune can be,
+	// so the summary is not silently gutted by the repair.
+	if len(got) < 512-utf8.UTFMax {
+		t.Errorf("truncation discarded more than a partial rune: %d bytes", len(got))
+	}
+}
+
+// TestTrimPartialRuneSuffixLeavesWholeRunes checks the boundary cases the
+// truncation repair turns on, including the one that separates a real U+FFFD
+// in the message from a fragment our own cut produced.
+func TestTrimPartialRuneSuffixLeavesWholeRunes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "ascii is untouched", in: "plain", want: "plain"},
+		{name: "empty is untouched", in: "", want: ""},
+		{name: "whole rune is kept", in: "ok…", want: "ok…"},
+		{name: "one leading byte is dropped", in: "ok\xe2", want: "ok"},
+		{name: "two of three bytes are dropped", in: "ok\xe2\x80", want: "ok"},
+		{name: "three of four bytes are dropped", in: "ok\xf0\x9f\x92", want: "ok"},
+		// A genuine U+FFFD decodes as RuneError at size 3. Dropping it would
+		// mean the repair eats real characters out of the operator's message.
+		{name: "a real replacement char is kept", in: "ok�", want: "ok�"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := trimPartialRuneSuffix(tc.in); got != tc.want {
+				t.Errorf("trimPartialRuneSuffix(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
