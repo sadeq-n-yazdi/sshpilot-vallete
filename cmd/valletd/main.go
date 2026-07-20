@@ -87,6 +87,23 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	// SEAM: the authenticated management surface is mounted but not yet wired.
+	//
+	// httpserver.NewHandler registers the device management routes
+	// unconditionally, and with no httpserver.WithAuthorizer here they are
+	// guarded by an authorizer that refuses every credential. That is the
+	// intended interim state: the routes exist, they are documented, and they
+	// answer 401 to everyone, so no request is ever served unauthenticated.
+	//
+	// Completing the wiring needs an *auth.Guard, which needs the token
+	// verifier and the credential denylist, whose storage adapters are still in
+	// review (the auth/pairing adapters). When they land, this call gains
+	//
+	//	httpserver.WithAuthorizer(guard),
+	//	httpserver.WithDeviceService(deviceSvc),
+	//
+	// and nothing else here changes. TestManagementRoutesAreMountedInProdWiring
+	// pins the current state so this comment cannot quietly become stale.
 	srv, err := httpserver.New(cfg, logger, db, publisher)
 	if err != nil {
 		return err

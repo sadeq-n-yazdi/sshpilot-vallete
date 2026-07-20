@@ -62,4 +62,11 @@ var (
 	// enforces nothing is the one failure mode this whole layer exists to
 	// prevent.
 	ErrNilAuthorizer = errors.New("httpserver: nil authorizer")
+
+	// ErrNilDeviceService is logged when a device management route is reached
+	// with no service behind it. Unlike the sentinels above it is not a
+	// startup refusal: the management routes are mounted unconditionally so
+	// that they always exist and always refuse, and a missing service is
+	// therefore a 500 on the route rather than a process that will not start.
+	ErrNilDeviceService = errors.New("httpserver: nil device service")
 )

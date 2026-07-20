@@ -24,9 +24,21 @@ import (
 // scheme. It may be nil, which yields the strictest posture (HSTS only on
 // connections this process terminated); that is the right default for an
 // embedder who has not thought about proxy trust.
-func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publisher) http.Handler {
+// opts carry the authenticated management surface. They are variadic rather
+// than positional parameters because the management dependencies are optional
+// to an embedder serving only the publish path, and because a nil-able
+// parameter that MUST be supplied in production is a worse shape than an option
+// whose absence has one loud, fail-closed meaning -- see managementGuardian.
+func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publisher, opts ...HandlerOption) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
+	}
+
+	var o handlerOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -46,6 +58,37 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	pub := publishHandler(publisher, logger)
 	mux.Handle("GET /{handle}", pub)
 	mux.Handle("GET /{handle}/{set}", pub)
+
+	// The authenticated management surface.
+	//
+	// Every one of these goes through guardian.Protect, which is the only way
+	// to obtain a handler that receives an *auth.Authorization, and therefore
+	// the only way any of them can reach an owner at all. A route added here
+	// without Protect would not compile against ScopedHandler, so "forgot to
+	// protect it" is not a shape this table can take.
+	//
+	// They live under the "api" prefix, which ADR-0017 reserves as a routing
+	// term precisely so it can never be claimed as a handle. That also keeps
+	// them clear of the publish wildcards above, which match only one- and
+	// two-segment GETs.
+	//
+	// The route-level access declarations are the scope boundary:
+	// AccountAccess names no resource, so a device-bound token cannot reach the
+	// account-wide list or the register endpoint; DeviceAccess names the device
+	// from the path, so a device-bound token reaches only its own device. Both
+	// are checked by auth.Guard before any handler runs and before any storage
+	// is read.
+	//
+	// Rate limiting: ADR-0023 keys the management tier per credential rather
+	// than per IP. The tiered limiter is I1 (PR #44) and is not on develop yet,
+	// so the tier is deliberately not mounted here rather than vendored. This
+	// is the seam: once #44 lands, the management tier wraps these three
+	// registrations and nothing else about them changes.
+	guardian := managementGuardian(o.authorizer, logger)
+	mux.Handle("POST /api/v1/devices", guardian.Protect(AccountAccess, registerDeviceHandler(o.devices, logger)))
+	mux.Handle("GET /api/v1/devices", guardian.Protect(AccountAccess, listDevicesHandler(o.devices, logger)))
+	mux.Handle("DELETE /api/v1/devices/{deviceID}",
+		guardian.Protect(DeviceAccess, revokeDeviceHandler(o.devices, logger)))
 
 	// Outermost first: every response carries the transport policy, then every
 	// request gets an ID, then is logged, then is protected from panics.
