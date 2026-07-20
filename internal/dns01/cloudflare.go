@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/safetext"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
@@ -210,7 +212,15 @@ func (p *cloudflareProvider) zoneID(ctx context.Context, recordName string) (str
 		var zones []struct {
 			ID string `json:"id"`
 		}
-		if err := p.do(ctx, http.MethodGet, "/zones?status=active&name="+name, nil, &zones); err != nil {
+		// Built with url.Values rather than concatenated. The candidate is a
+		// domain suffix derived from the certificate name, so in normal
+		// operation it is not arbitrary text — but concatenating it raw means a
+		// name containing "&" or "#" splits the query or truncates it, and the
+		// zone lookup would then be answered for a name nobody asked about.
+		// Encoding the whole parameter set makes that unrepresentable rather
+		// than relying on each call site to remember one escape.
+		query := url.Values{"status": {"active"}, "name": {name}}.Encode()
+		if err := p.do(ctx, http.MethodGet, "/zones?"+query, nil, &zones); err != nil {
 			return "", fmt.Errorf("%w: look up zone %q: %w", ErrCloudflareAPI, name, err)
 		}
 		if len(zones) > 0 && zones[0].ID != "" {
@@ -293,6 +303,14 @@ func (p *cloudflareProvider) do(ctx context.Context, method, path string, body [
 // is truncated: it is remote input, so it is treated as a bounded diagnostic
 // rather than as trusted text. Cloudflare never echoes the bearer token in an
 // error, and nothing here would put it there if it did.
+//
+// The bound goes through [safetext.Bound] rather than a slice expression. A
+// fixed BYTE cut on remote text can land in the middle of a multi-byte UTF-8
+// sequence and leave a fragment that is not valid UTF-8, which the JSON log
+// encoder downstream then mangles — so a party choosing message lengths could
+// corrupt this server's log encoding. No credential is spliced into this
+// message before the cut, so unlike the Origin CA client's error summary there
+// is no scrub whose ordering against the truncation matters here.
 func cloudflareErrors(status int, errs []cloudflareErr) error {
 	if len(errs) == 0 {
 		return fmt.Errorf("request rejected (http %d)", status)
@@ -303,9 +321,6 @@ func cloudflareErrors(status int, errs []cloudflareErr) error {
 		// deleteRecord so the 404 and the in-band code take the same path.
 		return errCloudflareNotFound
 	}
-	msg := errs[0].Message
-	if len(msg) > 200 {
-		msg = msg[:200]
-	}
+	msg := safetext.Bound(errs[0].Message, maxAPIMessageBytes)
 	return fmt.Errorf("request rejected (http %d, code %d): %s", status, errs[0].Code, msg)
 }

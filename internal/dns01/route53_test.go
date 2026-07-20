@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
@@ -689,5 +690,41 @@ func TestRoute53IsRegisteredInTheSeam(t *testing.T) {
 	}
 	if got := p.Name(); got != "route53" {
 		t.Errorf("Name() = %q, want %q", got, "route53")
+	}
+}
+
+// TestRoute53ErrorMessageTruncationKeepsValidUTF8 pins the bound applied to the
+// API's own error text.
+//
+// The message is remote input cut at a fixed BYTE count, so a multi-byte rune
+// straddling the boundary would leave a fragment that is not valid UTF-8. That
+// reaches the JSON log encoder, which mangles it.
+//
+// The first assertion proves a NAIVE cut of this fixture would be invalid. It
+// is not decoration: the original fix for this defect elsewhere in the tree
+// shipped with a test whose hand-computed offset landed on a character
+// boundary, so it passed against unfixed code. Without this precondition the
+// fixture could quietly stop exercising the case it exists for.
+func TestRoute53ErrorMessageTruncationKeepsValidUTF8(t *testing.T) {
+	// One byte of "世" sits before the bound and two after it.
+	msg := strings.Repeat("a", maxAPIMessageBytes-1) + "世" + strings.Repeat("b", 50)
+	if utf8.ValidString(msg[:maxAPIMessageBytes]) {
+		t.Fatalf("fixture no longer splits a rune at the %d-byte cut", maxAPIMessageBytes)
+	}
+
+	raw := []byte(`<ErrorResponse><Error><Code>AccessDenied</Code><Message>` +
+		msg + `</Message></Error></ErrorResponse>`)
+
+	err := route53Error(http.StatusForbidden, raw)
+	if err == nil {
+		t.Fatal("route53Error returned nil")
+	}
+	if !utf8.ValidString(err.Error()) {
+		t.Errorf("error text is not valid UTF-8: %q", err.Error())
+	}
+	// The repair must cost at most the bytes a partial rune can be, so the
+	// diagnostic is not silently gutted.
+	if got := err.Error(); len(got) < maxAPIMessageBytes-utf8.UTFMax {
+		t.Errorf("truncation discarded more than a partial rune: %d bytes", len(got))
 	}
 }

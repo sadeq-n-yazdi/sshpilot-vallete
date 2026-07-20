@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/safetext"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
@@ -551,15 +552,19 @@ func (p *route53Provider) do(ctx context.Context, method, path string, body []by
 // The message is truncated because it is remote input, treated as a bounded
 // diagnostic rather than as trusted text. Route 53 never echoes a credential in
 // an error, and nothing here would put one there if it did.
+//
+// The bound goes through [safetext.Bound] rather than a slice expression. A
+// fixed BYTE cut can land in the middle of a multi-byte UTF-8 sequence and
+// leave a fragment that is not valid UTF-8, which the JSON log encoder
+// downstream then mangles. No credential is spliced into this message before
+// the cut, so there is no scrub whose ordering against the truncation matters
+// here.
 func route53Error(status int, raw []byte) error {
 	var env route53ErrorResponse
 	if err := xml.Unmarshal(raw, &env); err != nil || env.Error.Code == "" {
 		return fmt.Errorf("request rejected (http %d)", status)
 	}
-	msg := env.Error.Message
-	if len(msg) > 200 {
-		msg = msg[:200]
-	}
+	msg := safetext.Bound(env.Error.Message, maxAPIMessageBytes)
 	return fmt.Errorf("request rejected (http %d, code %s): %s", status, env.Error.Code, msg)
 }
 

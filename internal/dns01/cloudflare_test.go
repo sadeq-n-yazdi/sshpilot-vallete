@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
@@ -42,6 +43,9 @@ type cloudflareAPI struct {
 	deleteStatus int
 	// createFails makes the create call return an API-level rejection.
 	createFails bool
+	// createErrMessage overrides the message text in the rejection body, so a
+	// test can drive remote-controlled message content through the error path.
+	createErrMessage string
 }
 
 func newCloudflareAPI(t *testing.T) (*cloudflareAPI, Provider) {
@@ -103,7 +107,18 @@ func (a *cloudflareAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case r.Method == http.MethodPost && r.URL.Path == "/zones/zone-1/dns_records":
 		if a.createFails {
-			a.write(w, http.StatusBadRequest, `{"success":false,"errors":[{"code":9999,"message":"quota exceeded"}]}`)
+			msg := a.createErrMessage
+			if msg == "" {
+				msg = "quota exceeded"
+			}
+			body, err := json.Marshal(map[string]any{
+				"success": false,
+				"errors":  []map[string]any{{"code": 9999, "message": msg}},
+			})
+			if err != nil {
+				a.t.Fatalf("marshal error body: %v", err)
+			}
+			a.write(w, http.StatusBadRequest, string(body))
 			return
 		}
 		_ = json.NewDecoder(r.Body).Decode(&a.created)
@@ -337,4 +352,96 @@ func slicesContains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestCloudflareErrorMessageTruncationKeepsValidUTF8 pins the bound applied to
+// the API's own error text.
+//
+// The message is remote input cut at a fixed BYTE count, so a multi-byte rune
+// straddling the boundary would leave a fragment that is not valid UTF-8. That
+// reaches the JSON log encoder, which mangles it, so a party choosing message
+// lengths could corrupt this server's log encoding.
+//
+// The first assertion proves a NAIVE cut of this fixture would be invalid. It
+// is not decoration: an earlier fix for this same defect shipped with a test
+// whose hand-computed offset landed on a character boundary, so the test passed
+// against unfixed code. Without this precondition the fixture could quietly
+// stop exercising the case it exists for.
+func TestCloudflareErrorMessageTruncationKeepsValidUTF8(t *testing.T) {
+	api, provider := newCloudflareAPI(t)
+	api.createFails = true
+	// One byte of "世" sits before the 200-byte bound and two after it.
+	api.createErrMessage = strings.Repeat("a", maxAPIMessageBytes-1) + "世" + strings.Repeat("b", 50)
+
+	if utf8.ValidString(api.createErrMessage[:maxAPIMessageBytes]) {
+		t.Fatalf("fixture no longer splits a rune at the %d-byte cut", maxAPIMessageBytes)
+	}
+
+	_, err := provider.Present(t.Context(), Record{
+		Name:  ChallengeRecordName("example.com"),
+		Value: "challenge-value",
+	})
+	if err == nil {
+		t.Fatal("Present succeeded, want the API rejection")
+	}
+	if !utf8.ValidString(err.Error()) {
+		t.Errorf("error text is not valid UTF-8: %q", err.Error())
+	}
+	// The repair must cost at most the bytes a partial rune can be, so the
+	// diagnostic is not silently gutted.
+	if got := err.Error(); len(got) < maxAPIMessageBytes-utf8.UTFMax {
+		t.Errorf("truncation discarded more than a partial rune: %d bytes", len(got))
+	}
+}
+
+// TestCloudflareZoneLookupEscapesTheNameParameter pins that the zone-lookup
+// query parameter is encoded rather than concatenated.
+//
+// A candidate containing "&" would otherwise split the query into extra
+// parameters, and one containing "#" would truncate it — either way the zone
+// lookup is answered for a name nobody asked about, and the challenge record
+// could be written into the wrong zone.
+//
+// The assertion is that the parameter DECODES BACK to the intended name. That
+// is derived independently, from the record name the test itself supplied, and
+// not from anything the provider computed.
+func TestCloudflareZoneLookupEscapesTheNameParameter(t *testing.T) {
+	var gotNames []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/zones" {
+			// r.URL.Query() decodes; a correctly encoded "&" survives as part
+			// of the single name value, a raw one becomes a separate parameter.
+			gotNames = append(gotNames, r.URL.Query().Get("name"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{"success":true,"result":[]}`)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	provider, err := NewCloudflare(secrets.NewRedacted(testToken), srv.Client())
+	if err != nil {
+		t.Fatalf("NewCloudflare: %v", err)
+	}
+	provider.(*cloudflareProvider).client = &http.Client{
+		Transport: rewriteHost{srv.URL, srv.Client().Transport},
+	}
+
+	// The zone walk strips the leftmost label, so this candidate is the one the
+	// lookup asks about.
+	const hostile = "evil&status=inactive.example.com"
+	_, _ = provider.Present(t.Context(), Record{
+		Name:  ChallengeRecordName(hostile),
+		Value: "challenge-value",
+	})
+
+	if len(gotNames) == 0 {
+		t.Fatal("no zone lookup was issued")
+	}
+	if gotNames[0] != hostile {
+		t.Errorf("name parameter decoded to %q, want %q: an unescaped %q splits "+
+			"the query into separate parameters", gotNames[0], hostile, "&")
+	}
 }
