@@ -141,6 +141,8 @@ func bindings() []binding {
 		{"VALLET_TLS_ACME_DNS_PROVIDER", setString(func(c *Config) *string { return &c.TLS.ACME.DNS.Provider })},
 		{"VALLET_TLS_ACME_DNS_CREDENTIALS_REF", setRef(func(c *Config) *secrets.Ref { return &c.TLS.ACME.DNS.CredentialsRef })},
 		{"VALLET_TLS_CLOUDFLARE_ORIGIN_API_TOKEN_REF", setRef(func(c *Config) *secrets.Ref { return &c.TLS.CloudflareOrigin.APITokenRef })},
+		{"VALLET_TLS_CLOUDFLARE_ORIGIN_CACHE_DIR", setString(func(c *Config) *string { return &c.TLS.CloudflareOrigin.CacheDir })},
+		{"VALLET_TLS_CLOUDFLARE_ORIGIN_VALIDITY_DAYS", setInt(func(c *Config) *int { return &c.TLS.CloudflareOrigin.ValidityDays })},
 		{"VALLET_TLS_MANUAL_CERT_FILE", setString(func(c *Config) *string { return &c.TLS.Manual.CertFile })},
 		{"VALLET_TLS_MANUAL_KEY_FILE", setString(func(c *Config) *string { return &c.TLS.Manual.KeyFile })},
 		{"VALLET_TLS_CSR_KEY_FILE", setString(func(c *Config) *string { return &c.TLS.CSR.KeyFile })},

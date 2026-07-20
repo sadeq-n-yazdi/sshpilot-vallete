@@ -300,12 +300,15 @@ func TestResolveNotFoundCases(t *testing.T) {
 			f := newFixture(t)
 			tc.setup(f)
 
-			body, err := f.svc.Resolve(context.Background(), tc.handle, tc.setName)
+			res, err := f.svc.Resolve(context.Background(), tc.handle, tc.setName, "")
 			if !errors.Is(err, ErrNotFound) {
 				t.Fatalf("Resolve(%q, %q) error = %v, want ErrNotFound", tc.handle, tc.setName, err)
 			}
-			if body != nil {
-				t.Errorf("body = %q, want nil; a 404 path must return no key data", body)
+			if res.Body != nil {
+				t.Errorf("body = %q, want nil; a 404 path must return no key data", res.Body)
+			}
+			if res.Protected {
+				t.Error("a negative verdict reported Protected; the flag must be zero on every failure path")
 			}
 		})
 	}
@@ -321,12 +324,12 @@ func TestResolveEmptyPublicSetSucceeds(t *testing.T) {
 	// its owner's declaration, and an empty authorized_keys file is the honest
 	// representation of "this set publishes nothing". Answering 404 would also
 	// make a legitimately empty set look like a nonexistent one to sshd.
-	body, err := f.svc.Resolve(context.Background(), "alice", "")
+	res, err := f.svc.Resolve(context.Background(), "alice", "", "")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if len(body) != 0 {
-		t.Errorf("body = %q, want empty", body)
+	if len(res.Body) != 0 {
+		t.Errorf("body = %q, want empty", res.Body)
 	}
 }
 

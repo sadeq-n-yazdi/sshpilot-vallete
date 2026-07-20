@@ -107,6 +107,35 @@ func TestValidateFailures(t *testing.T) {
 		{"cloudflare missing token", func(c *Config) {
 			c.TLS.Mode = "cloudflare_origin"
 		}, "tls.cloudflare_origin.api_token_ref"},
+		// cache_dir is required rather than defaulted for the same reason
+		// tls.acme.cache_dir is: without it every restart re-requests a
+		// certificate, so a crash loop floods the API and churns keys.
+		{"cloudflare missing cache dir", func(c *Config) {
+			c.TLS.Mode = "cloudflare_origin"
+			c.TLS.Domain = "vallet.example.com"
+			c.TLS.CloudflareOrigin.APITokenRef = "env:X"
+			c.Server.TrustedProxies = []string{"192.0.2.0/24"}
+		}, "tls.cloudflare_origin.cache_dir"},
+		// Cloudflare accepts only a fixed set of lifetimes. Anything else is
+		// rejected by the API with an opaque error, so it is caught at startup
+		// where the operator can actually act on it.
+		{"cloudflare invalid validity", func(c *Config) {
+			c.TLS.Mode = "cloudflare_origin"
+			c.TLS.Domain = "vallet.example.com"
+			c.TLS.CloudflareOrigin.APITokenRef = "env:X"
+			c.TLS.CloudflareOrigin.CacheDir = "/tmp/cf"
+			c.TLS.CloudflareOrigin.ValidityDays = 400
+			c.Server.TrustedProxies = []string{"192.0.2.0/24"}
+		}, "tls.cloudflare_origin.validity_days"},
+		// A domain is required: it is what the CSR's hostnames are built from,
+		// and Cloudflare refuses a certificate for a name outside the zone.
+		{"cloudflare missing domain", func(c *Config) {
+			c.TLS.Mode = "cloudflare_origin"
+			c.TLS.Domain = ""
+			c.TLS.CloudflareOrigin.APITokenRef = "env:X"
+			c.TLS.CloudflareOrigin.CacheDir = "/tmp/cf"
+			c.Server.TrustedProxies = []string{"192.0.2.0/24"}
+		}, "tls.domain"},
 		{"manual missing cert", func(c *Config) {
 			c.TLS.Mode = "manual"
 			c.TLS.Manual.KeyFile = "/k"
