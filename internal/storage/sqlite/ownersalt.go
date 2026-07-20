@@ -45,46 +45,56 @@ func (r *ownerSaltRepo) Ensure(ctx context.Context, ownerID string) ([]byte, err
 
 	var salt []byte
 	err := withLocalTx(ctx, r.e, func(e execer) error {
-		existing, err := getOwnerSalt(ctx, e, ownerID)
-		switch {
-		case err == nil:
-			salt = existing
-			return nil
-		case !errors.Is(err, domain.ErrNotFound):
-			return err
-		}
-
-		fresh := make([]byte, saltLen)
-		// crypto/rand.Read is documented never to return a short read without
-		// an error. A failure here means the system entropy source is broken;
-		// continuing would mint a predictable salt and hand out tombstones that
-		// are reversible by anyone who guesses it, so the operation fails
-		// instead.
-		if _, rerr := rand.Read(fresh); rerr != nil {
-			return fmt.Errorf("%s: generate erasure salt: %w", errPrefix, rerr)
-		}
-
-		const q = `INSERT INTO owner_erasure_salts (owner_id, salt, created_at) VALUES (?, ?, ?)`
-		if _, ierr := e.ExecContext(ctx, q, ownerID, fresh, encTime(time.Now())); ierr != nil {
-			// A conflict means a concurrent caller won the race; adopt its salt
-			// rather than failing, so Ensure stays idempotent.
-			if mapped := mapError(ierr); errors.Is(mapped, domain.ErrConflict) {
-				won, gerr := getOwnerSalt(ctx, e, ownerID)
-				if gerr != nil {
-					return gerr
-				}
-				salt = won
-				return nil
-			}
-			return mapError(ierr)
-		}
-		salt = fresh
-		return nil
+		var ferr error
+		salt, ferr = ensureOwnerSalt(ctx, e, ownerID)
+		return ferr
 	})
 	if err != nil {
 		return nil, err
 	}
 	return salt, nil
+}
+
+// ensureOwnerSalt is the read-or-mint body of Ensure, factored out so it can be
+// driven directly against an execer whose INSERT conflicts — the concurrent
+// path that a serialized in-process test cannot reliably provoke.
+func ensureOwnerSalt(ctx context.Context, e execer, ownerID string) ([]byte, error) {
+	existing, err := getOwnerSalt(ctx, e, ownerID)
+	switch {
+	case err == nil:
+		return existing, nil
+	case !errors.Is(err, domain.ErrNotFound):
+		return nil, err
+	}
+
+	fresh := newSalt()
+	const q = `INSERT INTO owner_erasure_salts (owner_id, salt, created_at) VALUES (?, ?, ?)`
+	if _, ierr := e.ExecContext(ctx, q, ownerID, fresh, encTime(time.Now())); ierr != nil {
+		// A conflict means a concurrent caller won the race; adopt its salt
+		// rather than failing, so Ensure stays idempotent. Adopting matters:
+		// if this caller kept its own salt instead, the winner's tombstones
+		// would be left with no key able to verify them.
+		if mapped := mapError(ierr); errors.Is(mapped, domain.ErrConflict) {
+			return getOwnerSalt(ctx, e, ownerID)
+		}
+		return nil, mapError(ierr)
+	}
+	return fresh, nil
+}
+
+// newSalt returns saltLen cryptographically random bytes.
+//
+// A failure of the system entropy source panics rather than returning a zeroed
+// or partial buffer, matching the convention in internal/auth. A predictable
+// salt would make every tombstone minted under it reversible by anyone who
+// guessed it, which is a silent, total failure of the erasure guarantee; a
+// panic is the safe direction.
+func newSalt() []byte {
+	b := make([]byte, saltLen)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("%s: crypto/rand.Read failed: %v", errPrefix, err))
+	}
+	return b
 }
 
 // Get returns the owner's salt, or domain.ErrNotFound when there is none.
