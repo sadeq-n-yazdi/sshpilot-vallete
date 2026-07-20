@@ -3,6 +3,7 @@ package accesskey
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -508,5 +509,55 @@ func TestRotateRefusesARevokedCredentialWithoutRelyingOnTheAdapter(t *testing.T)
 	f.svc = newFixtureService(t, f)
 	if f.verifies(t, owner.KeySetID, owner.OwnerID, oldToken) {
 		t.Fatal("the revoked credential is live again")
+	}
+}
+
+// TestRotateRefusesToCommitARotationItCannotRecord closes the audit gap.
+//
+// Both audit records are built before either write and inside the transaction,
+// so a detail the audit screen refuses aborts the rotation. Built after the
+// commit instead, the refusal would arrive too late: the outgoing credential
+// would already be in grace and a new one already live, with nothing in the
+// audit trail saying either happened — a credential change that no incident
+// review can see. That is the shape this asserts against, and it is invisible
+// to every other test here because they all pass details the screen accepts.
+//
+// requestID is the one caller-supplied value reaching the details, so an
+// over-long one is how the refusal is reached. The error is the bare
+// server-fault error rather than ErrNotFound, matching Revoke: nothing about
+// the credential's existence is being reported.
+func TestRotateRefusesToCommitARotationItCannotRecord(t *testing.T) {
+	f := newFixture(t)
+	f.withGraceWindow(t, rotateWindow)
+	owner := f.seedOwner("alice")
+	old, oldToken := f.mint(owner.OwnerID, owner.KeySetID, "ci")
+
+	unrecordable := strings.Repeat("x", 300)
+	k, token, err := f.svc.Rotate(context.Background(), owner.OwnerID, old.ID, unrecordable)
+	if err == nil {
+		t.Fatal("Rotate committed a rotation it could not record")
+	}
+	if k != nil || token.Reveal() != "" {
+		t.Fatal("Rotate handed back a credential for an unrecorded rotation")
+	}
+
+	keys, err := f.store.Repos().AccessKeys.ListByOwner(context.Background(), owner.OwnerID)
+	if err != nil {
+		t.Fatalf("ListByOwner: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("owner holds %d credentials after an unrecordable rotation, want only the original", len(keys))
+	}
+	if keys[0].ID != old.ID {
+		t.Fatalf("the surviving credential is %q, want the original %q", keys[0].ID, old.ID)
+	}
+	if keys[0].Status != domain.AccessKeyStatusActive {
+		t.Errorf("original status = %q, want it to stay active", keys[0].Status)
+	}
+	if keys[0].GraceUntil != nil {
+		t.Errorf("original carries a grace deadline %v after a rotation that never committed", keys[0].GraceUntil)
+	}
+	if !f.verifies(t, owner.KeySetID, owner.OwnerID, oldToken) {
+		t.Error("the original credential stopped working after a rotation that did not commit")
 	}
 }
