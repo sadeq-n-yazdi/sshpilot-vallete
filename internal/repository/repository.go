@@ -71,6 +71,7 @@ type Repos struct {
 	LinkedIdentities   LinkedIdentityRepository
 	Audit              AuditRepository
 	Admins             AdministratorRepository
+	ListOverrides      ListOverrideRepository
 	OwnerSalts         OwnerSaltRepository
 }
 
