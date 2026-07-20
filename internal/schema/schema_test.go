@@ -21,6 +21,7 @@ var domainTables = []string{
 	"key_set_members",
 	"audit_records",
 	"owner_erasure_salts",
+	"linked_identities",
 	"refresh_credentials",
 }
 
@@ -41,13 +42,15 @@ var namedIndexes = []string{
 	"ix_audit_records_occurred_at",
 	"ix_audit_records_actor",
 	"ix_audit_records_target",
+	"ux_linked_identities_provider_subject",
+	"ix_linked_identities_owner_id",
 	"ix_refresh_credentials_owner_id",
 	"ix_refresh_credentials_lineage",
 	"ix_refresh_credentials_expires_at",
 }
 
 // migrationIDs are the IDs the registry is expected to apply, in order.
-var migrationIDs = []string{"0001", "0002", "0003", "0004", "0005", "0006"}
+var migrationIDs = []string{"0001", "0002", "0003", "0004", "0005", "0006", "0007"}
 
 // newRunner opens a fresh in-memory SQLite database, wraps it for the migrate
 // runner, and returns both the raw handle (for assertions) and the runner.
