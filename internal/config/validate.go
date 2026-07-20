@@ -131,9 +131,7 @@ func (c *Config) validateTLS(v *validator, prod bool) {
 	case "acme":
 		c.validateACME(v, prod)
 	case "cloudflare_origin":
-		if t.CloudflareOrigin.APITokenRef.IsZero() {
-			v.add("tls.cloudflare_origin.api_token_ref", "required for cloudflare_origin mode")
-		}
+		c.validateCloudflareOrigin(v, prod)
 	case "manual":
 		if t.Manual.CertFile == "" {
 			v.add("tls.manual.cert_file", "required for manual mode")
@@ -165,6 +163,63 @@ func (c *Config) validateTLS(v *validator, prod bool) {
 		if prod && !t.AllowSelfSignedInProduction {
 			v.add("tls.mode", "self_signed refused in production unless allow_self_signed_in_production is set")
 		}
+	}
+}
+
+// originValidityDays is the set of certificate lifetimes Cloudflare's Origin CA
+// endpoint accepts. Anything else is rejected by the API with an opaque error,
+// so it is caught here instead, at startup, where the operator can fix it.
+var originValidityDays = map[int]bool{
+	7: true, 30: true, 90: true, 365: true, 730: true, 1095: true, 5475: true,
+}
+
+// validateCloudflareOrigin fails closed on the Cloudflare Origin CA mode.
+//
+// # The trusted_proxies requirement is the misconfiguration gate
+//
+// An Origin CA certificate is trusted ONLY by the Cloudflare edge (see
+// CloudflareOriginConfig). The mode is therefore correct exactly when every
+// client arrives through the Cloudflare proxy, and a trap otherwise.
+//
+// The process cannot prove from the inside that it is unreachable directly from
+// the internet — any such check would be a guess, and a security control that
+// guesses is worse than none because it is believed. So this does not try to
+// detect the topology. It requires the operator to DECLARE it, by listing the
+// Cloudflare edge ranges in server.trusted_proxies, and that declaration is then
+// enforced on every handshake by the provider, which refuses to hand the origin
+// certificate to a peer outside the list.
+//
+// That makes the list load-bearing rather than advisory: it is the same field
+// the upstream mode already requires, it has a single meaning ("these are the
+// peers that may front this origin"), and an empty one now fails startup instead
+// of silently producing an origin that answers the whole internet with a
+// certificate none of it trusts.
+func (c *Config) validateCloudflareOrigin(v *validator, prod bool) {
+	o := c.TLS.CloudflareOrigin
+
+	if o.APITokenRef.IsZero() {
+		v.add("tls.cloudflare_origin.api_token_ref", "required for cloudflare_origin mode")
+	}
+	if o.CacheDir == "" {
+		// Refused rather than defaulted, as tls.acme.cache_dir is: without a
+		// cache every restart requests a new certificate, and the issued key is
+		// the only copy, so a crash loop both floods the API and churns keys.
+		v.add("tls.cloudflare_origin.cache_dir", "required for cloudflare_origin mode (it is the restart-storm control)")
+	}
+	if !originValidityDays[o.ValidityDays] {
+		v.add("tls.cloudflare_origin.validity_days",
+			"must be one of 7, 30, 90, 365, 730, 1095, 5475 (Cloudflare's accepted values), got %d", o.ValidityDays)
+	}
+	if c.TLS.Domain == "" {
+		v.add("tls.domain", "required for cloudflare_origin mode")
+	} else if prod && !isFQDN(c.TLS.Domain) {
+		v.add("tls.domain",
+			"must be a fully-qualified domain (not an IP, localhost, or dotless name) in production, got %q", c.TLS.Domain)
+	}
+	if len(c.Server.TrustedProxies) == 0 {
+		v.add("server.trusted_proxies",
+			"at least one required for cloudflare_origin mode: an Origin CA certificate is trusted only by the "+
+				"Cloudflare edge, so the Cloudflare IP ranges must be declared and the origin must not be served directly")
 	}
 }
 

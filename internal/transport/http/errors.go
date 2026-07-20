@@ -95,6 +95,40 @@ var (
 	// monitoring showing a healthy service that authenticates nothing.
 	ErrACMEIssuance = errors.New("httpserver: acme certificate unavailable")
 
+	// ErrOriginCACredential is returned when the Cloudflare Origin CA
+	// credential cannot be obtained from the secret provider.
+	//
+	// It is a startup failure. The credential is the only way this mode can
+	// obtain a certificate, so a deployment that cannot read it will never
+	// serve anything, and discovering that at first-handshake time is
+	// discovering it too late. The error names the config FIELD and the
+	// reference's scheme; the secret provider's own errors are built to name
+	// the reference and never the value, so nothing here can carry the key.
+	ErrOriginCACredential = errors.New("httpserver: cloudflare origin ca credential unavailable")
+
+	// ErrOriginCAIssuance is returned when Cloudflare's Origin CA API does not
+	// yield a usable certificate: the request failed, the API rejected it, or
+	// the response was malformed.
+	//
+	// Every one of those is a refusal rather than a degraded mode. There is no
+	// stand-in certificate to fall back to, and an origin serving a self-signed
+	// certificate behind Cloudflare would be an origin whose traffic Cloudflare
+	// refuses anyway — so failing closed loses nothing and hides nothing.
+	ErrOriginCAIssuance = errors.New("httpserver: cloudflare origin ca certificate unavailable")
+
+	// ErrOriginCADirectClient is returned when a peer that is not a configured
+	// trusted proxy asks for the origin certificate.
+	//
+	// This is the enforcement half of the misconfiguration gate described on
+	// config.CloudflareOriginConfig. An Origin CA certificate is trusted only
+	// by the Cloudflare edge, so a handshake from anywhere else means the
+	// origin is reachable directly — the exact topology in which this mode is
+	// unsafe. The certificate is withheld rather than presented: a direct
+	// client that receives it learns the origin's real certificate and is
+	// invited to bypass Cloudflare by disabling verification, which is how the
+	// MITM protection ADR-0015 exists to provide gets turned off in practice.
+	ErrOriginCADirectClient = errors.New("httpserver: origin certificate withheld from a non-proxy peer")
+
 	// ErrTLSKeyPermissions is returned when a private key file is readable or
 	// writable by group or other.
 	//

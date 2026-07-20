@@ -40,8 +40,31 @@ tls:
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       credentials_ref: ""
   cloudflare_origin:
-    # Required for cloudflare_origin mode. e.g. env:VALLET_CF_API_TOKEN
+    # ONLY for an origin behind the Cloudflare proxy (orange cloud).
+    #
+    # A Cloudflare Origin CA certificate is trusted by the Cloudflare edge and
+    # by NOTHING else -- no browser, no curl, no Go client. If this origin is
+    # reachable directly, every direct client fails verification, and the fix
+    # operators reach for ("just use curl -k") removes the MITM protection on
+    # the key-publish path that is the reason this server is HTTPS-only.
+    #
+    # Because of that, this mode REQUIRES server.trusted_proxies above to list
+    # the Cloudflare edge ranges (https://www.cloudflare.com/ips/): startup is
+    # refused if it is empty, and the certificate is served only to peers in
+    # that list. Do not use this mode for a directly-reachable origin -- use
+    # acme (Let's Encrypt) instead, which issues publicly-trusted certificates.
+    #
+    # Required for cloudflare_origin mode. This is Cloudflare's dedicated
+    # "Origin CA Key" (its value starts "v1.0-"), not an ordinary API token; a
+    # scoped API token also works. e.g. env:VALLET_CF_ORIGIN_CA_KEY
     api_token_ref: ""
+    # Required. Holds the issued certificate and its key (0600) across
+    # restarts, so a crash loop does not re-request a certificate each time.
+    cache_dir: ""
+    # One of 7, 30, 90, 365, 730, 1095, 5475. Default 365 -- deliberately not
+    # Cloudflare's 15-year maximum, which would leave a private key on disk
+    # with no moment at which it is ever replaced.
+    validity_days: 365
   manual:
     # Both required for manual mode.
     cert_file: ""
