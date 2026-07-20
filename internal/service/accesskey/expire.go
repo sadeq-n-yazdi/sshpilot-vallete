@@ -24,7 +24,7 @@ import (
 //
 // That makes this sweep fail CLOSED in the only sense that matters. If it never
 // runs, nothing becomes usable that was not usable before; what remains is a
-// row still labelled `grace` that no longer opens anything. So this job may be
+// row still labeled `grace` that no longer opens anything. So this job may be
 // disabled by an operator, and its cadence is a housekeeping choice rather than
 // a security control. Turning the deadline check in usable into something this
 // sweep alone enforced would be the actual fail-open design, and is exactly

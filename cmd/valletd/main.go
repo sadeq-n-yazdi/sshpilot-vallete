@@ -96,6 +96,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	store := sqlite.NewStore(db)
 
+	// Secrets are resolved before anything is constructed from them, and every
+	// failure is aggregated, so an operator fixes one startup error rather than
+	// discovering the next missing reference on the following attempt. Which
+	// references are required is decided by cfg (see RequiredSecretRefs): a
+	// deployment that enabled no feature needing a secret resolves none.
+	resolved, err := resolveSecrets(cfg)
+	if err != nil {
+		return err
+	}
+
 	// SEAM: protected key sets are enforced but not yet unlockable.
 	//
 	// With no publish.WithVerifier here the publish service has no access key
@@ -104,13 +114,19 @@ func run(args []string, stdout, stderr io.Writer) error {
 	// direction and the intended interim state: the enforcement path exists and
 	// is under test, and no protected set is served to anybody in the meantime.
 	//
-	// Completing the wiring needs an *accesskey.Service, which needs the audit
-	// emitter and the token pepper -- the same dependencies the management
-	// surface below is still waiting on. When they land, this call gains
+	// Completing the wiring needs an *accesskey.Service. Both of its
+	// dependencies now exist here -- the audit emitter, and the pepper resolved
+	// above -- and newAccessKeySweepService builds exactly such a service for
+	// the grace sweep. What is deliberately NOT done is reusing that instance
+	// here, because doing so would make every protected set unlockable on any
+	// deployment that happened to enable a maintenance sweep, and turning on
+	// bearer verification for protected sets is a decision to take on its own
+	// terms. When it is taken, this call gains
 	//
 	//	publish.WithVerifier(accessKeySvc),
 	//
-	// and nothing else here changes.
+	// with the pepper made unconditionally required in config rather than
+	// required only when the sweep is on, and nothing else here changes.
 	publisher, err := publish.New(store.Repos())
 	if err != nil {
 		return err
@@ -128,7 +144,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	// Likewise built before the listener binds: a sweep that cannot be
 	// constructed is a startup failure, not something to discover at the first
 	// tick of a server already taking traffic.
-	sweeps, err := newSweepRunner(cfg, logger, store, store.AuditAppender())
+	sweeps, err := newSweepRunner(cfg, logger, store, store.AuditAppender(),
+		resolved[accessKeyPepperField])
 	if err != nil {
 		return err
 	}
