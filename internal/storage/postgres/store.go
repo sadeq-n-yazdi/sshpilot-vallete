@@ -38,9 +38,33 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // Repos returns repositories whose operations each auto-commit against the
-// underlying *sql.DB. Every repository in the port is populated.
+// underlying *sql.DB. Owners, Handles, Devices, PublicKeys, KeySets, Audit,
+// and OwnerSalts are populated; the remaining fields stay nil and are filled by
+// later slices.
 func (s *Store) Repos() repository.Repos {
 	return reposFor(s.db)
+}
+
+// AuditAppender returns the auto-commit audit sink, typed as the insert-only
+// repository.AuditAppender so a caller that emits events cannot also read,
+// rewrite, or delete them.
+//
+// This is a separate accessor rather than a reuse of the Repos.Audit field
+// because Repos.Audit is typed repository.AuditRepository, which also declares
+// the ADR-0024 maintenance operations (PurgeOlderThan, Pseudonymize). Emitting
+// code must not be able to reach those, so it is handed the narrow interface
+// here; maintenance jobs take Repos.Audit instead. The same concrete type backs
+// both — what differs, and what is the actual control, is the interface the
+// caller is given.
+//
+// Consequently an audit emit taken from this accessor auto-commits on its own
+// and does not join a caller's WithTx transaction. That is acceptable for an
+// append-only log — a committed audit row for a rolled-back change is a
+// false positive an investigator can reconcile, whereas the reverse (a silent
+// change with no record) is the failure mode that matters — but the
+// transaction-bound path arrives with Repos.Audit.
+func (s *Store) AuditAppender() repository.AuditAppender {
+	return auditAppenderOnly{r: &auditRepo{e: s.db}}
 }
 
 // WithTx runs fn inside a single transaction with transaction-bound
@@ -88,9 +112,11 @@ func (s *Store) WithTx(ctx context.Context, fn func(ctx context.Context, r repos
 }
 
 // reposFor builds a repository.Repos backed by the given execer, which is
-// either the *sql.DB (auto-commit) or an in-flight *sql.Tx. All five
-// repositories share that one execer, so a set handed out by WithTx runs every
-// operation inside the same transaction.
+// either the *sql.DB (auto-commit) or an in-flight *sql.Tx. The seven
+// repositories implemented so far — Owners, Handles, Devices, PublicKeys,
+// KeySets, Audit, and OwnerSalts — are populated; the rest are left nil for
+// later slices. They all share that one execer, so a set handed out by WithTx
+// runs every operation inside the same transaction.
 func reposFor(e execer) repository.Repos {
 	return repository.Repos{
 		Owners:     &ownerRepo{e: e},
@@ -98,5 +124,7 @@ func reposFor(e execer) repository.Repos {
 		Devices:    &deviceRepo{e: e},
 		PublicKeys: &publicKeyRepo{e: e},
 		KeySets:    &keySetRepo{e: e},
+		Audit:      &auditRepo{e: e},
+		OwnerSalts: &ownerSaltRepo{e: e},
 	}
 }
