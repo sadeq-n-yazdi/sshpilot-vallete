@@ -60,7 +60,8 @@ func TestCommentCannotInjectAnAuthorizedKeysLine(t *testing.T) {
 			// every validator that would normally stand in the way.
 			f.exec(`UPDATE public_keys SET comment = ? WHERE id = ?`, tc.comment, string(keyID))
 
-			body, err := f.svc.Resolve(context.Background(), "alice", "")
+			res, err := f.svc.Resolve(context.Background(), "alice", "", "")
+			body := res.Body
 
 			// Whatever happens, the forged entry must not be published. That is
 			// the invariant; the error is merely how this implementation
@@ -135,7 +136,8 @@ func TestPoisonedCommentDoesNotYieldAPartialBody(t *testing.T) {
 
 	f.exec(`UPDATE public_keys SET comment = ? WHERE id = ?`, "x\n"+forgedKeyLine, string(poisoned))
 
-	body, err := f.svc.Resolve(context.Background(), "alice", "")
+	res, err := f.svc.Resolve(context.Background(), "alice", "", "")
+	body := res.Body
 	if err == nil {
 		t.Fatalf("Resolve succeeded despite a poisoned key; body = %q", body)
 	}
