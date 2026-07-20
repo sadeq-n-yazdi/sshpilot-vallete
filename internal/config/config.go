@@ -230,10 +230,27 @@ type PostgresConfig struct {
 // AuthConfig configures management authentication. It is a stub extended by the
 // auth track.
 type AuthConfig struct {
-	AccessTokenTTL     Duration      `yaml:"access_token_ttl"`
-	RefreshTokenMaxAge Duration      `yaml:"refresh_token_max_age"`
-	TokenSigningKeyRef secrets.Ref   `yaml:"token_signing_key_ref"`
-	Providers          AuthProviders `yaml:"providers"`
+	AccessTokenTTL     Duration    `yaml:"access_token_ttl"`
+	RefreshTokenMaxAge Duration    `yaml:"refresh_token_max_age"`
+	TokenSigningKeyRef secrets.Ref `yaml:"token_signing_key_ref"`
+
+	// AccessKeyPepperRef references the HMAC pepper that keys the stored digest
+	// of every key-set access key (ADR-0016). It must resolve to at least
+	// accesskey.MinPepperLen (32) bytes; a shorter or unresolvable value is a
+	// startup failure, never a downgrade.
+	//
+	// OPERATIONAL CONSEQUENCE: the pepper is part of every digest, so changing
+	// it invalidates EVERY existing access key at once. Every consumer of every
+	// protected key set stops verifying the moment the new pepper is loaded and
+	// must be re-issued a freshly minted token. Rotate deliberately, not as
+	// cleanup.
+	//
+	// Required in production, where its absence is refused. Left empty in
+	// development the server still starts, with no verifier at all: protected
+	// key sets then answer the same 404 an absent set gets, for everyone.
+	AccessKeyPepperRef secrets.Ref `yaml:"access_key_pepper_ref"`
+
+	Providers AuthProviders `yaml:"providers"`
 }
 
 // AuthProviders toggles the available authentication providers.
@@ -415,6 +432,24 @@ type RetentionConfig struct {
 	// backlog is drained across successive passes instead of monopolising the
 	// database in one.
 	AuditPurgeMaxPerRun int `yaml:"audit_purge_max_per_run"`
+
+	// HandleQuarantineSweepInterval is how often the release sweep returns
+	// elapsed handle quarantines to the pool. 0 disables the sweep.
+	//
+	// The zero value is a valid operating mode here for the same reason it is
+	// on AuditPurgeInterval: the consequence is reversible and fails closed. A
+	// sweep that never runs leaves a vacated name held by its previous owner
+	// forever, so the name is unavailable rather than handed to a stranger, and
+	// starting the sweep later releases the backlog. That is emphatically NOT
+	// true of every sweep -- a grace-expiry sweep that stops leaves a rotated
+	// credential usable, which fails open -- so an off switch is offered here
+	// and must not be copied to one of those by analogy.
+	HandleQuarantineSweepInterval Duration `yaml:"handle_quarantine_sweep_interval"`
+
+	// HandleQuarantineSweepBatch is how many quarantines one pass releases.
+	// Each release is a separate audited delete, so this bounds both the work
+	// of a pass and the audit rows it can produce.
+	HandleQuarantineSweepBatch int `yaml:"handle_quarantine_sweep_batch"`
 
 	MaxSetsPerOwner int `yaml:"max_sets_per_owner"`
 }
