@@ -25,6 +25,7 @@ var domainTables = []string{
 	"refresh_credentials",
 	"device_pairings",
 	"administrators",
+	"access_keys",
 }
 
 // namedIndexes are the explicitly named indexes the migrations create. SQLite
@@ -52,10 +53,13 @@ var namedIndexes = []string{
 	"ix_device_pairings_user_code_hash",
 	"ix_device_pairings_owner_id",
 	"ix_device_pairings_expires_at",
+	"ix_access_keys_owner_id",
+	"ix_access_keys_owner_key_set",
+	"ix_access_keys_grace_until",
 }
 
 // migrationIDs are the IDs the registry is expected to apply, in order.
-var migrationIDs = []string{"0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"}
+var migrationIDs = []string{"0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"}
 
 // newRunner opens a fresh in-memory SQLite database, wraps it for the migrate
 // runner, and returns both the raw handle (for assertions) and the runner.
