@@ -56,6 +56,11 @@ tags:
     description: Liveness and readiness, for orchestrators and load balancers.
   - name: publish
     description: The unauthenticated read path consumed by sshd and by operators.
+  - name: docs
+    description: |
+      This document, served by the server that implements it (ADR-0021).
+      Enabled by default; a deployer may disable it, and every route below then
+      answers `404` exactly as an unrouted path does.
 paths:
   /healthz:
     get:
@@ -85,6 +90,105 @@ paths:
           $ref: "#/components/responses/Status"
         "503":
           $ref: "#/components/responses/Unavailable"
+  /docs:
+    get:
+      tags: [docs]
+      operationId: getDocsRedirect
+      summary: Redirect to the canonical documentation path.
+      description: |
+        Exists so the path a human types resolves. The target is the fixed
+        string `/docs/`; no part of the request contributes to it, so this
+        cannot be driven into an open redirect.
+      responses:
+        "301":
+          description: Moved permanently to `/docs/`.
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+  /docs/:
+    get:
+      tags: [docs]
+      operationId: getDocs
+      summary: Fetch this document in the representation you ask for.
+      description: |
+        Content-negotiated on `Accept`. **JSON is the default and the fallback**
+        — an absent, wildcard, unparseable, or unsatisfiable `Accept` all yield
+        `application/json` rather than an error, because an endpoint that serves
+        one static document has no reason to refuse a request. YAML is returned
+        only when the client ranks it strictly above JSON; `application/yaml`,
+        `text/yaml`, and `application/x-yaml` are all understood. Quality values
+        are honoured with RFC 9110 specificity, so an explicit preference beats
+        a trailing `*/*`.
+
+        The response carries `Vary: Accept`; a cache that ignored it would serve
+        one client's representation to another.
+
+        Prefer `/docs/spec/openapi.json` or `/docs/spec/openapi.yaml` for
+        tooling: negotiation is a convenience, not the contract.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The API contract, as JSON or YAML.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Vary:
+              description: Always `Accept`, because the body depends on it.
+              required: true
+              schema:
+                type: string
+          content:
+            application/json: {}
+            application/yaml: {}
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+  /docs/spec/openapi.json:
+    get:
+      tags: [docs]
+      operationId: getDocsSpecJSON
+      summary: Fetch this document as JSON at a fixed URL.
+      description: |
+        The same document `/docs/` serves, at a deterministic path that ignores
+        `Accept`. Converted at runtime from the one embedded YAML source, so the
+        two representations cannot disagree.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The API contract as JSON.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json: {}
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+  /docs/spec/openapi.yaml:
+    get:
+      tags: [docs]
+      operationId: getDocsSpecYAML
+      summary: Fetch this document as YAML at a fixed URL.
+      description: |
+        The bytes embedded in the binary at build time, verbatim — comments and
+        formatting intact, never re-serialised and never read from disk.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The API contract as YAML.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/yaml: {}
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
   /{handle}:
     parameters:
       - $ref: "#/components/parameters/Handle"

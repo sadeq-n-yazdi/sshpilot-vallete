@@ -49,7 +49,7 @@ var routeParams = map[string]string{"{handle}": "alice", "{set}": "work"}
 // would go green precisely when it stopped testing anything. Asserting a floor
 // on the count turns that refactor into a visible failure that says to update
 // the scanner, rather than a silent loss of coverage.
-const minRegisteredRoutes = 4
+const minRegisteredRoutes = 8
 
 // specDoc is the sliver of OpenAPI this test needs: which methods each path
 // declares, and which status codes each of those declares.
@@ -159,6 +159,14 @@ func registeredRoutes(t *testing.T) []string {
 			t.Errorf("unquote pattern %s: %v", lit.Value, err)
 			return true
 		}
+		// "{$}" is ServeMux syntax that anchors a pattern to the exact path,
+		// not a segment of the URL. "GET /docs/{$}" and "GET /docs/" address
+		// the same resource, so the anchor is dropped before the pattern is
+		// matched against the spec; leaving it in would force the contract to
+		// document a path template with a parameter named "$", which is not
+		// the URL any client requests. Nothing else is rewritten, so a route
+		// still cannot reach the spec under a path it does not serve.
+		pattern = strings.TrimSuffix(pattern, "{$}")
 		patterns = append(patterns, pattern)
 		return true
 	})

@@ -43,6 +43,26 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// /healthz keeps reaching its own handler and is never treated as a
 	// handle. Both publish routes share one handler; the absence of the {set}
 	// segment is what selects the owner's default set.
+	// The self-served API contract (ADR-0021). These are registered
+	// unconditionally and consult the exposure setting per request; when docs
+	// are disabled every one of them answers with http.NotFound, which is the
+	// identical response the mux itself gives an unregistered path. A scanner
+	// therefore learns nothing from probing /docs on a locked-down deployment
+	// — not even that the feature exists to be disabled.
+	//
+	// /docs/ is anchored with {$} so it matches that exact path and nothing
+	// beneath it. The plain "GET /docs/" subtree form cannot be used: it
+	// overlaps GET /{handle}/{set} with neither pattern more specific, which
+	// the mux rejects at registration.
+	docs := docsEnabled(cfg)
+	mux.Handle("GET /docs", docsRedirectHandler(docs))
+	mux.Handle("GET /docs/{$}", docsRootHandler(docs))
+	// Fixed URLs for tooling that wants a deterministic path rather than a
+	// negotiation. One route per representation, hard-coded: no path segment
+	// selects the document, so there is nothing here to traverse.
+	mux.Handle("GET /docs/spec/openapi.json", docsSpecHandler(docs, mediaJSON))
+	mux.Handle("GET /docs/spec/openapi.yaml", docsSpecHandler(docs, mediaYAML))
+
 	pub := publishHandler(publisher, logger)
 	mux.Handle("GET /{handle}", pub)
 	mux.Handle("GET /{handle}/{set}", pub)
