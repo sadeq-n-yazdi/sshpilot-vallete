@@ -45,6 +45,27 @@ func (s *Store) Repos() repository.Repos {
 	return reposFor(s.db)
 }
 
+// AuditAppender returns the auto-commit audit sink, typed as the insert-only
+// repository.AuditAppender so a caller that emits events cannot also read,
+// rewrite, or delete them.
+//
+// This is a separate accessor rather than a populated Repos.Audit field because
+// Repos.Audit is typed repository.AuditRepository, which also declares the
+// ADR-0024 maintenance operations (PurgeOlderThan, Pseudonymize) that this
+// slice deliberately does not implement. Filling that field would require
+// granting those powers here as a side effect of wiring; the retention and
+// crypto-erasure work adds them deliberately and completes Repos.Audit then.
+//
+// Consequently an audit emit taken from this accessor auto-commits on its own
+// and does not join a caller's WithTx transaction. That is acceptable for an
+// append-only log — a committed audit row for a rolled-back change is a
+// false positive an investigator can reconcile, whereas the reverse (a silent
+// change with no record) is the failure mode that matters — but the
+// transaction-bound path arrives with Repos.Audit.
+func (s *Store) AuditAppender() repository.AuditAppender {
+	return &auditRepo{e: s.db}
+}
+
 // WithTx runs fn inside a single transaction with transaction-bound
 // repositories. It begins a BEGIN IMMEDIATE transaction (the handle is opened
 // with _txlock=immediate), commits when fn returns nil, and rolls back when fn

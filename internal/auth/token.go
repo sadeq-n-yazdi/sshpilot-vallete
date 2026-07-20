@@ -85,13 +85,14 @@ var tokenEncoding = base64.RawURLEncoding
 
 // randomBytes returns n cryptographically random bytes.
 //
-// crypto/rand.Read is documented never to fail: it fills the buffer entirely or
-// terminates the program. There is therefore no error branch here, which is the
-// point -- an error branch invites a caller to carry on with a short, weaker
-// secret. math/rand is never acceptable for any value in this file.
+// If crypto/rand.Read fails (e.g. due to sandbox restrictions or lack of
+// system entropy), the function panics immediately rather than returning a
+// zeroed or partially populated buffer. math/rand is never acceptable.
 func randomBytes(n int) []byte {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("auth: crypto/rand.Read failed: %v", err))
+	}
 	return b
 }
 
