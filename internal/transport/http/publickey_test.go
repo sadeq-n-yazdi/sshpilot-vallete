@@ -14,6 +14,12 @@ import (
 	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
 )
 
+// uniformErrorBody is the management surface's single error body. Every refusal
+// that must not disclose anything -- the Guardian's, and every 404 and 409 this
+// package writes -- is exactly these bytes, which is what makes a refusal for
+// another owner's key byte-identical to one for a key that never existed.
+const uniformErrorBody = `{"status":"error"}`
+
 // TestKeyLifecycle walks the slice end to end through the real router: enroll,
 // list, revoke, and list again.
 func TestKeyLifecycle(t *testing.T) {
@@ -340,6 +346,13 @@ func TestCrossOwnerIsolation(t *testing.T) {
 		if foreign.Code != http.StatusNotFound {
 			t.Errorf("revoking another owner's key = %d, want 404", foreign.Code)
 		}
+		// The body must be the uniform refusal, not merely equal to the other
+		// 404's body. Comparing the two to each other alone would keep passing
+		// if BOTH gained a detail, and a 404 that says anything at all is one
+		// edit away from saying something that differs per case.
+		if got := strings.TrimSpace(foreign.Body.String()); got != uniformErrorBody {
+			t.Errorf("404 body = %s, want the uniform refusal %s", got, uniformErrorBody)
+		}
 		if foreign.Code != invented.Code || foreign.Body.String() != invented.Body.String() {
 			t.Errorf("foreign key answered %d %q, invented id answered %d %q; the two must be identical",
 				foreign.Code, foreign.Body.String(), invented.Code, invented.Body.String())
@@ -360,6 +373,9 @@ func TestCrossOwnerIsolation(t *testing.T) {
 
 		if foreign.Code != http.StatusNotFound {
 			t.Errorf("enrolling on another owner's device = %d, want 404", foreign.Code)
+		}
+		if got := strings.TrimSpace(foreign.Body.String()); got != uniformErrorBody {
+			t.Errorf("404 body = %s, want the uniform refusal %s", got, uniformErrorBody)
 		}
 		if foreign.Code != invented.Code || foreign.Body.String() != invented.Body.String() {
 			t.Errorf("foreign device answered %d %q, invented id answered %d %q; the two must be identical",
