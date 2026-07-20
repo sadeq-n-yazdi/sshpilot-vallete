@@ -91,7 +91,7 @@ func (s *MemoryStore) Increment(ctx context.Context, key string, delta int64, tt
 		return Count{}, fmt.Errorf("counter: ttl must be positive: %w", domain.ErrInvalidInput)
 	}
 	if err := ctx.Err(); err != nil {
-		// A cancelled context is a store that cannot answer, not a zero count.
+		// A canceled context is a store that cannot answer, not a zero count.
 		// Reporting it as unavailable is what lets the denylist deny on it.
 		return Count{}, fmt.Errorf("counter: %w: %w", ErrStoreUnavailable, err)
 	}
