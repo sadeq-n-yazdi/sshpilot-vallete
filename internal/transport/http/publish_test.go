@@ -21,7 +21,7 @@ const sampleBody = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJm7t7g6Uu1PL7lxQvfLh7dG
 // newPublishHandler builds the full handler chain around a fixed publisher.
 func newPublishHandler(t *testing.T, p Publisher) http.Handler {
 	t.Helper()
-	return NewHandler(slog.New(slog.DiscardHandler), okPinger{}, p)
+	return NewHandler(nil, slog.New(slog.DiscardHandler), okPinger{}, p)
 }
 
 // do issues a request through the handler and returns the recorder.
@@ -294,7 +294,7 @@ func TestPublishLogsCarryNoResponseDetail(t *testing.T) {
 
 	const secret = "fingerprint SHA256:supersecretvalue is unrenderable"
 	logger, buf := newTestLogger()
-	h := NewHandler(logger, okPinger{}, stubPublisher{err: errors.New(secret)})
+	h := NewHandler(nil, logger, okPinger{}, stubPublisher{err: errors.New(secret)})
 
 	rec := do(t, h, http.MethodGet, "/alice", nil)
 	if rec.Code != http.StatusInternalServerError {
@@ -316,7 +316,7 @@ func TestPublishNilPublisherFailsClosed(t *testing.T) {
 
 	// A missing publisher is a broken deployment. It must surface as a 500,
 	// not a 404 that an operator would read as "the account is empty".
-	h := NewHandler(slog.New(slog.DiscardHandler), okPinger{}, nil)
+	h := NewHandler(nil, slog.New(slog.DiscardHandler), okPinger{}, nil)
 	rec := do(t, h, http.MethodGet, "/alice", nil)
 
 	if rec.Code != http.StatusInternalServerError {
