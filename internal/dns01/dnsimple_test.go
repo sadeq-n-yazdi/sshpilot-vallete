@@ -1,6 +1,7 @@
 package dns01
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -553,5 +554,226 @@ func TestDNSimpleCleanupDoesNotTrustTheRemoteNameFilter(t *testing.T) {
 	}
 	if len(api.records) != 1 {
 		t.Errorf("records after cleanup = %d, want only the unrelated one", len(api.records))
+	}
+}
+
+// TestDNSimpleResolvesTheAccountFromTheToken pins where the account id comes
+// from. Every zone and record path is account-scoped, and the id is taken from
+// whoami -- the account the PRESENTED TOKEN belongs to -- so no configured
+// number can point a credentialed write at another account.
+func TestDNSimpleResolvesTheAccountFromTheToken(t *testing.T) {
+	api, provider := newDNSimpleAPI(t)
+	rec := Record{Name: ChallengeRecordName("example.com"), Value: dsChallengeValue}
+
+	if _, err := provider.Present(t.Context(), rec); err != nil {
+		t.Fatalf("Present: %v", err)
+	}
+	if len(api.requests) == 0 || !strings.HasPrefix(api.requests[0], http.MethodGet+" /whoami") {
+		t.Fatalf("first request = %v, want the whoami that resolves the account", api.requests)
+	}
+	// The fake refuses any path not scoped to dsAccountID, so reaching a create
+	// at all proves the resolved id was used. Checked explicitly anyway.
+	for _, req := range api.requests[1:] {
+		if !strings.Contains(req, "/"+strconv.Itoa(dsAccountID)+"/zones/") {
+			t.Errorf("request %q is not scoped to the resolved account", req)
+		}
+	}
+}
+
+// TestDNSimpleResolvesTheAccountOnlyOnce pins the caching. whoami is per
+// provider, not per issuance.
+func TestDNSimpleResolvesTheAccountOnlyOnce(t *testing.T) {
+	api, provider := newDNSimpleAPI(t)
+	rec := Record{Name: ChallengeRecordName("example.com"), Value: dsChallengeValue}
+
+	for range 2 {
+		if _, err := provider.Present(t.Context(), rec); err != nil {
+			t.Fatalf("Present: %v", err)
+		}
+	}
+	var whoamis int
+	for _, req := range api.requests {
+		if strings.HasPrefix(req, http.MethodGet+" /whoami") {
+			whoamis++
+		}
+	}
+	if whoamis != 1 {
+		t.Errorf("whoami calls = %d, want 1: the resolved account must be cached", whoamis)
+	}
+}
+
+// TestDNSimpleRefusesAUserToken pins the loud refusal. DNSimple issues both
+// account and user tokens, and whoami answers a user token with a NULL account.
+// A user may belong to several accounts, so there is no account this token
+// means, and picking one would decide on the program's own initiative which of
+// the operator's accounts gets written to.
+func TestDNSimpleRefusesAUserToken(t *testing.T) {
+	api, provider := newDNSimpleAPI(t)
+	api.nullAccount = true
+
+	rec := Record{Name: ChallengeRecordName("example.com"), Value: dsChallengeValue}
+	_, err := provider.Present(t.Context(), rec)
+	if err == nil {
+		t.Fatal("Present succeeded with a token that resolves to no account")
+	}
+	if !strings.Contains(err.Error(), "account token") {
+		t.Errorf("error %q does not name the user-vs-account token fault", err)
+	}
+	if len(api.requests) != 1 {
+		t.Errorf("requests = %v, want only the whoami: nothing may be written "+
+			"before the account is known", api.requests)
+	}
+}
+
+func TestDNSimpleUnknownZoneRefuses(t *testing.T) {
+	api, provider := newDNSimpleAPI(t)
+	api.zones = map[string]bool{} // the account holds nothing
+
+	rec := Record{Name: ChallengeRecordName("vallet.example.com"), Value: dsChallengeValue}
+	_, err := provider.Present(t.Context(), rec)
+	if err == nil {
+		t.Fatal("Present succeeded with no matching zone, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "no zone found") {
+		t.Errorf("error %q does not name the missing zone as the fault", err)
+	}
+	if len(api.deletes()) != 0 {
+		t.Error("a failed zone lookup issued a destructive request")
+	}
+}
+
+// TestDNSimplePrefersTheMostSpecificZone pins the walk order. Writing to the
+// parent of a delegated subdomain puts the record in a zone that is not
+// authoritative for the name.
+func TestDNSimplePrefersTheMostSpecificZone(t *testing.T) {
+	api, provider := newDNSimpleAPI(t)
+	api.zones = map[string]bool{"example.com": true, "eu.example.com": true}
+
+	rec := Record{Name: ChallengeRecordName("vallet.eu.example.com"), Value: dsChallengeValue}
+	if _, err := provider.Present(t.Context(), rec); err != nil {
+		t.Fatalf("Present: %v", err)
+	}
+	if got := api.created["name"]; got != "_acme-challenge.vallet" {
+		t.Errorf("create name = %v, want the name relative to eu.example.com", got)
+	}
+	var createdUnder string
+	for _, req := range api.requests {
+		if strings.HasPrefix(req, http.MethodPost+" ") {
+			createdUnder = req
+		}
+	}
+	if !strings.Contains(createdUnder, "/zones/eu.example.com/records") {
+		t.Errorf("create went to %q, want the delegated eu.example.com", createdUnder)
+	}
+}
+
+// TestDNSimpleRefusesAMalformedZoneCandidate pins the check that keeps a value
+// derived from the certificate request from reaching a request path as anything
+// other than a domain name.
+func TestDNSimpleRefusesAMalformedZoneCandidate(t *testing.T) {
+	api, provider := newDNSimpleAPI(t)
+
+	rec := Record{Name: "_acme-challenge.ev/il.com", Value: dsChallengeValue}
+	_, err := provider.Present(t.Context(), rec)
+	if err == nil {
+		t.Fatal("Present succeeded for a malformed zone candidate")
+	}
+	if !strings.Contains(err.Error(), "malformed zone candidate") {
+		t.Errorf("error %q is not the refusal: the candidate reached the API", err)
+	}
+	// Only the whoami may have been issued; no zone lookup for the crafted name.
+	for _, req := range api.requests {
+		if strings.Contains(req, "/zones/") {
+			t.Errorf("a malformed candidate produced a zone request %q", req)
+		}
+	}
+}
+
+func TestDNSimpleMissingCredentialRefused(t *testing.T) {
+	if _, err := NewDNSimple(secrets.NewRedacted(""), nil); err == nil {
+		t.Error("NewDNSimple with an empty token succeeded, want a refusal at construction")
+	}
+	if _, err := NewDNSimple(secrets.NewRedacted(dsTestToken), nil); err != nil {
+		t.Errorf("NewDNSimple with a token: %v", err)
+	}
+}
+
+// TestDNSimpleRecordNameUsesTheEmptyApexEncoding pins the one place DNSimple's
+// relative form differs from DigitalOcean's: the apex is the empty string, not
+// "@". The shared label-boundary rule is reused; only the encoding is
+// translated.
+func TestDNSimpleRecordNameUsesTheEmptyApexEncoding(t *testing.T) {
+	for _, tc := range []struct {
+		fqdn, zone, want string
+		wantErr          bool
+	}{
+		{fqdn: "_acme-challenge.example.com", zone: "example.com", want: "_acme-challenge"},
+		{fqdn: "_acme-challenge.a.b.example.com", zone: "example.com", want: "_acme-challenge.a.b"},
+		{fqdn: "_acme-challenge.example.com.", zone: "example.com", want: "_acme-challenge"},
+		{fqdn: "example.com", zone: "example.com", want: ""},
+		// A suffix match that is not a LABEL boundary must not be accepted:
+		// "notexample.com" ends with "example.com" as a string.
+		{fqdn: "_acme-challenge.notexample.com", zone: "example.com", wantErr: true},
+		{fqdn: "_acme-challenge.other.org", zone: "example.com", wantErr: true},
+	} {
+		got, err := dnsimpleRecordName(tc.fqdn, tc.zone)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("dnsimpleRecordName(%q, %q) = %q, want an error", tc.fqdn, tc.zone, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("dnsimpleRecordName(%q, %q): %v", tc.fqdn, tc.zone, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("dnsimpleRecordName(%q, %q) = %q, want %q", tc.fqdn, tc.zone, got, tc.want)
+		}
+	}
+}
+
+// TestDNSimpleProviderNeverFormatsItsToken covers the mechanism, not a string:
+// fmt walks unexported struct fields by reflection and does NOT call
+// secrets.Redacted's redaction methods, so without Format on the containing type
+// "%+v" prints the bearer token in full.
+func TestDNSimpleProviderNeverFormatsItsToken(t *testing.T) {
+	provider, err := NewDNSimple(secrets.NewRedacted(dsTestToken), nil)
+	if err != nil {
+		t.Fatalf("NewDNSimple: %v", err)
+	}
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q"} {
+		if rendered := fmt.Sprintf(verb, provider); strings.Contains(rendered, dsTestToken) {
+			t.Errorf("fmt %s of the provider leaked the token: %s", verb, rendered)
+		}
+	}
+}
+
+func TestNewAPIProviderBuildsDNSimple(t *testing.T) {
+	provider, err := NewAPIProvider("dnsimple", secrets.NewRedacted(dsTestToken), nil)
+	if err != nil {
+		t.Fatalf("NewAPIProvider: %v", err)
+	}
+	if got := provider.Name(); got != "dnsimple" {
+		t.Errorf("Name() = %q, want %q", got, "dnsimple")
+	}
+}
+
+// TestDNSimpleDoesNotPollForPropagation pins the seam's division of labor: the
+// solver polls the authoritative nameservers, so a provider must not add a
+// redundant, weaker wait of its own.
+func TestDNSimpleDoesNotPollForPropagation(t *testing.T) {
+	api, provider := newDNSimpleAPI(t)
+	rec := Record{Name: ChallengeRecordName("example.com"), Value: dsChallengeValue}
+
+	if _, err := provider.Present(context.Background(), rec); err != nil {
+		t.Fatalf("Present: %v", err)
+	}
+	// A whoami, one zone lookup and one create. Any read-back of the record after
+	// the create would be a propagation poll.
+	for _, req := range api.requests {
+		if strings.HasPrefix(req, http.MethodGet+" ") && strings.Contains(req, "/records") {
+			t.Errorf("Present read records back (%q), which is a propagation poll", req)
+		}
 	}
 }
