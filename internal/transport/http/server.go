@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -22,6 +23,15 @@ const (
 
 	// readTimeout bounds the whole request, headers plus body.
 	readTimeout = 30 * time.Second
+
+	// tlsStartupTimeout bounds the certificate provider's construction.
+	//
+	// It exists because the ACME provider registers an account over the network
+	// at startup, and an unreachable or hanging CA directory must not wedge
+	// process start forever. A minute is generous for a handful of HTTPS round
+	// trips and short enough that an orchestrator's own start deadline is not
+	// what ends up reporting the problem.
+	tlsStartupTimeout = time.Minute
 
 	// writeTimeout bounds response writing, capping how long a slow reader can
 	// pin a handler goroutine.
@@ -47,6 +57,15 @@ type Server struct {
 	httpSrv *http.Server
 	logger  *slog.Logger
 	addr    string
+
+	// certCloser releases the certificate provider's resources — for ACME, the
+	// background renewal loop.
+	//
+	// It is held here because it had no owner before: buildTLSConfig created
+	// the guard and discarded it, so certGuard.Close was unreachable and any
+	// provider with background work would have leaked a goroutine for the
+	// process lifetime with no way to stop it. Shutdown now closes it.
+	certCloser io.Closer
 }
 
 // New builds a Server from operator config, a logger, and the readiness
@@ -73,7 +92,15 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publi
 		return nil, ErrNilPublisher
 	}
 
-	tlsCfg, err := buildTLSConfig(cfg, time.Now)
+	// A bounded startup context, so that a certificate provider which talks to
+	// a network service (ACME account registration) cannot hang process start
+	// indefinitely on an unreachable CA. Background work a provider starts is
+	// deliberately NOT tied to this context — the provider detaches it — so the
+	// deadline bounds startup only, not the renewal loop's lifetime.
+	ctx, cancel := context.WithTimeout(context.Background(), tlsStartupTimeout)
+	defer cancel()
+
+	tlsCfg, certCloser, err := buildTLSConfig(ctx, cfg, time.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -81,8 +108,9 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publi
 	warnIfSelfSigned(cfg, logger)
 
 	return &Server{
-		logger: logger,
-		addr:   cfg.Server.ListenAddr,
+		logger:     logger,
+		addr:       cfg.Server.ListenAddr,
+		certCloser: certCloser,
 		httpSrv: &http.Server{
 			Addr:              cfg.Server.ListenAddr,
 			Handler:           NewHandler(cfg, logger, pinger, publisher, opts...),
@@ -162,12 +190,27 @@ func (s *Server) Serve(ln net.Listener) error {
 // Shutdown stops accepting connections and waits for in-flight requests to
 // finish, bounded by ctx. When ctx expires the remaining connections are closed
 // hard: a drain that never ends is a hung deploy, so the deadline wins.
+// The certificate provider is closed on BOTH paths, including the one that
+// force-closes: a renewal goroutine still running after Shutdown returns would
+// outlive the server it renews for, keep touching the cache directory, and hold
+// the process open. It is closed after the HTTP drain so an in-flight handshake
+// can still be served a certificate while connections finish.
 func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.httpSrv.Shutdown(ctx)
 	if err != nil {
 		// Force-close whatever is left so the process can exit.
 		_ = s.httpSrv.Close()
-		return err
+		return errors.Join(err, s.closeCertProvider())
 	}
-	return nil
+	return s.closeCertProvider()
+}
+
+// closeCertProvider releases the certificate provider, tolerating a Server that
+// never got one (a zero value, or a construction path that failed before the
+// TLS config was built).
+func (s *Server) closeCertProvider() error {
+	if s.certCloser == nil {
+		return nil
+	}
+	return s.certCloser.Close()
 }

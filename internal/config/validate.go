@@ -185,6 +185,30 @@ func (c *Config) validateACME(v *validator, prod bool) {
 	if a.Solver == "dns_01" {
 		c.validateACMEDNS(v)
 	}
+
+	// The remaining settings are required by BOTH solvers, because they are
+	// properties of holding an ACME account rather than of answering a
+	// particular challenge. They are checked for any acme mode so that a later
+	// solver cannot be added without them.
+	if a.DirectoryURL == "" {
+		// Only reachable when an operator explicitly blanks the default. An
+		// empty URL would silently fall through to the acme package's built-in
+		// Let's Encrypt endpoint, which is exactly the accidental production
+		// traffic this mode has to avoid.
+		v.add("tls.acme.directory_url", "required for acme mode")
+	}
+	if a.AccountKeyFile == "" {
+		v.add("tls.acme.account_key_file", "required for acme mode")
+	}
+	if a.CacheDir == "" {
+		// Refused rather than defaulted. Without a cache every restart
+		// re-issues, and the CA's duplicate-certificate limit is measured over
+		// a rolling week, so a crash loop turns into a week-long lockout.
+		v.add("tls.acme.cache_dir", "required for acme mode (it is the restart-storm rate-limit control)")
+	}
+	if !a.AcceptTOS {
+		v.add("tls.acme.accept_tos", "must be true: the CA requires the operator to accept its terms of service")
+	}
 }
 
 // validateACMEDNS fails closed on the DNS-01 solving mode. ADR-0015 defines
@@ -331,8 +355,25 @@ func (c *Config) validateRetention(v *validator) {
 	if c.Retention.HandleQuarantine.Std() <= 0 {
 		v.add("retention.handle_quarantine", "must be > 0")
 	}
+	// Strictly positive, with no "disabled" reading. A cutoff of now-0 makes
+	// every record eligible, so accepting 0 here would turn a one-character
+	// config typo into the irreversible destruction of the audit log — the very
+	// record an operator would need to investigate the incident. Purging is
+	// switched off through retention.audit_purge_interval instead.
 	if c.Retention.AuditRetention.Std() <= 0 {
-		v.add("retention.audit_retention", "must be > 0")
+		v.add("retention.audit_retention", "must be > 0 (set retention.audit_purge_interval to 0 to disable purging; 0 here does not mean \"keep nothing\")")
+	}
+	// 0 is a valid value here and means "never run a purge". Negative is not a
+	// mode, it is a mistake, and is rejected rather than clamped: silently
+	// repairing it would hide a misconfiguration the operator needs to see.
+	if c.Retention.AuditPurgeInterval.Std() < 0 {
+		v.add("retention.audit_purge_interval", "must be >= 0 (0 disables purging)")
+	}
+	if c.Retention.AuditPurgeBatch < 1 {
+		v.add("retention.audit_purge_batch", "must be >= 1, got %d", c.Retention.AuditPurgeBatch)
+	}
+	if c.Retention.AuditPurgeMaxPerRun < 1 {
+		v.add("retention.audit_purge_max_per_run", "must be >= 1, got %d", c.Retention.AuditPurgeMaxPerRun)
 	}
 	if c.Retention.MaxSetsPerOwner < 1 {
 		v.add("retention.max_sets_per_owner", "must be >= 1, got %d", c.Retention.MaxSetsPerOwner)

@@ -34,6 +34,7 @@ type Config struct {
 	Onboarding OnboardingConfig `yaml:"onboarding"`
 	Blocklist  BlocklistConfig  `yaml:"blocklist"`
 	Retention  RetentionConfig  `yaml:"retention"`
+	Install    InstallConfig    `yaml:"install"`
 	Docs       DocsConfig       `yaml:"docs"`
 }
 
@@ -62,9 +63,50 @@ type TLSConfig struct {
 
 // ACMEConfig configures ACME certificate issuance.
 type ACMEConfig struct {
-	DirectoryURL string        `yaml:"directory_url"`
-	Solver       string        `yaml:"solver"`
-	DNS          ACMEDNSConfig `yaml:"dns"`
+	// DirectoryURL is the CA's ACME directory endpoint. It defaults to Let's
+	// Encrypt production (ADR-0015 §2 names Let's Encrypt as the phase-1 CA)
+	// and is configurable so another ACME CA can be pointed at — including a
+	// staging endpoint while an operator is bringing a deployment up.
+	DirectoryURL string `yaml:"directory_url"`
+
+	Solver string `yaml:"solver"`
+
+	// AccountKeyFile is where the long-lived ACME account key lives, written
+	// 0600. It is deliberately operator-chosen with no default, for the same
+	// reason CSRTLSConfig.KeyFile is: a key file an operator does not know
+	// their server created is a key file nobody protects or backs up.
+	//
+	// The account key is not the certificate key. It is the identity the CA
+	// binds issued certificates and rate-limit accounting to, so losing it
+	// means re-registering, and leaking it lets the holder revoke this
+	// deployment's certificates.
+	AccountKeyFile string `yaml:"account_key_file"`
+
+	// CacheDir is the directory holding the issued certificate and its private
+	// key between restarts.
+	//
+	// Persisting is not an optimization, it is the primary rate-limit control.
+	// Without it every restart is a fresh issuance, so a crash-looping process
+	// becomes an ACME request flood, and Let's Encrypt's duplicate-certificate
+	// limit is measured in a rolling WEEK. A cached certificate that is still
+	// valid is reused and no ACME request is made at all.
+	CacheDir string `yaml:"cache_dir"`
+
+	// ContactEmail is the optional address the CA uses for expiry warnings. It
+	// is sent to the CA as a mailto: contact at registration. Empty means no
+	// contact is registered, which every supported CA permits.
+	ContactEmail string `yaml:"contact_email"`
+
+	// AcceptTOS records that the operator accepts the CA's terms of service.
+	//
+	// It defaults to false and registration is refused without it. RFC 8555
+	// requires the client to assert agreement, and asserting it on an
+	// operator's behalf because they selected a mode would be making a legal
+	// commitment they never made. The refusal is a config error at startup, so
+	// nobody discovers it from a failed issuance.
+	AcceptTOS bool `yaml:"accept_tos"`
+
+	DNS ACMEDNSConfig `yaml:"dns"`
 }
 
 // ACMEDNSConfig configures the DNS-01 solver.
@@ -241,10 +283,62 @@ type BlocklistConfig struct {
 }
 
 // RetentionConfig configures audit retention and erasure windows (ADR-0024).
+//
+// # Why the window and the schedule are separate knobs
+//
+// AuditRetention says how much history is kept; the AuditPurge* fields say how
+// the purge that enforces it is paced. They are deliberately not collapsed into
+// one setting because they fail in opposite directions. A too-small retention
+// window destroys evidence irrecoverably, so it is validated as strictly
+// positive and there is no value that means "purge everything". A too-small or
+// absent schedule merely lets history accumulate, which is recoverable, so the
+// schedule — and only the schedule — carries the off switch.
 type RetentionConfig struct {
 	HandleQuarantine Duration `yaml:"handle_quarantine"`
-	AuditRetention   Duration `yaml:"audit_retention"`
-	MaxSetsPerOwner  int      `yaml:"max_sets_per_owner"`
+
+	// AuditRetention is the age at which an audit record becomes eligible for
+	// purging. It MUST be > 0: zero would place the cutoff at the present
+	// moment and make every record eligible, so validation rejects it rather
+	// than treating it as "keep nothing" or silently substituting a default.
+	// To stop purging entirely, set AuditPurgeInterval to 0; never this.
+	AuditRetention Duration `yaml:"audit_retention"`
+
+	// AuditPurgeInterval is how often a retention pass runs. 0 disables
+	// purging altogether (records accumulate and are logged about at startup);
+	// any positive value schedules a pass at that cadence. This is the only
+	// retention field whose zero value is a valid operating mode, because the
+	// consequence of it — keeping too much — is reversible.
+	AuditPurgeInterval Duration `yaml:"audit_purge_interval"`
+
+	// AuditPurgeBatch is how many records one purge transaction removes. It
+	// bounds how long a single DELETE holds a write lock, so a large backlog
+	// does not stall every other writer for the duration of one statement.
+	AuditPurgeBatch int `yaml:"audit_purge_batch"`
+
+	// AuditPurgeMaxPerRun caps the total records one pass may remove. Without
+	// it a huge backlog would keep a pass batching indefinitely; with it the
+	// backlog is drained across successive passes instead of monopolising the
+	// database in one.
+	AuditPurgeMaxPerRun int `yaml:"audit_purge_max_per_run"`
+
+	MaxSetsPerOwner int `yaml:"max_sets_per_owner"`
+}
+
+// InstallConfig configures exposure of the served helper installer (ADR-0013,
+// ADR-0029).
+//
+// Enabled defaults to true, which ADR-0013 decides explicitly: the installer is
+// the documented bootstrap path for a host that has nothing from this project
+// yet, so gating it behind a credential the host does not have would make it
+// useless for the one job it exists to do. The script is not secret -- it is
+// byte-identical for every requester and contains no keys, host names, or
+// information about who uses the deployment.
+//
+// Deployers who do not accept an unauthenticated route set enabled: false, and
+// both install routes then answer exactly as any unrouted path does, so a probe
+// cannot even learn that the feature exists to be disabled.
+type InstallConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // DocsConfig configures exposure of the self-served API documentation

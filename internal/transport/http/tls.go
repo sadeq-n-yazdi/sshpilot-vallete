@@ -1,9 +1,11 @@
 package httpserver
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
@@ -33,20 +35,32 @@ import (
 // only one — the same guard runs again on every handshake, which is what closes
 // the gap E1 documented, where a certificate expiring mid-process kept being
 // served until restart.
-func buildTLSConfig(cfg *config.Config, now func() time.Time) (*tls.Config, error) {
+func buildTLSConfig(ctx context.Context, cfg *config.Config, now func() time.Time) (*tls.Config, io.Closer, error) {
 	minVersion, err := parseMinVersion(cfg.TLS.MinVersion)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	provider, err := newCertProvider(cfg, now)
+	provider, err := newCertProvider(ctx, cfg, now)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	guard := newCertGuard(provider, now)
-	if _, err := guard.GetCertificate(nil); err != nil {
-		return nil, err
+
+	// The startup probe is SKIPPED for a provider that proves control in band,
+	// and only for one. This is not leniency: TLS-ALPN-01 has the CA connect to
+	// this very listener, so requiring a certificate before the listener exists
+	// would make the mode impossible to bootstrap. Fail-closed is preserved by
+	// the per-handshake guard, which refuses every ordinary handshake until a
+	// real certificate exists. Every other mode keeps the strict startup check,
+	// so an operator with missing, mismatched or expired material still learns
+	// at startup rather than from a client.
+	challengeProtos := challengeALPNProtos(provider)
+	if startupProbeRequired(provider) {
+		if _, err := guard.GetCertificate(nil); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return &tls.Config{
@@ -76,8 +90,49 @@ func buildTLSConfig(cfg *config.Config, now func() time.Time) (*tls.Config, erro
 		//
 		// HTTP/1.1 and h2 only; advertising the set explicitly stops
 		// negotiation of anything the handler stack has not been reviewed for.
-		NextProtos: []string{"h2", "http/1.1"},
-	}, nil
+		//
+		// A challenge protocol is appended ONLY when the installed provider
+		// answers one. In every other mode the listener has no "acme-tls/1" to
+		// offer at all, so it cannot be negotiated even by a client that asks.
+		NextProtos: append([]string{"h2", "http/1.1"}, challengeProtos...),
+	}, guard, nil
+}
+
+// inBandChallengeSolver is implemented by a provider that proves control of its
+// names during the TLS handshake itself.
+//
+// Two consequences follow from that one property, which is why they share an
+// interface rather than being two flags: such a provider needs its challenge
+// ALPN protocol advertised by the listener, and it cannot be asked for a
+// certificate before the listener is up.
+//
+// Today only the ACME TLS-ALPN-01 provider implements it. DNS-01 will not — it
+// proves control out of band — and so will keep the strict startup probe.
+type inBandChallengeSolver interface {
+	// challengeALPNProtos returns the ALPN protocol names on which the provider
+	// serves challenge certificates.
+	challengeALPNProtos() []string
+}
+
+// challengeALPNProtos returns the challenge protocols a provider needs
+// advertised, or nil for the providers that need none.
+func challengeALPNProtos(provider CertProvider) []string {
+	if s, ok := provider.(inBandChallengeSolver); ok {
+		return s.challengeALPNProtos()
+	}
+	return nil
+}
+
+// startupProbeRequired reports whether a provider must produce a certificate
+// before the server is allowed to start.
+//
+// It is true for every provider EXCEPT one that solves its challenge in band,
+// because such a provider cannot be issued a certificate until the listener the
+// probe would precede is already accepting connections. Keeping the rule in one
+// named predicate is what makes the exemption auditable: it can be tested
+// directly, and it cannot be widened for one mode without widening it visibly.
+func startupProbeRequired(provider CertProvider) bool {
+	return len(challengeALPNProtos(provider)) == 0
 }
 
 // newCertProvider selects the certificate provider for the configured mode.
@@ -87,7 +142,7 @@ func buildTLSConfig(cfg *config.Config, now func() time.Time) (*tls.Config, erro
 // alternatives to refusing would be serving a self-signed certificate the
 // operator did not ask for, or no TLS at all. Both are the silent downgrade
 // ADR-0015 exists to prevent.
-func newCertProvider(cfg *config.Config, now func() time.Time) (CertProvider, error) {
+func newCertProvider(ctx context.Context, cfg *config.Config, now func() time.Time) (CertProvider, error) {
 	switch cfg.TLS.Mode {
 	case "self_signed":
 		return newSelfSignedProvider(cfg, now)
@@ -95,8 +150,26 @@ func newCertProvider(cfg *config.Config, now func() time.Time) (CertProvider, er
 		return newManualProvider(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile)
 	case "csr":
 		return newCSRProvider(cfg)
+	case "acme":
+		return newACMEProviderForSolver(ctx, cfg, now)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
+	}
+}
+
+// newACMEProviderForSolver dispatches on the configured ACME solver.
+//
+// dns_01 is a valid configuration that this track does not implement, so it
+// refuses rather than silently solving with TLS-ALPN-01 instead. Answering a
+// challenge the operator did not select would issue through a path they may
+// have deliberately ruled out — for example a deployment whose port 443 is not
+// reachable from the CA — and would do it silently.
+func newACMEProviderForSolver(ctx context.Context, cfg *config.Config, now func() time.Time) (CertProvider, error) {
+	switch cfg.TLS.ACME.Solver {
+	case "tls_alpn_01":
+		return newACMEProvider(ctx, cfg, now)
+	default:
+		return nil, fmt.Errorf("%w: acme solver %q", ErrTLSModeUnsupported, cfg.TLS.ACME.Solver)
 	}
 }
 

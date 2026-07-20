@@ -39,14 +39,25 @@ const (
 	TargetTypeRefreshCredential TargetType = "refresh_credential"
 	TargetTypeBlocklistEntry    TargetType = "blocklist_entry"
 	TargetTypeAllowlistEntry    TargetType = "allowlist_entry"
+	// TargetTypeAuditLog is the audit log itself, as the target of the
+	// system-maintenance operations that act on it as a whole -- retention
+	// purging and crypto-erasure pseudonymization. It names a singleton, not a
+	// row: no audited action ever targets an individual audit record.
+	TargetTypeAuditLog TargetType = "audit_log"
 )
+
+// AuditLogTargetID is the fixed TargetID used with TargetTypeAuditLog. The
+// audit log is a singleton, so maintenance records identify it by a constant
+// rather than by a row ID, which would wrongly suggest a single record was
+// affected.
+const AuditLogTargetID = "audit_log"
 
 // IsValid reports whether t is a known TargetType.
 func (t TargetType) IsValid() bool {
 	switch t {
 	case TargetTypeOwner, TargetTypeHandle, TargetTypeDevice, TargetTypePublicKey,
 		TargetTypeKeySet, TargetTypeAccessKey, TargetTypeRefreshCredential,
-		TargetTypeBlocklistEntry, TargetTypeAllowlistEntry:
+		TargetTypeBlocklistEntry, TargetTypeAllowlistEntry, TargetTypeAuditLog:
 		return true
 	default:
 		return false
@@ -95,6 +106,10 @@ const (
 	AuditActionAllowlistEntryRemoved AuditAction = "allowlist.entry_removed"
 
 	AuditActionAuditPseudonymized AuditAction = "audit.pseudonymized"
+	// AuditActionAuditPurged records a retention pass that removed aged records.
+	// Deleting audit history is itself an access-affecting administrative event,
+	// so it is recorded like any other.
+	AuditActionAuditPurged AuditAction = "audit.purged"
 )
 
 // AuditRecord is an append-only record of an audited action. ActorID and

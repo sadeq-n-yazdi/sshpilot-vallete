@@ -78,6 +78,24 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// handle. Both publish routes share one handler; the absence of the {set}
 	// segment is what selects the owner's default set.
 
+	// The served helper installer (ADR-0013, ADR-0029). Registered
+	// unconditionally and consulting the exposure setting per request: when
+	// installs are disabled both routes answer with http.NotFound, which is the
+	// identical response the mux itself gives an unregistered path, so probing
+	// a locked-down deployment reveals nothing -- not even that the feature
+	// exists to be turned off.
+	//
+	// Two hard-coded two-segment literals, one per artifact. There is
+	// deliberately no /install/{name}: a path segment that selects the file
+	// turns the one endpoint whose output operators execute into a traversal
+	// surface. Being literals, they are strictly more specific than
+	// GET /{handle}/{set} and register alongside it without conflict -- the
+	// subtree form "GET /install/" would not, since a subtree pattern and a
+	// two-wildcard pattern are incomparable and the mux panics on that pair.
+	install := installEnabled(cfg)
+	mux.Handle("GET /install/vallet-helper.sh", installScriptHandler(install))
+	mux.Handle("GET /install/vallet-helper.sh.sha256", installDigestHandler(install))
+
 	// The self-served API contract (ADR-0021). These are registered
 	// unconditionally and consult the exposure setting per request; when docs
 	// are disabled every one of them answers with http.NotFound, which is the
