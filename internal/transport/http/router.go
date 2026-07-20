@@ -143,6 +143,20 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	mux.Handle("DELETE /api/v1/devices/{deviceID}",
 		guardian.Protect(DeviceAccess, revokeDeviceHandler(o.devices, logger)))
 
+	// The public key routes all declare AccountAccess, including the one that
+	// addresses a single key by id. That is not an oversight: auth.ResourceKind
+	// has kinds for key sets and devices only, so there is no resource-bound
+	// scope a key route could be checked against, and inventing an Access whose
+	// kind the auth package does not recognize would be refused by
+	// Access.validate rather than enforced. Declaring the account is the
+	// conservative reading -- a resource-bound token cannot reach any of these,
+	// and a read-only token cannot reach the two mutating ones, because the
+	// Guardian derives Mutating from the method.
+	mux.Handle("POST /api/v1/keys", guardian.Protect(AccountAccess, addKeyHandler(o.keys, logger)))
+	mux.Handle("GET /api/v1/keys", guardian.Protect(AccountAccess, listKeysHandler(o.keys, logger)))
+	mux.Handle("DELETE /api/v1/keys/{keyID}",
+		guardian.Protect(AccountAccess, revokeKeyHandler(o.keys, logger)))
+
 	// Outermost first: every response carries the transport policy, then every
 	// request gets an ID, then is logged, then is protected from panics.
 	//
