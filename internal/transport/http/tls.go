@@ -24,10 +24,10 @@ import (
 // connection — that separation is the point of the seam.
 //
 // Implemented modes: self_signed (development bring-up), manual
-// (operator-supplied files), csr, and acme with either the TLS-ALPN-01 or the
-// DNS-01 solver. Cloudflare Origin CA and upstream termination are later tracks
-// and return [ErrTLSModeUnsupported] rather than silently degrading to a weaker
-// certificate.
+// (operator-supplied files), csr (external signing), acme with either the
+// TLS-ALPN-01 or the DNS-01 solver, and cloudflare_origin. Upstream termination
+// is a later track and returns [ErrTLSModeUnsupported] rather than silently
+// degrading to a weaker certificate.
 //
 // The now argument is the validity clock, a function rather than an instant
 // because certificates are re-checked on every handshake and may be renewed
@@ -189,8 +189,47 @@ func newCertProvider(
 		return newCSRProvider(cfg)
 	case "acme":
 		return newACMEProviderForSolver(ctx, cfg, now, logger)
+	case "cloudflare_origin":
+		return newOriginCAProvider(ctx, cfg, now, builtinSecretResolver(cfg))
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
+	}
+}
+
+// secretResolver resolves a config secret reference to its value.
+//
+// It is a function type rather than the concrete *secrets.Resolver so that a
+// test can supply a missing or failing credential without standing up an
+// environment or a file, which is what makes the credential-missing failure
+// path testable at all.
+type secretResolver func(ctx context.Context, ref secrets.Ref) (secrets.Redacted, error)
+
+// builtinSecretResolver returns the resolver used in production: the built-in
+// env and file providers from ADR-0022.
+//
+// The file provider's permission posture is derived from the environment, which
+// is the split the secrets package documents — it never imports config, so the
+// config layer makes this call. Production REFUSES a world-readable secret
+// file, because a credential any local account can read must be treated as
+// already copied; development warns instead, so a contributor is not blocked by
+// a checkout's permissions.
+//
+// A resolver is built here, at the point of use, rather than threaded down from
+// main because this is currently the only production consumer of a secret
+// reference. When a second one appears, hoisting construction into bootstrap
+// and passing it in is the right move; doing it now would add a parameter to
+// Server.New that nothing else needs.
+func builtinSecretResolver(cfg *config.Config) secretResolver {
+	permMode := secrets.PermError
+	if cfg.Server.Environment != "production" {
+		permMode = secrets.PermWarn
+	}
+	return func(ctx context.Context, ref secrets.Ref) (secrets.Redacted, error) {
+		resolver, err := secrets.NewResolver(secrets.Builtin(secrets.FileOptions{PermMode: permMode})...)
+		if err != nil {
+			return "", err
+		}
+		return resolver.Resolve(ctx, ref)
 	}
 }
 

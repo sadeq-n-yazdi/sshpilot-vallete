@@ -76,6 +76,17 @@ func setInt(sel func(*Config) *int) func(*Config, string) error {
 	}
 }
 
+func setFloat(sel func(*Config) *float64) func(*Config, string) error {
+	return func(c *Config, v string) error {
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return fmt.Errorf("invalid number %q", v)
+		}
+		*sel(c) = f
+		return nil
+	}
+}
+
 func setDuration(sel func(*Config) *Duration) func(*Config, string) error {
 	return func(c *Config, v string) error {
 		d, err := parseDuration(v)
@@ -130,6 +141,8 @@ func bindings() []binding {
 		{"VALLET_TLS_ACME_DNS_PROVIDER", setString(func(c *Config) *string { return &c.TLS.ACME.DNS.Provider })},
 		{"VALLET_TLS_ACME_DNS_CREDENTIALS_REF", setRef(func(c *Config) *secrets.Ref { return &c.TLS.ACME.DNS.CredentialsRef })},
 		{"VALLET_TLS_CLOUDFLARE_ORIGIN_API_TOKEN_REF", setRef(func(c *Config) *secrets.Ref { return &c.TLS.CloudflareOrigin.APITokenRef })},
+		{"VALLET_TLS_CLOUDFLARE_ORIGIN_CACHE_DIR", setString(func(c *Config) *string { return &c.TLS.CloudflareOrigin.CacheDir })},
+		{"VALLET_TLS_CLOUDFLARE_ORIGIN_VALIDITY_DAYS", setInt(func(c *Config) *int { return &c.TLS.CloudflareOrigin.ValidityDays })},
 		{"VALLET_TLS_MANUAL_CERT_FILE", setString(func(c *Config) *string { return &c.TLS.Manual.CertFile })},
 		{"VALLET_TLS_MANUAL_KEY_FILE", setString(func(c *Config) *string { return &c.TLS.Manual.KeyFile })},
 		{"VALLET_TLS_CSR_KEY_FILE", setString(func(c *Config) *string { return &c.TLS.CSR.KeyFile })},
@@ -178,6 +191,7 @@ func bindings() []binding {
 		{"VALLET_TELEMETRY_METRICS_OTLP_HEADERS_REF", setRef(func(c *Config) *secrets.Ref { return &c.Telemetry.Metrics.OTLP.HeadersRef })},
 		{"VALLET_TELEMETRY_TRACES_ENABLED", setBool(func(c *Config) *bool { return &c.Telemetry.Traces.Enabled })},
 		{"VALLET_TELEMETRY_TRACES_ENDPOINT", setString(func(c *Config) *string { return &c.Telemetry.Traces.Endpoint })},
+		{"VALLET_TELEMETRY_TRACES_SAMPLE_RATIO", setFloat(func(c *Config) *float64 { return &c.Telemetry.Traces.SampleRatio })},
 
 		// onboarding
 		{"VALLET_ONBOARDING_MODE", setString(func(c *Config) *string { return &c.Onboarding.Mode })},

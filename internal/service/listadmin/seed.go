@@ -49,40 +49,65 @@ type seedFile struct {
 //
 // An empty SeedFile path means no file, which is valid: a deployment may
 // legitimately configure its entries inline or carry none at all.
+// ApplySeed installs the seed ALONE, with no persisted runtime edits replayed
+// over it.
+//
+// Production startup must call LoadPolicy instead. Seeding without replaying
+// the overrides re-opens exactly the gap the override table exists to close: a
+// removal an administrator made at runtime is not in the seed, so seed-only
+// composition silently restores the entry they removed. For the allowlist that
+// direction is fail-open. This function remains because a caller may
+// legitimately want the seed by itself -- validating an operator's file, or
+// composing the base a replay is then applied to -- and because LoadPolicy is
+// built from the same parts.
 func ApplySeed(m *blocklist.Matcher, cfg config.BlocklistConfig) error {
 	if m == nil {
 		return fmt.Errorf("listadmin: seed applied to a nil matcher")
 	}
 
-	extra := cfg.ExtraEntries
-	allow := cfg.AllowEntries
+	extra, allow, err := seedLists(cfg)
+	if err != nil {
+		return err
+	}
+	return install(m, extra, allow)
+}
+
+// seedLists resolves the seed into its two lists without touching any matcher,
+// so a caller that needs to compose something over the seed can obtain it
+// without a partially-installed intermediate state.
+func seedLists(cfg config.BlocklistConfig) (extra, allow []string, err error) {
+	extra = cfg.ExtraEntries
+	allow = cfg.AllowEntries
 
 	if cfg.SeedFile != "" {
-		fromFile, err := readSeedFile(cfg.SeedFile)
-		if err != nil {
-			return err
+		fromFile, ferr := readSeedFile(cfg.SeedFile)
+		if ferr != nil {
+			return nil, nil, ferr
 		}
 		// Config-inline entries first, then the file's, so a listing reads in a
 		// predictable order. Neither source overrides the other: both are
 		// operator intent and the union is what was asked for. A duplicate
-		// between them is refused below rather than silently collapsed, so an
-		// operator who has the same entry in two places is told about it.
+		// between them is refused on install rather than silently collapsed, so
+		// an operator who has the same entry in two places is told about it.
 		extra = append(append([]string{}, extra...), fromFile.ExtraEntries...)
 		allow = append(append([]string{}, allow...), fromFile.AllowEntries...)
 	}
+	return extra, allow, nil
+}
 
-	// Compile both lists against a throwaway matcher first. This is what makes
-	// the operation all-or-nothing across the two lists: installing the extra
-	// terms and then discovering the allowlist is malformed would leave m in a
-	// state that is neither the old policy nor the new one.
+// install validates both lists against a throwaway matcher before touching m.
+//
+// This is what makes the operation all-or-nothing across the two lists:
+// installing the extra terms and then discovering the allowlist is malformed
+// would leave m in a state that is neither the old policy nor the new one.
+func install(m *blocklist.Matcher, extra, allow []string) error {
 	scratch, err := blocklist.NewMatcher()
 	if err != nil {
-		return fmt.Errorf("listadmin: build a scratch matcher to validate the seed: %w", err)
+		return fmt.Errorf("listadmin: build a scratch matcher to validate the policy: %w", err)
 	}
 	if err := applyBoth(scratch, extra, allow); err != nil {
 		return err
 	}
-
 	return applyBoth(m, extra, allow)
 }
 

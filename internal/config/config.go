@@ -117,8 +117,63 @@ type ACMEDNSConfig struct {
 }
 
 // CloudflareOriginConfig configures Cloudflare Origin certificates.
+//
+// # Read this before selecting the mode
+//
+// A Cloudflare Origin CA certificate is signed by a private Cloudflare CA that
+// ONLY the Cloudflare edge trusts. No browser, no curl, no Go client trusts it.
+// It is usable for exactly one topology: the origin sits behind the Cloudflare
+// proxy (orange cloud) and every client reaches it through that proxy.
+//
+// If the origin is reachable directly, this mode is a misconfiguration trap, and
+// the damaging part is not the failed handshake — it is what an operator does
+// next. The visible symptom is "certificate signed by unknown authority" from
+// every direct client, and the obvious fix an operator reaches for is to tell
+// callers to pass `curl -k` / disable verification. That fix removes precisely
+// the MITM protection on the key-publish path that ADR-0015 exists to provide:
+// an attacker who can alter published keys gets unauthorized SSH access. So the
+// mode is gated rather than merely documented; see Server.TrustedProxies below
+// and the provider in internal/transport/http.
 type CloudflareOriginConfig struct {
+	// APITokenRef references the Origin CA credential.
+	//
+	// Naming note: this field is called api_token_ref, but Cloudflare's Origin
+	// CA endpoint is primarily authenticated by a DEDICATED "Origin CA Key",
+	// which is a different credential from an ordinary API token — it is issued
+	// from the dashboard's API-tokens page as a separate item and its value
+	// always begins "v1.0-". Cloudflare now also accepts a scoped API token on
+	// this endpoint, so both are supported and the provider selects the header
+	// from the credential's shape. The field name is kept as-is because it is
+	// already load-bearing in env.go, secretsref.go and validate.go.
+	//
+	// It is a REFERENCE, never the value: ADR-0015 §3 requires provider
+	// credentials to come from the secret provider (ADR-0022) and forbids them
+	// in the config file, the database, and logs.
 	APITokenRef secrets.Ref `yaml:"api_token_ref"`
+
+	// CacheDir holds the issued certificate and its private key between
+	// restarts, written 0600 in a 0700 directory.
+	//
+	// Required, not defaulted, for the same reason tls.acme.cache_dir is: it is
+	// the restart-storm control. Without it every restart requests a new
+	// certificate, so a crash-looping process becomes a request flood against
+	// Cloudflare's API. It matters more here than for ACME, because the key on
+	// disk is the only copy — there is no re-download of an issued Origin CA
+	// certificate that would let the server recover one it discarded.
+	CacheDir string `yaml:"cache_dir"`
+
+	// ValidityDays is the requested certificate lifetime. Cloudflare accepts
+	// only 7, 30, 90, 365, 730, 1095 or 5475 days; anything else is refused at
+	// validation rather than discovered as an API error.
+	//
+	// The default is 365 and deliberately NOT Cloudflare's 5475-day (15-year)
+	// maximum, even though the dashboard offers it. A 15-year certificate means
+	// a private key sitting on an origin disk for 15 years with no scheduled
+	// moment at which it is replaced, and no practical revocation story — the
+	// renewal machinery would effectively never run, so the one control that
+	// bounds the damage of a silently copied key would never fire. A year keeps
+	// the renew-ahead loop (ADR-0015 §4) real: it re-keys at ~8 months.
+	ValidityDays int `yaml:"validity_days"`
 }
 
 // ManualTLSConfig configures operator-supplied certificate files.
@@ -250,11 +305,44 @@ type MetricsConfig struct {
 	OTLP       OTLPMetricsConfig `yaml:"otlp"`
 }
 
-// PrometheusConfig configures the Prometheus exporter.
+// PrometheusConfig configures the Prometheus exporter and its scrape endpoint.
+//
+// # Exposure model: a separate listener, off by default
+//
+// The scrape endpoint is served ONLY on its own listener, at ListenAddr, and it
+// is never registered on the public API mux. An empty ListenAddr -- the default
+// -- means the endpoint is not served at all: metrics are still collected and
+// still exported over OTLP if that is configured, but nothing answers a scrape.
+//
+// This is the fail-closed direction, and it is chosen over the more convenient
+// alternative of mounting /metrics on the main listener for three reasons.
+//
+//  1. The main listener is the public internet-facing one (ADR-0010 assumes
+//     strangers reach it with curl) and it has no authentication in front of
+//     the unauthenticated publish routes. A metrics endpoint mounted there is
+//     an unauthenticated disclosure of request volumes, error rates, route
+//     inventory, Go runtime internals and process uptime to anyone who asks.
+//  2. Sharing the listener makes the endpoint's reachability implicit. Here it
+//     is a single explicit address an operator had to type, which is also the
+//     thing they can bind to 127.0.0.1 or to a private interface. The insecure
+//     configuration -- reachable from the internet -- cannot be arrived at by
+//     leaving a field blank; it takes a deliberate wildcard bind.
+//  3. Scrape traffic and public traffic get different timeouts and different
+//     firewall rules in every real deployment, which needs two sockets anyway.
+//
+// Enabled and ListenAddr are separate switches because they answer different
+// questions: Enabled selects whether metrics are COLLECTED (and thus available
+// to the OTLP push path), ListenAddr selects whether they are SERVED.
 type PrometheusConfig struct {
-	Enabled    bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+
+	// ListenAddr is the dedicated address for the scrape endpoint, e.g.
+	// "127.0.0.1:9090". Empty (default) means the endpoint is not served.
 	ListenAddr string `yaml:"listen_addr"`
-	Path       string `yaml:"path"`
+
+	// Path is the scrape path on that listener. It must be absolute, and it is
+	// the only path that listener answers; everything else there is a 404.
+	Path string `yaml:"path"`
 }
 
 // OTLPMetricsConfig configures the OTLP metrics exporter.
@@ -268,6 +356,13 @@ type OTLPMetricsConfig struct {
 type TracesConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	Endpoint string `yaml:"endpoint"`
+
+	// SampleRatio is the head-sampling probability in [0,1], applied only to
+	// traces this process roots; a sampling decision arriving from an upstream
+	// caller is respected instead. It defaults to 1 (sample everything)
+	// because spans here carry only the four access-log fields, so the volume
+	// is one span per request and an operator who wants less can say so.
+	SampleRatio float64 `yaml:"sample_ratio"`
 }
 
 // OnboardingConfig configures owner onboarding (ADR-0012).
