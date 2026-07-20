@@ -25,6 +25,7 @@ described in Termius's "SSH ID / passkeys for SSH".
 | **Contributors** | The ADR process below, plus [CONTRIBUTING.md](../CONTRIBUTING.md) and the [Code of Conduct](../CODE_OF_CONDUCT.md). |
 | **Security researchers** | [SECURITY.md](../SECURITY.md) — private disclosure policy. |
 | **Operators installing the helper** | [Installing the managed-block helper](install-helper.md) — verified, fail-closed install instructions. |
+| **Operators configuring DNS-01** | [DNS-01 provider credentials](dns01-provider-credentials.md) — credential formats and least-privilege policies per DNS provider. |
 
 ## How decisions are recorded
 
