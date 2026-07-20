@@ -55,6 +55,23 @@ publish path while remaining strong; the policy is config-tunable upward.
   Cloudflare API token is a secret (§3). Note: an Origin CA cert is trusted by
   the Cloudflare edge, **not** by public clients connecting directly — it is for
   the Cloudflare-fronted topology.
+  - **Misconfiguration gate (fail-closed).** Because that certificate is
+    meaningless to a direct client, this mode is a **trap** on a
+    directly-reachable origin: the symptom is a verification failure from every
+    direct client, and the fix operators reach for is disabling verification —
+    which removes exactly the MITM protection on the key-publish path this ADR
+    exists to provide. The server **cannot prove from the inside** that it is
+    unreachable from the internet, so it does not guess. It requires the
+    operator to **declare** the topology by listing the Cloudflare edge ranges
+    in `server.trusted_proxies` (startup is **refused** when empty, as in the
+    upstream mode), and then **enforces that declaration on every handshake**:
+    the origin certificate is **withheld** from any peer outside the list. The
+    credential is Cloudflare's dedicated **Origin CA Key** (value prefixed
+    `v1.0-`, sent as `X-Auth-User-Service-Key`) or a scoped API token (sent as a
+    bearer); both come from the secret provider per §3. Requested validity
+    defaults to **365 days**, deliberately not Cloudflare's 5475-day maximum,
+    so the §4 renew-ahead machinery actually re-keys rather than leaving a
+    private key on disk for fifteen years.
 - **Operator-provided cert + key** — load a supplied certificate and private
   key; the operator owns renewal.
 - **Generate CSR for external signing** — the app generates a private key and a
