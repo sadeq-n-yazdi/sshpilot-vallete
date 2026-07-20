@@ -199,6 +199,14 @@ func TestSpecCoversEveryRegisteredRoute(t *testing.T) {
 // driven through the real handler and must answer with a status the spec
 // declares for it — which also rules out the router answering 404 or 405
 // because the path or method was never registered.
+//
+// Known limit, and the reason this is not the only direction checked: the
+// /{handle} wildcard genuinely routes EVERY single-segment path, so a spec
+// entry like /nonexistent would be served as a handle lookup and pass here. The
+// check has real teeth from two segments up, where a bogus path reaches no
+// route and 404s. Single-segment overreach is caught by review rather than by
+// this test, because at the HTTP level such a path is not in fact unroutable —
+// there is no failure for the test to observe.
 func TestEverySpecOperationIsRoutable(t *testing.T) {
 	t.Parallel()
 
