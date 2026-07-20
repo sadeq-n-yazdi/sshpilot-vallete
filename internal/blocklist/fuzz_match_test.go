@@ -52,7 +52,12 @@ func FuzzCheck(f *testing.F) {
 
 		// Allowed and Reason must never disagree.
 		switch got.Reason {
-		case ReasonAllowed:
+		// The two permitting reasons. ReasonAllowlisted cannot fire against
+		// this matcher, which carries no allowlist, but the switch is kept
+		// total so that a future permitting reason has to be classified here
+		// rather than falling through to the default and being mistaken for a
+		// corrupt verdict.
+		case ReasonAllowed, ReasonAllowlisted:
 			if !got.Allowed {
 				t.Fatalf("Check(%q) = %+v: reason allowed but Allowed is false", in, got)
 			}
