@@ -59,6 +59,9 @@ type failingStore struct {
 	// keys records the keys Increment was called with, to show that the stored
 	// key is a digest rather than the identifier itself.
 	keys []string
+	// gets counts Get calls, so a test can show that the denylist is not
+	// consulted for a token that failed the stateless checks.
+	gets int
 }
 
 func (s *failingStore) Increment(_ context.Context, key string, _ int64, _ time.Duration) (counter.Count, error) {
@@ -70,6 +73,7 @@ func (s *failingStore) Increment(_ context.Context, key string, _ int64, _ time.
 }
 
 func (s *failingStore) Get(context.Context, string) (counter.Count, error) {
+	s.gets++
 	if s.getErr != nil {
 		return counter.Count{}, s.getErr
 	}
