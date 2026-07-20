@@ -85,6 +85,9 @@ func validatePrintable(field, s string, maxLen int) error {
 		if unicode.IsControl(r) {
 			return fmt.Errorf("domain: %s must not contain control characters: %w", field, ErrInvalidInput)
 		}
+		if isDisallowedFormatRune(r) {
+			return fmt.Errorf("domain: %s must not contain the disallowed formatting or invisible character %U: %w", field, r, ErrInvalidInput)
+		}
 		n++
 	}
 	if n > maxLen {
@@ -107,6 +110,9 @@ func ValidateKeyComment(comment string) error {
 	for _, r := range comment {
 		if unicode.IsControl(r) {
 			return fmt.Errorf("domain: key comment must not contain control characters: %w", ErrInvalidInput)
+		}
+		if isDisallowedFormatRune(r) {
+			return fmt.Errorf("domain: key comment must not contain the disallowed formatting or invisible character %U: %w", r, ErrInvalidInput)
 		}
 		n++
 	}
