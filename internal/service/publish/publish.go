@@ -245,7 +245,14 @@ func (s *Service) resolveOwner(ctx context.Context, handle string) (domain.Owner
 	if err != nil {
 		return "", notFoundOr(err, "publish: get handle")
 	}
-	if h.State != domain.NameStateActive {
+	// The nil check is a port contract guard, not a lookup. A nil row with a nil
+	// error is a violation no adapter in this tree commits, so the two readings
+	// available are "dereference and panic" and "refuse" — and this is the
+	// UNAUTHENTICATED publish path, reachable by anyone who can send a GET. A
+	// panic here would be a remote denial of service against the whole process,
+	// where a refusal costs one request. It folds into the state check because
+	// the verdict is the same one: not publishable.
+	if h == nil || h.State != domain.NameStateActive {
 		return "", ErrNotFound
 	}
 
@@ -256,7 +263,11 @@ func (s *Service) resolveOwner(ctx context.Context, handle string) (domain.Owner
 	if err != nil {
 		return "", notFoundOr(err, "publish: get owner")
 	}
-	if o.Status != domain.OwnerStatusActive || o.DeletedAt != nil {
+	// Guarded for the same reason as the handle above, and it matters more here:
+	// this is the check that enforces suspension and deletion, so a nil row that
+	// panicked would take down the process on exactly the path that exists to
+	// stop a suspended owner from publishing.
+	if o == nil || o.Status != domain.OwnerStatusActive || o.DeletedAt != nil {
 		return "", ErrNotFound
 	}
 	return o.ID, nil
@@ -290,7 +301,12 @@ func (s *Service) resolveSet(ctx context.Context, ownerID domain.OwnerID, name s
 	// see this field; refusing a non-active set BEFORE any credential is
 	// consulted is what stops a still-valid token from resurrecting a
 	// tombstoned set. See resolveAccess for the full argument.
-	if set.State != domain.NameStateActive {
+	// The nil guard rides along with the state check for the reason given in
+	// resolveOwner, and this site carries the sharpest version of it: a nil row
+	// reaching the dereference below would panic BEFORE the state check that
+	// gates protected sets ever ran, so the failure mode is not only a crash but
+	// a crash on the security check itself.
+	if set == nil || set.State != domain.NameStateActive {
 		return nil, ErrNotFound
 	}
 	return set, nil
