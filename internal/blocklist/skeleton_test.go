@@ -22,8 +22,10 @@ func checkSkeleton(t *testing.T, in, want string) {
 	}
 }
 
-// TestStageIgnorables covers stage 1: invalid UTF-8, combining marks and
-// format characters are removed before anything else runs.
+// TestStageIgnorables covers the two stages that discard rather than rewrite.
+// Invalid UTF-8 goes in stage 0, before NFKD is allowed to see it; combining
+// marks and format characters go in stage 2, after NFKD, because decomposing a
+// precomposed form is what produces the marks in the first place.
 func TestStageIgnorables(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"combining acute", "a\u0301dmin", "admin"},
@@ -43,7 +45,7 @@ func TestStageIgnorables(t *testing.T) {
 	}
 }
 
-// TestStageCaseFold covers stage 2: folding is Unicode-wide, not ASCII-only.
+// TestStageCaseFold covers stage 3: folding is Unicode-wide, not ASCII-only.
 func TestStageCaseFold(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"ascii upper", "ADMIN", "admin"},
@@ -60,7 +62,11 @@ func TestStageCaseFold(t *testing.T) {
 	}
 }
 
-// TestStageCompatibilityRanges covers stage 3: the arithmetic blocks.
+// TestStageCompatibilityRanges covers stage 1, NFKD. The compatibility forms
+// below -- fullwidth, mathematical, circled -- were folded by hand-maintained
+// range arithmetic until TableVersion 4 replaced that with standard NFKD. The
+// cases are kept as they were: which mechanism reduces them is an
+// implementation detail, and that the answers did not move is the point.
 func TestStageCompatibilityRanges(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"fullwidth letters", "ａｄｍｉｎ", "admin"},
@@ -84,7 +90,9 @@ func TestStageCompatibilityRanges(t *testing.T) {
 	}
 }
 
-// TestStageConfusables covers stage 4: the hand-curated homoglyph table.
+// TestStageConfusables covers the hand-curated homoglyph table, which is
+// consulted twice -- in stage 0 on the raw input and in stage 4 after NFKD.
+// Both lookups are load-bearing and neither subsumes the other; see sanitize.
 func TestStageConfusables(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{"cyrillic a", "аdmin", "admin"},
