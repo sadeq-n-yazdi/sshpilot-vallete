@@ -117,15 +117,16 @@ func (f *fixture) addKey(ownerID domain.OwnerID, setID domain.KeySetID, comment 
 	return res.PublicKeyID
 }
 
-// resolve calls the service and fails the test on an unexpected error.
+// resolve calls the service with no credential and fails the test on an
+// unexpected error.
 func (f *fixture) resolve(handle, setName string) string {
 	f.t.Helper()
 
-	body, err := f.svc.Resolve(context.Background(), handle, setName)
+	res, err := f.svc.Resolve(context.Background(), handle, setName, "")
 	if err != nil {
 		f.t.Fatalf("Resolve(%q, %q): %v", handle, setName, err)
 	}
-	return string(body)
+	return string(res.Body)
 }
 
 // exec runs raw SQL against the fixture database.

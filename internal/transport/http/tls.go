@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
 // buildTLSConfig assembles the server's TLS configuration from operator config,
@@ -19,10 +20,11 @@ import (
 // provider returns. Adding a provider therefore cannot weaken the negotiated
 // connection — that separation is the point of the seam.
 //
-// Only two modes are implemented in this track: self_signed (development
-// bring-up) and manual (operator-supplied files). ACME, Cloudflare origin, CSR
-// and upstream termination are later tracks and return [ErrTLSModeUnsupported]
-// rather than silently degrading to a weaker certificate.
+// Implemented modes: self_signed (development bring-up), manual
+// (operator-supplied files), csr (external signing), acme with the TLS-ALPN-01
+// solver, and cloudflare_origin. The ACME DNS-01 solver and upstream
+// termination are later tracks and return [ErrTLSModeUnsupported] rather than
+// silently degrading to a weaker certificate.
 //
 // The now argument is the validity clock, a function rather than an instant
 // because certificates are re-checked on every handshake and may be renewed
@@ -161,6 +163,14 @@ func newCertProvider(ctx context.Context, cfg *config.Config, now func() time.Ti
 		return asCertProvider(newCSRProvider(cfg))
 	case "acme":
 		return newACMEProviderForSolver(ctx, cfg, now)
+	case "cloudflare_origin":
+		// This case arrived on develop after the asCertProvider guard was
+		// written, and newOriginCAProvider returns a concrete
+		// *originCAProvider, so an unwrapped return here would reintroduce the
+		// exact typed nil this change exists to remove. Every case in this
+		// switch returns through asCertProvider; that is the invariant, and a
+		// new mode that quietly skips it is the failure this comment prevents.
+		return asCertProvider(newOriginCAProvider(ctx, cfg, now, builtinSecretResolver(cfg)))
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
 	}
@@ -179,6 +189,43 @@ func asCertProvider[T CertProvider](p T, err error) (CertProvider, error) {
 		return nil, err
 	}
 	return p, nil
+}
+
+// secretResolver resolves a config secret reference to its value.
+//
+// It is a function type rather than the concrete *secrets.Resolver so that a
+// test can supply a missing or failing credential without standing up an
+// environment or a file, which is what makes the credential-missing failure
+// path testable at all.
+type secretResolver func(ctx context.Context, ref secrets.Ref) (secrets.Redacted, error)
+
+// builtinSecretResolver returns the resolver used in production: the built-in
+// env and file providers from ADR-0022.
+//
+// The file provider's permission posture is derived from the environment, which
+// is the split the secrets package documents — it never imports config, so the
+// config layer makes this call. Production REFUSES a world-readable secret
+// file, because a credential any local account can read must be treated as
+// already copied; development warns instead, so a contributor is not blocked by
+// a checkout's permissions.
+//
+// A resolver is built here, at the point of use, rather than threaded down from
+// main because this is currently the only production consumer of a secret
+// reference. When a second one appears, hoisting construction into bootstrap
+// and passing it in is the right move; doing it now would add a parameter to
+// Server.New that nothing else needs.
+func builtinSecretResolver(cfg *config.Config) secretResolver {
+	permMode := secrets.PermError
+	if cfg.Server.Environment != "production" {
+		permMode = secrets.PermWarn
+	}
+	return func(ctx context.Context, ref secrets.Ref) (secrets.Redacted, error) {
+		resolver, err := secrets.NewResolver(secrets.Builtin(secrets.FileOptions{PermMode: permMode})...)
+		if err != nil {
+			return "", err
+		}
+		return resolver.Resolve(ctx, ref)
+	}
 }
 
 // newACMEProviderForSolver dispatches on the configured ACME solver.

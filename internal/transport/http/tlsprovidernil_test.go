@@ -112,6 +112,20 @@ func TestNewCertProviderReturnsNilInterfaceOnError(t *testing.T) {
 			wantErr: ErrTLSModeUnsupported,
 		},
 		{
+			// Origin CA landed on develop after this table was written, which
+			// is precisely the "case added later" this test exists to catch.
+			// The unset reference fails inside newOriginCAProvider before any
+			// network or filesystem work, so the row is deterministic.
+			name: "cloudflare_origin with an unresolvable credential",
+			setup: func(t *testing.T, _ string) *config.Config {
+				t.Helper()
+				cfg := originTestConfig(t)
+				cfg.TLS.CloudflareOrigin.APITokenRef = "env:VALLET_TEST_UNSET_ORIGIN_CA_KEY"
+				return cfg
+			},
+			wantErr: ErrOriginCACredential,
+		},
+		{
 			name: "unsupported mode",
 			setup: func(_ *testing.T, _ string) *config.Config {
 				cfg := &config.Config{}
