@@ -347,6 +347,18 @@ func (g *Guard) decide(ctx context.Context, tok *domain.AccessToken, acc Access)
 	// reachable around: every protected route runs this function, and this
 	// function has no branch that skips this comparison.
 	//
+	// Note what this comparison is and is not. It fires only for a route that
+	// populates Access.Owner -- one that echoes an owner back from the request.
+	// The management API's shape is to address resources by their own
+	// identifiers and take the owner from the token, so for a by-id route
+	// Access.Owner is empty and this branch does not run. That is not a gap.
+	// For those routes the isolation is structural rather than comparative:
+	// Authorization.Owner() can only be the token's owner, and every repository
+	// port takes that owner and filters by it (ADR-0004). This comparison is
+	// defense in depth for the routes that do name an owner, and it is what
+	// stops a request naming owner B under owner A's token. It is not the sole
+	// mechanism, and a route must not be written as though it were.
+	//
 	// The comparison is constant time. Owner ids are internal, non-guessable
 	// identifiers and this is the one place a caller can submit a candidate and
 	// observe an outcome, so a byte-by-byte compare would let an attacker walk
