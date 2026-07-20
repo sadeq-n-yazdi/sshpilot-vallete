@@ -291,10 +291,15 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	//   - digitalocean.go: in do, where the bearer token is written into the
 	//     Authorization header. Its constructor's emptiness check compares the
 	//     wrapped value against "" for the same reason Cloudflare's does.
+	//   - dnsimple.go: in do, where the bearer token is written into the
+	//     Authorization header. Its constructor's emptiness check compares the
+	//     wrapped value against "" for the same reason Cloudflare's does.
 	//
 	// Any other file, or a second site in any of these, means a new path to
 	// plaintext and must be justified by editing this list.
-	want := map[string]int{"cloudflare.go": 1, "route53.go": 1, "digitalocean.go": 1}
+	want := map[string]int{
+		"cloudflare.go": 1, "route53.go": 1, "digitalocean.go": 1, "dnsimple.go": 1,
+	}
 	if !maps.Equal(reveals, want) {
 		t.Errorf("Reveal() call sites = %v, want %v: the plaintext credential must "+
 			"be unwrapped only where it is written into the outbound request", reveals, want)
