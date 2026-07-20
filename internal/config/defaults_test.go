@@ -42,6 +42,8 @@ func TestDefaultSanity(t *testing.T) {
 		{"onboarding.mode", c.Onboarding.Mode, "invite"},
 		{"retention.handle_quarantine", c.Retention.HandleQuarantine.Std(), 30 * 24 * time.Hour},
 		{"retention.audit_retention", c.Retention.AuditRetention.Std(), 365 * 24 * time.Hour},
+		{"retention.audit_purge_batch", c.Retention.AuditPurgeBatch, 500},
+		{"retention.audit_purge_max_per_run", c.Retention.AuditPurgeMaxPerRun, 100_000},
 		{"retention.max_sets_per_owner", c.Retention.MaxSetsPerOwner, 100},
 	}
 	for _, ch := range checks {

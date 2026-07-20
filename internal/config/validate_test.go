@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // validConfig returns a Config that passes Validate, used as the baseline that
@@ -172,6 +173,21 @@ func TestValidateFailures(t *testing.T) {
 		{"retention audit zero", func(c *Config) {
 			c.Retention.AuditRetention = 0
 		}, "retention.audit_retention"},
+		{"retention audit negative", func(c *Config) {
+			c.Retention.AuditRetention = Duration(-time.Hour)
+		}, "retention.audit_retention"},
+		{"purge interval negative", func(c *Config) {
+			c.Retention.AuditPurgeInterval = Duration(-time.Second)
+		}, "retention.audit_purge_interval"},
+		{"purge batch zero", func(c *Config) {
+			c.Retention.AuditPurgeBatch = 0
+		}, "retention.audit_purge_batch"},
+		{"purge batch negative", func(c *Config) {
+			c.Retention.AuditPurgeBatch = -1
+		}, "retention.audit_purge_batch"},
+		{"purge max per run zero", func(c *Config) {
+			c.Retention.AuditPurgeMaxPerRun = 0
+		}, "retention.audit_purge_max_per_run"},
 		{"max sets zero", func(c *Config) {
 			c.Retention.MaxSetsPerOwner = 0
 		}, "retention.max_sets_per_owner"},
@@ -365,5 +381,54 @@ func TestValidateDevelopmentRelaxations(t *testing.T) {
 	c.Auth.TokenSigningKeyRef = "" // signing key not required in dev
 	if err := c.Validate(); err != nil {
 		t.Fatalf("development config should be valid: %v", err)
+	}
+}
+
+// TestPurgeIntervalZeroIsTheOnlyOffSwitch pins the asymmetry that keeps a
+// config typo from erasing the audit log.
+//
+// It asserts the mechanism, not a message: a zero *retention window* must be a
+// hard validation failure (a cutoff of now-0 would make every record eligible),
+// while a zero *interval* must validate cleanly because "never purge" is the
+// safe, reversible way to switch the job off. If a future change ever relaxes
+// the retention check to treat 0 as "disabled", this test fails.
+func TestPurgeIntervalZeroIsTheOnlyOffSwitch(t *testing.T) {
+	t.Run("zero retention window is rejected", func(t *testing.T) {
+		c := validConfig()
+		c.Retention.AuditRetention = 0
+		if err := c.Validate(); err == nil {
+			t.Fatal("audit_retention=0 validated; a zero window makes every record eligible for deletion and must never be accepted")
+		}
+	})
+
+	t.Run("zero interval is accepted", func(t *testing.T) {
+		c := validConfig()
+		c.Retention.AuditPurgeInterval = 0
+		if err := c.Validate(); err != nil {
+			t.Fatalf("audit_purge_interval=0 must be valid (it is the documented way to disable purging): %v", err)
+		}
+		// And it must not have been silently rewritten to something that runs.
+		if c.Retention.AuditPurgeInterval.Std() != 0 {
+			t.Fatalf("Validate mutated the interval to %v; a disabled purge must stay disabled", c.Retention.AuditPurgeInterval.Std())
+		}
+	})
+}
+
+// TestDefaultPurgeIntervalActuallySchedules guards against re-creating the very
+// defect this wiring removes: a retention policy that exists in config and never
+// runs. A zero default interval would ship a documented-but-unenforced policy,
+// so the default is asserted to be a positive cadence.
+func TestDefaultPurgeIntervalActuallySchedules(t *testing.T) {
+	c := Default()
+	if got := c.Retention.AuditPurgeInterval.Std(); got <= 0 {
+		t.Fatalf("default audit_purge_interval = %v; the default must schedule a real pass, or retention is documented and never enforced", got)
+	}
+	if got, want := c.Retention.AuditPurgeInterval.Std(), 24*time.Hour; got != want {
+		t.Errorf("default audit_purge_interval = %v, want %v", got, want)
+	}
+	// The default must also survive validation, or the shipped default is unusable.
+	d := validConfig()
+	if err := d.Validate(); err != nil {
+		t.Fatalf("default retention settings must validate: %v", err)
 	}
 }

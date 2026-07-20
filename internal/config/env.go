@@ -186,6 +186,9 @@ func bindings() []binding {
 		// retention
 		{"VALLET_RETENTION_HANDLE_QUARANTINE", setDuration(func(c *Config) *Duration { return &c.Retention.HandleQuarantine })},
 		{"VALLET_RETENTION_AUDIT_RETENTION", setDuration(func(c *Config) *Duration { return &c.Retention.AuditRetention })},
+		{"VALLET_RETENTION_AUDIT_PURGE_INTERVAL", setDuration(func(c *Config) *Duration { return &c.Retention.AuditPurgeInterval })},
+		{"VALLET_RETENTION_AUDIT_PURGE_BATCH", setInt(func(c *Config) *int { return &c.Retention.AuditPurgeBatch })},
+		{"VALLET_RETENTION_AUDIT_PURGE_MAX_PER_RUN", setInt(func(c *Config) *int { return &c.Retention.AuditPurgeMaxPerRun })},
 		{"VALLET_RETENTION_MAX_SETS_PER_OWNER", setInt(func(c *Config) *int { return &c.Retention.MaxSetsPerOwner })},
 
 		// install
