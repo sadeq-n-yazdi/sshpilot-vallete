@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -71,14 +72,31 @@ func (r Ref) split() (scheme, opaque string, ok bool) {
 // a non-empty opaque part separated by ':'. An empty Ref is invalid; callers
 // that permit optionality should check IsZero first.
 func (r Ref) Validate() error {
-	scheme, opaque, ok := r.split()
+	_, opaque, ok := r.split()
 	if !ok {
-		return fmt.Errorf("secrets: malformed reference %q: want scheme:opaque", string(r))
+		// The reference is rendered redacted (see redact.go): a value pasted into
+		// a *_ref field instead of a reference lands here, and a bare pasted
+		// password has no ':' at all, so echoing it would print the secret whole.
+		return fmt.Errorf("secrets: malformed reference %s: want scheme:opaque, e.g. env:VALLET_PG_DSN or file:/run/secrets/pg-dsn", r.redacted())
 	}
 	if opaque == "" {
-		return fmt.Errorf("secrets: reference %q has empty opaque part", string(r))
+		return fmt.Errorf("secrets: reference %s has empty opaque part", r.redacted())
 	}
-	_ = scheme
+	// A reference carrying the redaction marker is the product of serializing a
+	// Ref and reading it back -- redaction is deliberately one-way (see
+	// redact.go), so such a document describes no secret at all.
+	//
+	// This case is rejected HERE, at load, rather than left to fail at Resolve.
+	// Left alone it would parse cleanly and only surface much later as "env var
+	// [REDACTED] not set", which reads like a deployment mistake and sends the
+	// operator hunting for a variable they never set. Naming the real cause at
+	// the point the document is read turns a confusing late failure into an
+	// immediate, self-explaining one -- and keeps the marshalers fail-closed:
+	// the cost of serializing a config is a loud refusal to reload it, never a
+	// leaked secret.
+	if opaque == redactedMarker {
+		return fmt.Errorf("secrets: reference %s is redacted, not a usable reference: it came from serialized output, which never carries secret references; restore this field from the original configuration", r.redacted())
+	}
 	return nil
 }
 
@@ -88,6 +106,12 @@ type Provider interface {
 	Scheme() string
 	// Resolve turns the opaque part of a reference into a secret value. It must
 	// return an error that names the reference, never the value, on failure.
+	//
+	// A provider is reached only when its scheme matched, so its opaque part has
+	// the documented, non-secret meaning of that scheme (an environment variable
+	// name, a filesystem path) and may appear in errors -- it is the diagnostic.
+	// The dispatcher above is different: an unmatched or malformed reference is
+	// where a pasted secret lands, so there the opaque part is always redacted.
 	Resolve(ctx context.Context, opaque string) (Redacted, error)
 }
 
@@ -113,8 +137,20 @@ func NewResolver(providers ...Provider) (*Resolver, error) {
 	return &Resolver{providers: m}, nil
 }
 
+// schemes returns the registered schemes in sorted order, for deterministic
+// error messages.
+func (r *Resolver) schemes() []string {
+	out := make([]string, 0, len(r.providers))
+	for scheme := range r.providers {
+		out = append(out, scheme)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Resolve validates the reference, selects the provider for its scheme, and
-// resolves it. Errors name the reference, never the resolved value.
+// resolves it. Errors render the reference in redacted form (scheme preserved,
+// opaque part replaced) and never contain the resolved value.
 func (r *Resolver) Resolve(ctx context.Context, ref Ref) (Redacted, error) {
 	if err := ref.Validate(); err != nil {
 		return "", err
@@ -122,7 +158,15 @@ func (r *Resolver) Resolve(ctx context.Context, ref Ref) (Redacted, error) {
 	scheme, opaque, _ := ref.split()
 	p, ok := r.providers[scheme]
 	if !ok {
-		return "", fmt.Errorf("secrets: no provider for scheme %q (reference %q)", scheme, string(ref))
+		// This is the branch an operator reaches by pasting a secret (say a
+		// Postgres DSN) into a *_ref field: "postgres" is a well-formed scheme
+		// with no provider. The reference is rendered redacted; the known-scheme
+		// list and the hint below are what make the error actionable without it.
+		// The caller (config) prefixes the offending field name.
+		return "", fmt.Errorf(
+			"secrets: no provider for reference %s; known schemes: %s; a *_ref field must hold a reference to a secret, not the secret value itself",
+			ref.redacted(), strings.Join(r.schemes(), ", "),
+		)
 	}
 	return p.Resolve(ctx, opaque)
 }
