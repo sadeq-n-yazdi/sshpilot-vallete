@@ -7,6 +7,7 @@ import (
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
 )
 
 // handlerOptions are the optional dependencies of the route table: the
@@ -17,6 +18,7 @@ type handlerOptions struct {
 	devices    DeviceService
 	keys       PublicKeyService
 	keySets    KeySetService
+	telemetry  *telemetry.Provider
 }
 
 // HandlerOption configures NewHandler.
@@ -33,6 +35,21 @@ func WithAuthorizer(a Authorizer) HandlerOption {
 // WithDeviceService supplies the device management service.
 func WithDeviceService(s DeviceService) HandlerOption {
 	return func(o *handlerOptions) { o.devices = s }
+}
+
+// WithTelemetry supplies the tracing and metrics provider.
+//
+// Its absence is not a failure and needs no fallback: a nil *telemetry.Provider
+// yields a no-op tracer and a no-op meter, so the middleware is mounted either
+// way and the request path is identical in shape whether or not telemetry is
+// configured. Nothing about this option can weaken a security control -- it
+// only decides whether spans and metrics are recorded.
+//
+// Note what this option does NOT do: it never causes the scrape endpoint to be
+// mounted on this handler. The Prometheus endpoint lives on its own listener
+// (telemetry.MetricsServer) and there is no code path from here to it.
+func WithTelemetry(p *telemetry.Provider) HandlerOption {
+	return func(o *handlerOptions) { o.telemetry = p }
 }
 
 // WithPublicKeyService supplies the public key management service.

@@ -57,10 +57,20 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// programming error rather than an operator one, and the honest response is
 	// to serve without the tier and say so loudly. Failing startup instead
 	// would convert a limiter bug into a total outage.
-	publishLimiter, err := newPublishLimiter(cfg, newLimitStore(cfg, logger))
+	//
+	// One counter store backs every tier, per ADR-0023. The limiters namespace
+	// their own keys by tier name, so sharing it cannot let one tier spend
+	// another's budget.
+	limitStore := newLimitStore(cfg, logger)
+	publishLimiter, err := newPublishLimiter(cfg, limitStore)
 	if err != nil {
 		logger.LogAttrs(context.Background(), slog.LevelError,
 			"rate limit: publish tier not mounted", slog.String("error", err.Error()))
+	}
+	managementLimiter, err := newManagementLimiter(cfg, limitStore)
+	if err != nil {
+		logger.LogAttrs(context.Background(), slog.LevelError,
+			"rate limit: management tier not mounted", slog.String("error", err.Error()))
 	}
 
 	mux := http.NewServeMux()
@@ -151,15 +161,30 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// is read.
 	//
 	// Rate limiting: ADR-0023 keys the management tier per credential rather
-	// than per IP. The tiered limiter is I1 (PR #44) and is not on develop yet,
-	// so the tier is deliberately not mounted here rather than vendored. This
-	// is the seam: once #44 lands, the management tier wraps these three
-	// registrations and nothing else about them changes.
+	// than per IP, so the tier is mounted INSIDE Protect -- mgmt decorates the
+	// ScopedHandler, which is the first point at which a verified credential
+	// exists. An outer middleware here could only key on the source address,
+	// which is the keying the ADR rejects for this surface because an owner's
+	// automation shares a NAT with colleagues who would then throttle each
+	// other. See managementRateLimit.
+	//
+	// Every management route below is wrapped, and each wrap is its own call
+	// site: dropping mgmt from any one of them fails that route's rate-limit
+	// test rather than only the suite's first.
+	//
+	// Not mounted, because the routes do not exist yet: the AUTH tier
+	// (ratelimit.AuthLimiter, which is failure-counting with backoff and is
+	// driven by an auth handler around the credential check rather than mounted
+	// as a limiter at all) and the ADMIN tier. There is no login, enrollment or
+	// instance-administration route on this mux to attach either to; inventing
+	// one to hang a limiter on would be a larger security decision than the
+	// limiter itself. Both are wired the day their routes land.
 	guardian := managementGuardian(o.authorizer, logger)
-	mux.Handle("POST /api/v1/devices", guardian.Protect(AccountAccess, registerDeviceHandler(o.devices, logger)))
-	mux.Handle("GET /api/v1/devices", guardian.Protect(AccountAccess, listDevicesHandler(o.devices, logger)))
+	mgmt := managementRateLimit(managementLimiter, logger)
+	mux.Handle("POST /api/v1/devices", guardian.Protect(AccountAccess, mgmt(registerDeviceHandler(o.devices, logger))))
+	mux.Handle("GET /api/v1/devices", guardian.Protect(AccountAccess, mgmt(listDevicesHandler(o.devices, logger))))
 	mux.Handle("DELETE /api/v1/devices/{deviceID}",
-		guardian.Protect(DeviceAccess, revokeDeviceHandler(o.devices, logger)))
+		guardian.Protect(DeviceAccess, mgmt(revokeDeviceHandler(o.devices, logger))))
 
 	// The public key routes all declare AccountAccess, including the one that
 	// addresses a single key by id. That is not an oversight: auth.ResourceKind
@@ -170,10 +195,10 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// conservative reading -- a resource-bound token cannot reach any of these,
 	// and a read-only token cannot reach the two mutating ones, because the
 	// Guardian derives Mutating from the method.
-	mux.Handle("POST /api/v1/keys", guardian.Protect(AccountAccess, addKeyHandler(o.keys, logger)))
-	mux.Handle("GET /api/v1/keys", guardian.Protect(AccountAccess, listKeysHandler(o.keys, logger)))
+	mux.Handle("POST /api/v1/keys", guardian.Protect(AccountAccess, mgmt(addKeyHandler(o.keys, logger))))
+	mux.Handle("GET /api/v1/keys", guardian.Protect(AccountAccess, mgmt(listKeysHandler(o.keys, logger))))
 	mux.Handle("DELETE /api/v1/keys/{keyID}",
-		guardian.Protect(AccountAccess, revokeKeyHandler(o.keys, logger)))
+		guardian.Protect(AccountAccess, mgmt(revokeKeyHandler(o.keys, logger))))
 
 	// The key set routes split their access declarations, and the split is the
 	// security decision on this block. Create and list address the account, so
@@ -200,7 +225,13 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 		guardian.Protect(KeySetAccess, deleteKeySetHandler(o.keySets, logger)))
 
 	// Outermost first: every response carries the transport policy, then every
-	// request gets an ID, then is logged, then is protected from panics.
+	// request gets an ID, then a span and a metric, then is logged, then is
+	// protected from panics.
+	//
+	// telemetryMiddleware sits INSIDE requestIDMiddleware so the span can carry
+	// the correlation ID, and OUTSIDE loggingMiddleware so the span covers the
+	// whole handler. It never mounts a route; the scrape endpoint is a separate
+	// listener (telemetry.MetricsServer), never a path on this mux.
 	//
 	// hstsMiddleware is outermost so the header is set before any inner layer
 	// can write — including the 500 that recoveryMiddleware writes for a
@@ -209,6 +240,7 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	return chain(mux,
 		hstsMiddleware(newHSTSPolicy(cfg)),
 		requestIDMiddleware,
+		telemetryMiddleware(o.telemetry, o.telemetry.NewInstruments()),
 		loggingMiddleware(logger),
 		recoveryMiddleware(logger),
 	)
