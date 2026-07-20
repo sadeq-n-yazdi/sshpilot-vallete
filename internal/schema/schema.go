@@ -43,8 +43,8 @@ func Registry() (*migrate.Registry, error) {
 		migration0003KeySets(),
 		migration0004AuditRecords(),
 		migration0005OwnerErasureSalts(),
-		migration0007LinkedIdentities(),
 		migration0006RefreshCredentials(),
+		migration0007LinkedIdentities(),
 	)
 }
 
@@ -507,6 +507,10 @@ func migration0007LinkedIdentities() migrate.Migration {
 		Down: migrate.Steps{
 			SQLite:   []string{`DROP TABLE linked_identities`},
 			Postgres: []string{`DROP TABLE linked_identities`},
+		},
+	}
+}
+
 // migration0006RefreshCredentials creates the refresh_credentials table: the
 // rotatable, single-use credentials from which access tokens are minted
 // (ADR-0018).
