@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -288,11 +289,15 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 		defer cancel()
 	}
 
-	var firstErr error
+	// Every shutdown runs, and every failure is kept. Returning only the first
+	// would hide the rest behind whichever exporter happened to be registered
+	// earliest, and these are the errors that say telemetry was lost on the way
+	// out -- exactly what an operator reading a shutdown log needs all of.
+	var errs []error
 	for _, fn := range p.shutdown {
-		if err := fn(ctx); err != nil && firstErr == nil {
-			firstErr = err
+		if err := fn(ctx); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return firstErr
+	return errors.Join(errs...)
 }
