@@ -44,6 +44,16 @@ var ErrUnsupportedProvider = errors.New("dns01: unsupported dns provider")
 // challengePrefix is the label ACME DNS-01 prescribes (RFC 8555 §8.4).
 const challengePrefix = "_acme-challenge"
 
+// maxAPIMessageBytes bounds how much of a DNS provider's own error message is
+// carried into an error this package returns.
+//
+// It is shared by every provider so the limit is one decision rather than a
+// number each new provider picks again. The message is remote input and is a
+// bounded diagnostic, not trusted text. Apply it with [safetext.Bound], never
+// with a slice expression: a fixed byte cut can split a multi-byte rune and
+// leave invalid UTF-8 for the log encoder downstream to mangle.
+const maxAPIMessageBytes = 200
+
 // Record is the single TXT record a DNS-01 challenge needs published.
 //
 // Neither field is a secret. Name is a public hostname, and Value is the
