@@ -336,6 +336,135 @@ func TestEditIsRefusedWhenItCannotBePersisted(t *testing.T) {
 	}
 }
 
+// TestWriteOrderClosesEveryCrashWindowTowardRefusing pins the direction-aware
+// ordering of the two durable writes, which is the property that leaves no
+// fail-open crash window.
+//
+// The two writes are separate auto-commits, so a crash can land between them.
+// Which one goes first decides what a restart sees, and the safe answer differs
+// per operation: whichever write failing would leave the MORE PERMISSIVE state
+// must go first. This is asserted by making the second write fail and observing
+// whether the first one happened, because that is exactly the state a crash
+// between them would leave behind.
+//
+// A single fixed order cannot satisfy both rows below. Flipping either one
+// re-opens the hole this package exists to close.
+func TestWriteOrderClosesEveryCrashWindowTowardRefusing(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		// edit is the operation under test.
+		edit func(*Service, context.Context) error
+		// seed grants the allowlist entry when the operation needs one present.
+		seed config.BlocklistConfig
+		// kind and entry identify the override row the edit should (or should
+		// not) have left behind.
+		kind  domain.ListKind
+		entry string
+		// weakens says which way the edit moves the control, and so which write
+		// must come first.
+		weakens bool
+	}{
+		{
+			// Weakening: the exemption must never be durable before the record
+			// of who granted it. A crash leaves no exemption and an audit entry
+			// to reconcile -- an over-record, not a hole.
+			name:    "adding an allowlist exemption audits before it persists",
+			edit:    func(s *Service, ctx context.Context) error { return s.AddAllowlistEntry(ctx, activeAdminID, "root") },
+			kind:    domain.ListKindAllowlist,
+			entry:   "root",
+			weakens: true,
+		},
+		{
+			// Weakening: dropping a term stops refusing names it used to catch.
+			name: "removing a blocklist term audits before it persists",
+			edit: func(s *Service, ctx context.Context) error {
+				return s.RemoveBlocklistTerm(ctx, activeAdminID, "billing")
+			},
+			seed:    config.BlocklistConfig{ExtraEntries: []string{"billing"}},
+			kind:    domain.ListKindBlocklistTerm,
+			entry:   "billing",
+			weakens: true,
+		},
+		{
+			// Strengthening, and the headline case. The tombstone must be
+			// durable before the log says the exemption is gone: if the audit
+			// write went first and the persist never happened, the restart
+			// would restore the seed's exemption while the log claimed it was
+			// removed -- fail-open with a misleading audit trail.
+			name: "removing an allowlist exemption persists before it audits",
+			edit: func(s *Service, ctx context.Context) error {
+				return s.RemoveAllowlistEntry(ctx, activeAdminID, "Admin")
+			},
+			seed:    config.BlocklistConfig{AllowEntries: []string{"Admin"}},
+			kind:    domain.ListKindAllowlist,
+			entry:   "Admin",
+			weakens: false,
+		},
+		{
+			// Strengthening: a term reported as blocked must actually be
+			// blocked after a restart.
+			name: "adding a blocklist term persists before it audits",
+			edit: func(s *Service, ctx context.Context) error {
+				return s.AddBlocklistTerm(ctx, activeAdminID, "billing")
+			},
+			kind:    domain.ListKindBlocklistTerm,
+			entry:   "billing",
+			weakens: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			ov := newFakeOverrides()
+			sink := &recordingSink{}
+			d := boot(t, tc.seed, ov, sink)
+
+			// Fail the write that is supposed to come SECOND. If the ordering
+			// is right, the first write has already happened; if it is
+			// flipped, nothing was written at all.
+			if tc.weakens {
+				ov.putErr = errors.New("database unavailable")
+			} else {
+				sink.err = errors.New("audit log unavailable")
+			}
+
+			if err := tc.edit(d.svc, ctx); err == nil {
+				t.Fatal("the edit was accepted although one of its writes failed")
+			}
+
+			audited := len(sink.all()) > 0
+			// The row itself, not the attempt: the fake counts calls whether or
+			// not they succeed, and what a restart replays is the stored row.
+			_, persisted := ov.get(tc.kind, tc.entry)
+
+			if tc.weakens {
+				if !audited {
+					t.Error("a weakening edit persisted (or aborted) before auditing: " +
+						"a crash here could leave the permission in force with nobody named as granting it")
+				}
+				if persisted {
+					t.Error("a weakening edit persisted despite failing: the permission " +
+						"would be in force after a restart")
+				}
+				return
+			}
+
+			if !persisted {
+				t.Error("FAIL-OPEN: a strengthening edit audited before it persisted. " +
+					"A crash between the two writes would restore the seed's entry after a " +
+					"restart while the audit log claimed the edit was made")
+			}
+			if audited {
+				t.Error("the audit sink recorded an edit it was configured to reject")
+			}
+		})
+	}
+}
+
 // TestLoadPolicyRefusesWithoutAnOverrideRepository pins that seed-only
 // composition cannot be reached by omitting an argument. Composing from the
 // seed alone IS the bug, so it must not be the accidental default.
