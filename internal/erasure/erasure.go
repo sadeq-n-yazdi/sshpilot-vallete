@@ -59,6 +59,26 @@
 // can never be erased — the key needed to mint their tombstones is gone. The
 // safe direction is the one that stays retryable.
 //
+// # Limit: erasure covers the identifier columns, NOT record metadata
+//
+// Pseudonymize rewrites actor_id and target_id. It does NOT touch a record's
+// metadata, and the metadata allowlist in internal/audit admits keys that can
+// carry an owner's identity: fingerprint, handle, device_name, key_set_name and
+// client_label. A fingerprint is not a secret, but it names a specific key and
+// therefore its owner.
+//
+// So the irreversibility argument above holds for the identifier columns only.
+// A record whose metadata carries an identifying detail still identifies its
+// subject after erasure, and destroying the salt does nothing about it. Do not
+// read this package as providing erasure over a whole audit record until that
+// is addressed.
+//
+// Closing it means deciding, per allowlisted key, whether the value is erasable
+// (rewrite it), droppable (remove it) or genuinely non-identifying (keep it) —
+// a policy question about the audit vocabulary, not a storage detail, which is
+// why it is not settled here. Like the traversal below, it is NOT ASSIGNED to
+// any planned task.
+//
 // # Scope: this package is a primitive, and its caller does not exist yet
 //
 // EraseOwner takes the identifiers to erase as an argument. It does NOT
@@ -137,7 +157,11 @@ func Verify(salt []byte, id, tombstone string) bool {
 
 // EraseOwner replaces every occurrence of the given identifiers in the audit
 // log with tombstones and then destroys the owner's salt, returning the number
-// of audit records rewritten.
+// of identity fields rewritten.
+//
+// The count is fields, not records: each identifier is erased in its own pass,
+// so a record naming one of these identifiers as both actor and target counts
+// twice. It is a progress figure, not a record census.
 //
 // After it returns, the audit trail still records what happened and when, and
 // no one — including the operator who ran this — can recover which owner it
