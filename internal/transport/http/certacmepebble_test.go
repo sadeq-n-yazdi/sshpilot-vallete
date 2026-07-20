@@ -105,7 +105,7 @@ func TestACMEEndToEndAgainstPebble(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 
-	p, err := newACMEProviderWithClient(ctx, client, cfg, time.Now)
+	p, err := newACMEProviderWithClient(ctx, client, cfg, time.Now, newTLSALPNSolver)
 	if err != nil {
 		t.Fatalf("newACMEProviderWithClient: %v", err)
 	}
