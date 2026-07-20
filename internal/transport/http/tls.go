@@ -142,19 +142,43 @@ func startupProbeRequired(provider CertProvider) bool {
 // alternatives to refusing would be serving a self-signed certificate the
 // operator did not ask for, or no TLS at all. Both are the silent downgrade
 // ADR-0015 exists to prevent.
+//
+// Every case returns through [asCertProvider]. That is not decoration: each
+// constructor returns a CONCRETE pointer type, and `return newXProvider(...)`
+// would convert a nil pointer into a non-nil CertProvider interface holding a
+// typed nil. A caller that checked `provider != nil` instead of the error would
+// then proceed with a provider that is nil underneath. Every caller today
+// checks the error first, so this is not reachable now — asCertProvider makes it
+// unreachable by construction rather than by caller discipline, on a seam whose
+// failure mode is serving without the certificate policy it exists to enforce.
 func newCertProvider(ctx context.Context, cfg *config.Config, now func() time.Time) (CertProvider, error) {
 	switch cfg.TLS.Mode {
 	case "self_signed":
-		return newSelfSignedProvider(cfg, now)
+		return asCertProvider(newSelfSignedProvider(cfg, now))
 	case "manual":
-		return newManualProvider(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile)
+		return asCertProvider(newManualProvider(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile))
 	case "csr":
-		return newCSRProvider(cfg)
+		return asCertProvider(newCSRProvider(cfg))
 	case "acme":
 		return newACMEProviderForSolver(ctx, cfg, now)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
 	}
+}
+
+// asCertProvider lifts a concrete provider constructor's (*T, error) result into
+// (CertProvider, error) without ever producing a typed-nil interface.
+//
+// The type parameter is constrained to CertProvider, so this cannot be used to
+// smuggle a non-provider through; on error the returned interface is the
+// UNTYPED nil literal, which is the only value for which `provider == nil` is
+// true. Returning p directly on the error path would satisfy the compiler and
+// silently defeat the whole point.
+func asCertProvider[T CertProvider](p T, err error) (CertProvider, error) {
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // newACMEProviderForSolver dispatches on the configured ACME solver.
@@ -167,7 +191,10 @@ func newCertProvider(ctx context.Context, cfg *config.Config, now func() time.Ti
 func newACMEProviderForSolver(ctx context.Context, cfg *config.Config, now func() time.Time) (CertProvider, error) {
 	switch cfg.TLS.ACME.Solver {
 	case "tls_alpn_01":
-		return newACMEProvider(ctx, cfg, now)
+		// asCertProvider for the same reason as in newCertProvider: this is the
+		// TRUE source of the acme mode's interface value, so fixing the
+		// passthrough above without fixing it here would leave the hazard.
+		return asCertProvider(newACMEProvider(ctx, cfg, now))
 	default:
 		return nil, fmt.Errorf("%w: acme solver %q", ErrTLSModeUnsupported, cfg.TLS.ACME.Solver)
 	}
