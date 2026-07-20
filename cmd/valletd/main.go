@@ -21,7 +21,6 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/erasure"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/logging"
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/sweep"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
@@ -96,26 +95,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	store := sqlite.NewStore(db)
 
-	// SEAM: protected key sets are enforced but not yet unlockable.
-	//
-	// With no publish.WithVerifier here the publish service has no access key
-	// verifier, and every protected set answers with the same 404 an absent set
-	// gets -- for everyone, credential or not. That is the fail-closed
-	// direction and the intended interim state: the enforcement path exists and
-	// is under test, and no protected set is served to anybody in the meantime.
-	//
-	// Completing the wiring needs an *accesskey.Service, which needs the audit
-	// emitter and the token pepper -- the same dependencies the management
-	// surface below is still waiting on. When they land, this call gains
-	//
-	//	publish.WithVerifier(accessKeySvc),
-	//
-	// and nothing else here changes.
-	publisher, err := publish.New(store.Repos())
-	if err != nil {
-		return err
-	}
-
 	// Built before the listener binds, so a bad retention policy fails startup
 	// rather than surfacing at the first tick of a server already taking
 	// traffic. Repos().Audit is the full port (the purge needs PurgeOlderThan);
@@ -133,43 +112,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	// SEAM: the authenticated management surface is mounted but not yet wired.
-	//
-	// httpserver.NewHandler registers the device, public key and key set
-	// management routes unconditionally, and with no httpserver.WithAuthorizer
-	// here they are guarded by an authorizer that refuses every credential. That
-	// is the intended interim state: the routes exist, they are documented, and
-	// they answer 401 to everyone, so no request is ever served unauthenticated.
-	//
-	// Completing the wiring needs an *auth.Guard, which needs the token
-	// verifier and the credential denylist, whose storage adapters are still in
-	// review (the auth/pairing adapters). When they land, this call gains
-	//
-	//	httpserver.WithAuthorizer(guard),
-	//	httpserver.WithDeviceService(deviceSvc),
-	//	httpserver.WithPublicKeyService(keySvc),
-	//	httpserver.WithKeySetService(setSvc),
-	//
-	// and nothing else here changes.
-	//
-	// SEAM: the key set service needs a *nameguard.Guard, which is the ONLY way
-	// the reserved-identifier blocklist (ADR-0017, Fb4) reaches a set-name
-	// create or rename. keyset.New refuses a nil one, so the service cannot be
-	// built without it and there is no unchecked path to build. But no matcher
-	// is constructed for a request-serving service today -- nameguard.Default()
-	// is called by the bootstrap-owner subcommand and by newSweepRunner, whose
-	// handle service never reaches the guard at all (see newHandleSweepService)
-	// -- and constructing one here would
-	// pick a source (the curated defaults, or the defaults plus the operator's
-	// configured extra and allow lists via listadmin.ApplySeed) that is a
-	// deployment decision tracked separately. So the choice is deliberately not
-	// made here; setSvc above is built by whoever completes this wiring, with
-	// the guard the blocklist-wiring task settles on.
-	//
-	// The behavior described above is pinned by
-	// TestManagementRoutesFailClosedWithoutAnAuthorizer, which builds a handler
-	// with no authorizer -- this function's exact option set -- and asserts every
-	// management route answers 401. This wiring in main is not itself under test.
 	// Telemetry is built before the server so the handler can carry the
 	// middleware, and it never returns an error: an exporter that cannot be
 	// constructed is logged and omitted (see telemetry.New). A monitoring
@@ -177,7 +119,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	tel := telemetry.New(cfg, logger)
 	defer shutdownTelemetry(tel, logger)
 
-	srv, err := httpserver.New(cfg, logger, db, publisher, httpserver.WithTelemetry(tel))
+	srv, err := buildServer(context.Background(), cfg, logger, db, store, tel)
 	if err != nil {
 		return err
 	}

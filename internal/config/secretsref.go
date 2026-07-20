@@ -24,6 +24,7 @@ type RefRequirement struct {
 //   - tls mode cloudflare_origin   -> tls.cloudflare_origin.api_token_ref
 //   - acme + dns_01 + dns api mode -> tls.acme.dns.credentials_ref
 //   - production environment       -> auth.token_signing_key_ref
+//   - production, or ref set       -> auth.access_key_pepper_ref
 //   - shared rate-limit store      -> rate_limit.shared.password_ref (if set)
 //   - otlp metrics enabled         -> telemetry.metrics.otlp.headers_ref (if set)
 //
@@ -49,6 +50,14 @@ func (c *Config) RequiredSecretRefs() []RefRequirement {
 	}
 	if c.Server.Environment == "production" {
 		add("auth.token_signing_key_ref", c.Auth.TokenSigningKeyRef)
+	}
+	// The pepper is required in production, and required to RESOLVE wherever it
+	// was named. The second half is the load-bearing one: an operator who set
+	// the reference asked for access key verification, so a reference that does
+	// not resolve is a failure, not a license to fall back to the verifier-less
+	// mode. Only an unset reference outside production selects that mode.
+	if c.Server.Environment == "production" || !c.Auth.AccessKeyPepperRef.IsZero() {
+		add("auth.access_key_pepper_ref", c.Auth.AccessKeyPepperRef)
 	}
 	if c.RateLimit.Enabled && c.RateLimit.Store == "shared" && !c.RateLimit.Shared.PasswordRef.IsZero() {
 		add("rate_limit.shared.password_ref", c.RateLimit.Shared.PasswordRef)
