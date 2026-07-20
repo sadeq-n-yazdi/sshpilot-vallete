@@ -16,6 +16,9 @@ func validConfig() Config {
 	c.TLS.Mode = "acme"
 	c.TLS.Domain = "vallet.example.com"
 	c.TLS.ACME.Solver = "tls_alpn_01"
+	c.TLS.ACME.AccountKeyFile = "/var/lib/vallet/acme/account.key"
+	c.TLS.ACME.CacheDir = "/var/lib/vallet/acme"
+	c.TLS.ACME.AcceptTOS = true
 	c.Auth.TokenSigningKeyRef = "env:VALLET_SIGNING_KEY"
 	return c
 }
@@ -59,6 +62,29 @@ func TestValidateFailures(t *testing.T) {
 		{"acme dotless in prod", func(c *Config) { c.TLS.Domain = "vallet" }, "tls.domain"},
 		{"acme missing solver", func(c *Config) { c.TLS.ACME.Solver = "" }, "tls.acme.solver"},
 		{"acme bad solver", func(c *Config) { c.TLS.ACME.Solver = "http_01" }, "tls.acme.solver"},
+		// The account-level settings are required for EVERY solver, so each is
+		// asserted under tls_alpn_01 (the baseline) and again under dns_01
+		// below: a check accidentally scoped to one solver would let the other
+		// reach issuance with no account key, no cache, or no TOS agreement.
+		{"acme missing account key", func(c *Config) { c.TLS.ACME.AccountKeyFile = "" }, "tls.acme.account_key_file"},
+		{"acme missing cache dir", func(c *Config) { c.TLS.ACME.CacheDir = "" }, "tls.acme.cache_dir"},
+		{"acme missing tos", func(c *Config) { c.TLS.ACME.AcceptTOS = false }, "tls.acme.accept_tos"},
+		{"acme blank directory url", func(c *Config) { c.TLS.ACME.DirectoryURL = "" }, "tls.acme.directory_url"},
+		{"dns_01 missing account key", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "manual"
+			c.TLS.ACME.AccountKeyFile = ""
+		}, "tls.acme.account_key_file"},
+		{"dns_01 missing cache dir", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "manual"
+			c.TLS.ACME.CacheDir = ""
+		}, "tls.acme.cache_dir"},
+		{"dns_01 missing tos", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "manual"
+			c.TLS.ACME.AcceptTOS = false
+		}, "tls.acme.accept_tos"},
 		{"dns api missing provider", func(c *Config) {
 			c.TLS.ACME.Solver = "dns_01"
 			c.TLS.ACME.DNS.Mode = "api"

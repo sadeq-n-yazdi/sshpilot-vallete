@@ -42,6 +42,7 @@ consequences. They are the project's decision memory.
 | [0026](0026-handle-lifecycle.md) | Handle lifecycle: uniqueness, rename, quarantine | Accepted |
 | [0027](0027-supply-chain-and-build-security.md) | Supply-chain and build security | Accepted |
 | [0028](0028-migrations-and-backup.md) | Schema migrations and backup | Accepted |
+| [0029](0029-served-helper-installer-and-pinned-hash-install.md) | Served helper installer and pinned-hash install | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.

@@ -93,6 +93,11 @@ tags:
     description: Liveness and readiness, for orchestrators and load balancers.
   - name: publish
     description: The unauthenticated read path consumed by sshd and by operators.
+  - name: install
+    description: |
+      The served helper installer and its SHA-256 digest (ADR-0013, ADR-0029).
+      Unauthenticated and enabled by default; a deployer may disable it, and
+      both routes then answer `404` exactly as an unrouted path does.
   - name: docs
     description: |
       This document, served by the server that implements it (ADR-0021).
@@ -131,6 +136,68 @@ paths:
           $ref: "#/components/responses/Status"
         "503":
           $ref: "#/components/responses/Unavailable"
+  /install/vallet-helper.sh:
+    get:
+      tags: [install]
+      operationId: getInstallScript
+      summary: Fetch the helper installation script.
+      description: |
+        The POSIX shell script that installs `vallet-helper` onto a managed
+        host. The bytes are embedded in the binary at build time and are
+        byte-identical for every requester; nothing in the request selects or
+        influences them, and there is deliberately no `/install/{name}` route.
+
+        **Do not pipe this into a shell.** Download it, verify it against the
+        digest below, and only then run it. The documented one-liner in
+        `docs/install-helper.md` chains the two with `&&`, so a mismatched
+        digest aborts before anything executes.
+
+        The `ETag` is the script's SHA-256 — the same value the digest endpoint
+        publishes — so a client that has already verified a copy revalidates
+        against the exact value it verified.
+
+        Served as `text/plain` with `nosniff` and
+        `Content-Disposition: attachment`, so no browser or intermediary renders
+        or executes it.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/InstallAsset"
+        "304":
+          $ref: "#/components/responses/InstallNotModified"
+        "404":
+          $ref: "#/components/responses/RoutingNotFound"
+  /install/vallet-helper.sh.sha256:
+    get:
+      tags: [install]
+      operationId: getInstallScriptDigest
+      summary: Fetch the installation script's SHA-256 digest.
+      description: |
+        The script's digest in `sha256sum -c` format — hex digest, two spaces,
+        file name — so it can be piped straight into `sha256sum -c -` without
+        the operator writing a comparison that could get subtly wrong.
+
+        The digest is computed from the embedded script bytes at process
+        initialization. It is never hand-maintained, so it cannot go stale and
+        cannot disagree with what the script endpoint serves.
+
+        **This endpoint is not a trust anchor.** A server compromised into
+        serving a hostile script would serve that script's digest too.
+        Verifying against a hash from the same origin proves the transfer was
+        intact, not that the origin is honest. Pin the digest published
+        out-of-band in the release notes; this endpoint exists so that published
+        value can be checked for staleness and so the documented install has
+        something to fail closed against.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/InstallAsset"
+        "304":
+          $ref: "#/components/responses/InstallNotModified"
+        "404":
+          $ref: "#/components/responses/RoutingNotFound"
   /docs:
     get:
       tags: [docs]
@@ -477,6 +544,23 @@ components:
       required: true
       schema:
         type: string
+    CacheControlInstall:
+      description: |
+        `public, max-age=300`. The artifact is fixed at build time, so the only
+        purpose of the ceiling is to stop a cache shadowing a redeployed script
+        for long. Kept short on purpose: a stale installer whose digest no
+        longer matches the published one trains operators to skip verification.
+      required: true
+      schema:
+        type: string
+    ContentDispositionAttachment:
+      description: |
+        `attachment; filename="..."`. Forces a download rather than an inline
+        render, so an installer script is never displayed in a page a reader
+        could copy it out of without the verification step.
+      required: true
+      schema:
+        type: string
     ContentTypeOptions:
       description: Always `nosniff`.
       required: true
@@ -554,6 +638,32 @@ components:
           $ref: "#/components/headers/ContentTypeOptions"
         Content-Length:
           $ref: "#/components/headers/ContentLength"
+    InstallAsset:
+      description: |
+        The requested install artifact, verbatim from the bytes embedded at
+        build time.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlInstall"
+        Content-Disposition:
+          $ref: "#/components/headers/ContentDispositionAttachment"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+      content:
+        text/plain:
+          schema:
+            type: string
+    InstallNotModified:
+      description: |
+        The client's copy is current; no body. The validator is repeated so the
+        next request still has something to revalidate against.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlInstall"
     NotModified:
       description: |
         The consumer's copy is current. The response carries no body.
@@ -569,8 +679,9 @@ components:
           $ref: "#/components/headers/CacheControlPublic"
     RoutingNotFound:
       description: |
-        This path is not routed. Returned when the documentation endpoints are
-        disabled, and byte-for-byte identical to the response any unrouted path
+        This path is not routed. Returned when the documentation or install
+        endpoints are disabled, and byte-for-byte identical to the response any
+        unrouted path
         produces, so probing cannot reveal that the feature exists to be
         disabled. Distinct from the publish `404`, which is a handler response
         with its own cache directives.
