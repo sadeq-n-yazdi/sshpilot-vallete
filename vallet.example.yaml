@@ -36,8 +36,18 @@ tls:
     dns:
       # manual | api
       mode: ""
+      # Required for dns_01 + api: cloudflare | route53
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
+      #
+      # The referenced secret's format depends on the provider:
+      #   cloudflare -> the API token
+      #   route53    -> "ACCESS_KEY_ID:SECRET_ACCESS_KEY" (no region; Route 53
+      #                 is global and always signed for us-east-1)
+      #
+      # See docs/dns01-provider-credentials.md for the least-privilege policy
+      # each provider needs. These credentials can rewrite your zone, so scope
+      # them as narrowly as the provider allows.
       credentials_ref: ""
   cloudflare_origin:
     # ONLY for an origin behind the Cloudflare proxy (orange cloud).
