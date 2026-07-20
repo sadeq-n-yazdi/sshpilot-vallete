@@ -9,6 +9,7 @@ import (
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/handle"
 )
 
@@ -478,5 +479,72 @@ func TestOwnerCannotReclaimARetiredName(t *testing.T) {
 	}
 	if _, err := f.byName("alice"); err != nil {
 		t.Fatalf("refused rename left the caller without a handle: %v", err)
+	}
+}
+
+// TestRenameSurvivesANilActiveRow drives the rename against a repository that
+// breaks the port contract by returning a nil row with a nil error.
+//
+// No adapter in this tree does that, and the test does not claim one might. It
+// pins which of the two available readings of the violation the service takes:
+// dereference the nil and take the process down, or refuse. The assertion that
+// carries the weight is that the call RETURNS — the error it returns is
+// secondary, and is checked only to confirm the refusal is the uniform one a
+// caller with no active handle already gets.
+func TestRenameSurvivesANilActiveRow(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.seed(ownerA, "alice")
+
+	// The embedded repository is left nil: GetActiveByOwner is the first handle
+	// read the rename makes, so nothing else should be reached before the guard
+	// refuses. Anything else would panic here rather than pass quietly.
+	svc := f.withNilRows(func(repository.HandleRepository) repository.HandleRepository {
+		return nilRowRepo{nilActiveByOwner: true}
+	})
+
+	_, err := svc.Rename(context.Background(), ownerA, "alicia", "")
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Rename with a nil active row = %v, want domain.ErrNotFound", err)
+	}
+}
+
+// TestReclaimSurvivesANilNamedRow covers the sharper of the two sites: the
+// reclaim gate, the check that decides who may take a quarantined name.
+//
+// Only GetByName is falsified; every other read and write goes to the real
+// SQLite adapter, so the rename genuinely reaches the gate with the old name
+// already quarantined rather than being turned away earlier by a fake.
+//
+// ErrNameTaken here is not evidence on its own — a real collision returns the
+// same error, so this test would pass against a service that never looked at
+// the row at all. What it proves is that the gate reaches a verdict instead of
+// panicking, which is why the mutation that removes the nil test fails it.
+func TestReclaimSurvivesANilNamedRow(t *testing.T) {
+	t.Parallel()
+
+	f := newFixture(t)
+	f.seed(ownerA, "alice")
+
+	svc := f.withNilRows(func(real repository.HandleRepository) repository.HandleRepository {
+		return nilRowRepo{HandleRepository: real, nilByName: true}
+	})
+
+	_, err := svc.Rename(context.Background(), ownerA, "alicia", "")
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("Rename with a nil named row = %v, want domain.ErrConflict", err)
+	}
+
+	// The refusal must not have half-applied the rename. A gate that bails out
+	// after the old name was already parked would strand the owner with no
+	// active handle at all, which is worse than the refusal it was avoiding.
+	old, err := f.byName("alice")
+	if err != nil {
+		t.Fatalf("byName(alice) after refused rename: %v", err)
+	}
+	if old.State != domain.NameStateActive {
+		t.Fatalf("alice state after refused rename = %q, want %q",
+			old.State, domain.NameStateActive)
 	}
 }

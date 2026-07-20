@@ -290,3 +290,66 @@ func (f *fixture) seedRetired(owner domain.OwnerID, name string) *domain.Handle 
 	}
 	return h
 }
+
+// nilRowRepo returns (nil, nil) from one chosen read and delegates the rest.
+//
+// The embedded interface is the point: when a test leaves it nil, any call the
+// service makes other than the one under test panics on a nil interface rather
+// than quietly returning a zero value. The test then fails loudly on the wrong
+// call instead of passing for a reason it did not intend.
+type nilRowRepo struct {
+	repository.HandleRepository
+
+	nilActiveByOwner bool
+	nilByName        bool
+}
+
+func (r nilRowRepo) GetActiveByOwner(ctx context.Context, owner domain.OwnerID) (*domain.Handle, error) {
+	if r.nilActiveByOwner {
+		return nil, nil
+	}
+	return r.HandleRepository.GetActiveByOwner(ctx, owner)
+}
+
+func (r nilRowRepo) GetByName(ctx context.Context, name string) (*domain.Handle, error) {
+	if r.nilByName {
+		return nil, nil
+	}
+	return r.HandleRepository.GetByName(ctx, name)
+}
+
+// nilRowStore swaps the handle repository for a decorated one on both the
+// auto-commit path and inside WithTx. Decorating the transactional path is what
+// matters here: every read these guards protect happens inside the rename
+// transaction, so a store that only replaced Repos() would leave the service
+// talking to the undecorated repository and the test would prove nothing.
+type nilRowStore struct {
+	inner repository.Store
+	decor func(repository.HandleRepository) repository.HandleRepository
+}
+
+func (s nilRowStore) Repos() repository.Repos {
+	r := s.inner.Repos()
+	r.Handles = s.decor(r.Handles)
+	return r
+}
+
+func (s nilRowStore) WithTx(ctx context.Context, fn func(context.Context, repository.Repos) error) error {
+	return s.inner.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
+		r.Handles = s.decor(r.Handles)
+		return fn(ctx, r)
+	})
+}
+
+// withNilRows returns a service backed by f's store with the handle reads
+// decorated. It reuses f's seeded owners and rows, so the service under test
+// sees a real database in every respect except the one read being falsified.
+func (f *fixture) withNilRows(decor func(repository.HandleRepository) repository.HandleRepository) *handle.Service {
+	f.t.Helper()
+	svc, err := handle.New(nilRowStore{inner: f.store, decor: decor},
+		mustGuard(f.t), f.auditor, handle.WithClock(f.clock.get))
+	if err != nil {
+		f.t.Fatalf("handle.New: %v", err)
+	}
+	return svc
+}

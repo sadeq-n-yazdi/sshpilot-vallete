@@ -242,6 +242,14 @@ func (s *Service) Rename(ctx context.Context, ownerID domain.OwnerID, name, requ
 		if err != nil {
 			return err
 		}
+		if old == nil {
+			// The port says a nil error carries a row, and no adapter here
+			// breaks that. If one ever did, the two readings of the violation
+			// are dereference-and-panic and refuse; only the second is safe.
+			// ErrNotFound is the same verdict a genuinely absent active handle
+			// gets, so the caller cannot tell the two apart.
+			return ErrNotFound
+		}
 		if old.Name == name {
 			// Renaming to the name already held is refused rather than treated
 			// as a no-op. Succeeding would emit an audit record for a move that
@@ -317,7 +325,14 @@ func (s *Service) claim(
 		// still-quarantined hold. A live handle, another owner's hold, and a
 		// retired name all refuse with the same error, so the caller learns
 		// only "not available" and never whose it is or when it frees up.
-		if existing.OwnerID != ownerID || existing.State != domain.NameStateQuarantined {
+		//
+		// The nil test leads because this is the reclaim gate: it is the check
+		// that decides who may take a quarantined name. A row that arrived
+		// with a nil error against the port's contract must refuse here, not
+		// panic — and refusing is also the conservative reading, since a claim
+		// the service cannot inspect is one it cannot establish belongs to the
+		// caller.
+		if existing == nil || existing.OwnerID != ownerID || existing.State != domain.NameStateQuarantined {
 			return nil, false, ErrNameTaken
 		}
 		existing.State = domain.NameStateActive
