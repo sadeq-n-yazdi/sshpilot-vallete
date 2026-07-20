@@ -144,3 +144,10 @@ retention:
   audit_purge_batch: 500
   audit_purge_max_per_run: 100000
   max_sets_per_owner: 100
+
+docs:
+  # Serve the OpenAPI contract and the embedded documentation UI at /docs/
+  # (ADR-0021). Enabled by default: the contract is not secret, and consumers
+  # need it to build against this API. Set to false on locked-down
+  # installations; the routes then behave exactly like any unknown path.
+  enabled: true

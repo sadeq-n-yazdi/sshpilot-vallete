@@ -27,7 +27,9 @@
 // but has no FK either, because its row must be destroyable on a schedule the
 // erasure flow controls rather than one the owner row's lifetime dictates. See
 // migration0004AuditRecords and migration0005OwnerErasureSalts for the full
-// rationale.
+// rationale. administrators is a third: it is a system-axis principal table
+// with no owner at all, so there is nothing for an owner_id to reference; see
+// migration0009Administrators.
 package schema
 
 import "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
@@ -46,6 +48,7 @@ func Registry() (*migrate.Registry, error) {
 		migration0006RefreshCredentials(),
 		migration0007LinkedIdentities(),
 		migration0008DevicePairings(),
+		migration0009Administrators(),
 	)
 }
 
@@ -698,6 +701,53 @@ func migration0006RefreshCredentials() migrate.Migration {
 		Down: migrate.Steps{
 			SQLite:   []string{`DROP TABLE refresh_credentials`},
 			Postgres: []string{`DROP TABLE refresh_credentials`},
+		},
+	}
+}
+
+// migration0009Administrators creates the administrators table: the system-axis
+// principals authorized to curate the reserved-identifier lists (ADR-0017).
+//
+// # Why this table has no owner_id and no foreign key
+//
+// Every other principal in the schema hangs off owners(id), because every other
+// principal acts on one owner's data. An administrator does not: the blocklist
+// and its allowlist are global (handles are a single global namespace), so the
+// authority to edit them cannot be scoped to an owner without making it the
+// wrong authority. Giving this table an owner_id would invite exactly the
+// confusion the role exists to prevent — an "administrator of one owner" who
+// nonetheless edits a list that binds every owner.
+//
+// # Why status is a CHECK-constrained enum rather than a boolean
+//
+// The authorization decision reads "is this administrator active?", and a
+// disabled administrator must be distinguishable from an absent one. A deleted
+// row loses the fact that the principal ever existed, which an incident review
+// needs; a boolean invites a future third state to be encoded as NULL. The
+// CHECK mirrors domain.AdminStatus so the database refuses a value the domain
+// would not recognize, as defense-in-depth behind the adapter's own validation:
+// an unrecognized status must never be readable back as authorization.
+func migration0009Administrators() migrate.Migration {
+	const ddl = `CREATE TABLE administrators (
+	id TEXT PRIMARY KEY,
+	label TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`
+	return migrate.Migration{
+		ID:   "0009",
+		Name: "administrators",
+		Preconditions: []migrate.Precondition{
+			migrate.TableAbsent("administrators"),
+		},
+		Up: migrate.Steps{
+			SQLite:   []string{ddl},
+			Postgres: []string{ddl},
+		},
+		Down: migrate.Steps{
+			SQLite:   []string{`DROP TABLE administrators`},
+			Postgres: []string{`DROP TABLE administrators`},
 		},
 	}
 }
