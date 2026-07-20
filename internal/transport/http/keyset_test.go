@@ -411,6 +411,14 @@ func (s cancelingKeySetService) Delete(context.Context, domain.OwnerID, domain.K
 	return s.err
 }
 
+func (s cancelingKeySetService) SetDefault(context.Context, domain.OwnerID, domain.KeySetID, string) (*domain.KeySet, error) {
+	return nil, s.err
+}
+
+func (s cancelingKeySetService) SetVisibility(context.Context, domain.OwnerID, domain.KeySetID, domain.Visibility, string) (*domain.KeySet, error) {
+	return nil, s.err
+}
+
 // TestCanceledRequestIsNotLoggedAsAnError pins the severity of a client hanging
 // up, for both context.Canceled and context.DeadlineExceeded.
 //
