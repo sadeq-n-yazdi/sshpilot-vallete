@@ -1,11 +1,22 @@
 package httpserver
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 )
+
+// trustedProxies reads the configured reverse-proxy trust list, tolerating a
+// nil config: no config means no trusted proxy, which is the correct default
+// for a directly-exposed listener.
+func trustedProxies(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	return cfg.Server.TrustedProxies
+}
 
 // NewHandler builds the complete HTTP handler: the route table wrapped in the
 // middleware chain.
@@ -41,6 +52,17 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 		}
 	}
 
+	// A limiter that cannot be built is not a reason to refuse to serve: the
+	// tiers are validated by config before startup, so a failure here means a
+	// programming error rather than an operator one, and the honest response is
+	// to serve without the tier and say so loudly. Failing startup instead
+	// would convert a limiter bug into a total outage.
+	publishLimiter, err := newPublishLimiter(cfg, newLimitStore(cfg, logger))
+	if err != nil {
+		logger.LogAttrs(context.Background(), slog.LevelError,
+			"rate limit: publish tier not mounted", slog.String("error", err.Error()))
+	}
+
 	mux := http.NewServeMux()
 	// Method-qualified patterns mean a POST to /healthz is answered with 405
 	// by the mux itself; no handler-level method checking is needed.
@@ -55,7 +77,18 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// /healthz keeps reaching its own handler and is never treated as a
 	// handle. Both publish routes share one handler; the absence of the {set}
 	// segment is what selects the owner's default set.
-	pub := publishHandler(publisher, logger)
+	//
+	// The publish tier is applied to the publish routes ONLY, not to the whole
+	// mux. /healthz and /readyz must stay unlimited: they are polled by
+	// orchestrators at a fixed cadence from a small set of addresses, so a
+	// shared limit would let publish traffic starve the liveness probe and get
+	// a healthy instance killed mid-incident -- the limiter causing the outage
+	// it exists to prevent.
+	//
+	// It remains keyed purely by IP, so unauthenticated publishing keeps
+	// working exactly as ADR-0019 requires.
+	pub := chain(publishHandler(publisher, logger),
+		rateLimitMiddleware(publishLimiter, newTrustedPeers(trustedProxies(cfg)), logger))
 	mux.Handle("GET /{handle}", pub)
 	mux.Handle("GET /{handle}/{set}", pub)
 

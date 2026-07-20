@@ -11,6 +11,7 @@ import (
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/schema"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/bootstrap"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
@@ -36,7 +37,13 @@ func runBootstrapOwner(args []string, stdout, stderr io.Writer) error {
 	fs.SetOutput(stderr)
 	configPath := fs.String("config", "", "path to the configuration file (env and defaults are used when empty)")
 	handle := fs.String("handle", "", "the public handle to claim (required)")
-	setName := fs.String("set", bootstrap.DefaultSetName, "name of the default key set")
+	// The default is EMPTY, not bootstrap.DefaultSetName. An explicitly
+	// supplied set name is a user-chosen identifier and is blocklist-checked;
+	// the system's own fallback name is not. Defaulting the flag to the literal
+	// would have made every bootstrap submit "default" as a user choice -- and
+	// "default" is itself a curated routing term, so the command would refuse
+	// to run at all.
+	setName := fs.String("set", "", "name of the default key set (empty uses "+bootstrap.DefaultSetName+")")
 	deviceName := fs.String("device", bootstrap.DefaultDeviceName, "label for the device holding the seeded key")
 	keyFile := fs.String("key-file", "", `path to a file holding one SSH public key line, or "-" for stdin`)
 	if err := fs.Parse(args); err != nil {
@@ -73,12 +80,22 @@ func runBootstrapOwner(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	// Build the guard BEFORE opening the seed. If the curated lists cannot be
+	// compiled the command must stop rather than seed an unchecked handle: the
+	// handle claimed here is global and permanent, so proceeding without
+	// enforcement is the one outcome no later fix undoes.
+	guard, err := nameguard.Default()
+	if err != nil {
+		return fmt.Errorf("bootstrap: %w", err)
+	}
+
 	res, err := bootstrap.Seed(ctx, sqlite.NewStore(db), bootstrap.Params{
 		Handle:     *handle,
 		SetName:    *setName,
 		DeviceName: *deviceName,
 		KeyLine:    keyLine,
 		Now:        time.Now().UTC(),
+		Guard:      guard,
 	})
 	if err != nil {
 		return err
@@ -88,7 +105,7 @@ func runBootstrapOwner(args []string, stdout, stderr io.Writer) error {
 	// identifier, so it goes to stdout for the operator who just created it,
 	// but no key material is echoed — the fingerprint of a public key is the
 	// safe way to confirm which key was stored.
-	_, _ = fmt.Fprintf(stdout, "owner_id=%s\nhandle=%s\nset=%s\n", res.OwnerID, *handle, *setName)
+	_, _ = fmt.Fprintf(stdout, "owner_id=%s\nhandle=%s\nset=%s\n", res.OwnerID, *handle, res.SetName)
 	if res.Fingerprint != "" {
 		_, _ = fmt.Fprintf(stdout, "key_fingerprint=%s\n", res.Fingerprint)
 	}
