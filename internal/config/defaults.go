@@ -111,7 +111,13 @@ func Default() Config {
 			AuditPurgeInterval:  Duration(24 * time.Hour),
 			AuditPurgeBatch:     500,
 			AuditPurgeMaxPerRun: 100_000,
-			MaxSetsPerOwner:     100,
+			// Hourly, not daily. The quarantine window is measured in days, so
+			// the sweep's cadence only decides how long a name stays held past
+			// its deadline; an hour keeps that overshoot small without making
+			// the sweep a meaningful load.
+			HandleQuarantineSweepInterval: Duration(time.Hour),
+			HandleQuarantineSweepBatch:    200,
+			MaxSetsPerOwner:               100,
 		},
 		Install: InstallConfig{
 			// Enabled and unauthenticated by default, per ADR-0013: the
