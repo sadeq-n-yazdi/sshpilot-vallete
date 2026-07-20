@@ -36,7 +36,7 @@ tls:
     dns:
       # manual | api
       mode: ""
-      # Required for dns_01 + api: cloudflare | route53 | digitalocean
+      # Required for dns_01 + api: cloudflare | route53 | digitalocean | dnsimple
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -47,6 +47,10 @@ tls:
       #   digitalocean -> a personal access token with write scope. NOTE: this
       #                 token is account-wide -- DigitalOcean has no per-domain
       #                 or per-record scoping. See the doc below.
+      #   dnsimple   -> an ACCOUNT API token, not a user token. A user token
+      #                 reaches every account the user can see, so there is no
+      #                 single account behind it and it is refused. This token
+      #                 is also account-wide; see the doc below.
       #
       # See docs/dns01-provider-credentials.md for the least-privilege policy
       # each provider needs. These credentials can rewrite your zone, so scope
