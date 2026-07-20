@@ -165,6 +165,23 @@ func newACMEProvider(ctx context.Context, cfg *config.Config, now func() time.Ti
 		UserAgent:    "sshpilot-vallet",
 	}
 
+	return newACMEProviderWithClient(ctx, client, cfg, now)
+}
+
+// newACMEProviderWithClient registers the account and starts the provider
+// around an already-built ACME client.
+//
+// Splitting this out lets a test drive the whole flow against a local ACME
+// server whose API certificate is not publicly trusted, by supplying a client
+// with its own HTTP transport. Production always reaches it through
+// newACMEProvider, so the client the server uses is still built from operator
+// config alone and no code path can widen the trust the process extends to a
+// CA.
+func newACMEProviderWithClient(
+	ctx context.Context, client *acme.Client, cfg *config.Config, now func() time.Time,
+) (*acmeProvider, error) {
+	a := cfg.TLS.ACME
+
 	if err := registerACMEAccount(ctx, client, a.ContactEmail); err != nil {
 		return nil, err
 	}
@@ -359,12 +376,18 @@ func (p *acmeProvider) obtain(ctx context.Context) error {
 		}
 	}
 
-	order, err = p.client.WaitOrder(ctx, order.URI)
+	// The order URI is captured before the wait. The order object a CA returns
+	// from a poll carries its URI only in a Location header, and not every CA
+	// sets one, so the value from the original order is the reliable handle —
+	// and it is needed again if issuance has to be re-polled below.
+	orderURI := order.URI
+
+	order, err = p.client.WaitOrder(ctx, orderURI)
 	if err != nil {
 		return fmt.Errorf("%w: wait order: %w", ErrACMEIssuance, err)
 	}
 
-	cert, err := p.finalize(ctx, order)
+	cert, err := p.finalize(ctx, orderURI, order)
 	if err != nil {
 		return err
 	}
@@ -445,7 +468,7 @@ func findACMEChallenge(authz *acme.Authorization, typ string) *acme.Challenge {
 // certificate's. Renewal is then a full key rotation, so a compromise of one
 // certificate's key does not extend across renewals, and the key never has to
 // outlive the certificate it belongs to.
-func (p *acmeProvider) finalize(ctx context.Context, order *acme.Order) (*tls.Certificate, error) {
+func (p *acmeProvider) finalize(ctx context.Context, orderURI string, order *acme.Order) (*tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("%w: generate certificate key: %w", ErrACMEIssuance, err)
@@ -469,12 +492,45 @@ func (p *acmeProvider) finalize(ctx context.Context, order *acme.Order) (*tls.Ce
 	// need to build a path to a trusted root.
 	der, _, err := p.client.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
 	if err != nil {
-		return nil, fmt.Errorf("%w: finalize order: %w", ErrACMEIssuance, err)
+		// A CA that answers finalize with "processing" and no Location header
+		// leaves the acme package with no URI to poll, so it fails here even
+		// though issuance is under way. The order URI captured earlier is the
+		// recovery: poll that, then fetch the certificate the CA issued.
+		//
+		// This is a retry of the WAIT, never of the finalize request — the CSR
+		// is not resubmitted, so it cannot turn one order into two against the
+		// CA's rate limits. A genuinely failed finalize still fails, because
+		// the order goes to "invalid" and the poll surfaces that.
+		der, err = p.awaitIssuedCert(ctx, orderURI)
+		if err != nil {
+			return nil, fmt.Errorf("%w: finalize order: %w", ErrACMEIssuance, err)
+		}
 	}
 
 	// The key stays a crypto.Signer from generation onward. It is serialized
 	// exactly once, by storeCachedCert, on its way to a 0600 file.
 	return &tls.Certificate{Certificate: der, PrivateKey: key}, nil
+}
+
+// awaitIssuedCert polls an order to completion and downloads its certificate.
+//
+// It exists only for the recovery path in finalize, where the acme package lost
+// the order URI. Nothing here submits anything: it waits and then fetches, so
+// it consumes no additional issuance budget.
+func (p *acmeProvider) awaitIssuedCert(ctx context.Context, orderURI string) ([][]byte, error) {
+	order, err := p.client.WaitOrder(ctx, orderURI)
+	if err != nil {
+		return nil, fmt.Errorf("wait for issuance: %w", err)
+	}
+	if order.CertURL == "" {
+		return nil, errors.New("order completed without a certificate url")
+	}
+
+	der, err := p.client.FetchCert(ctx, order.CertURL, true)
+	if err != nil {
+		return nil, fmt.Errorf("fetch certificate: %w", err)
+	}
+	return der, nil
 }
 
 // loadCachedCert reads a previously issued certificate and key from the cache.
