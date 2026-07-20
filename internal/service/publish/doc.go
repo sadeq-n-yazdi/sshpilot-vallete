@@ -13,10 +13,12 @@
 //     publish. EVERY negative verdict collapses into this single sentinel:
 //     malformed handle or set name, unclaimed handle, non-active handle,
 //     suspended or deleted owner, unknown set, a set belonging to another
-//     owner, a quarantined set tombstone, and a set that is not public. The
-//     caller cannot tell these apart, and that is the point: any distinguishable
-//     outcome would be an existence oracle that lets an unauthenticated stranger
-//     probe which handles exist and which sets another owner holds.
+//     owner, a quarantined set tombstone, a protected set for which no valid
+//     access key was presented, and a set whose visibility this code does not
+//     recognize. The caller cannot tell these apart, and that is the point: any
+//     distinguishable outcome would be an existence oracle that lets an
+//     unauthenticated stranger probe which handles exist and which sets another
+//     owner holds.
 //   - any other error — an internal fault. The transport answers 500 and the
 //     detail goes only to the log.
 //
@@ -41,4 +43,25 @@
 // successful result, which is the correct representation of "this set publishes
 // no keys" and is distinct from the 404 cases above only because the set itself
 // is public by declaration.
+//
+// # Protected sets
+//
+// A set whose visibility is protected resolves only for a caller presenting a
+// valid access key minted for that set (ADR-0010, ADR-0016). The credential is
+// checked by a [Verifier] — the access key service — and this package neither
+// parses tokens nor compares secrets.
+//
+// The check is deliberately NOT the transport's. Because every refusal from the
+// verifier is folded into [ErrNotFound] here, the transport is handed the same
+// two error modes it had before and cannot tell a protected miss from an absent
+// set even if it tried; the uniform 404 ADR-0019 requires is therefore a
+// property of the type, not of the handler's care. A storage fault from the
+// verifier is not a refusal and propagates as an internal error, so an access
+// key database that is down surfaces as a 500 rather than as a quiet, uniform
+// denial that looks exactly like correct operation.
+//
+// Success reports [Result.Protected] so the transport can apply the private
+// caching ADR-0019 requires of access-gated bodies. That flag exists only on
+// the success path: a failure carries the zero Result, so no negative response
+// can be shaped by the visibility of the set it declined to serve.
 package publish

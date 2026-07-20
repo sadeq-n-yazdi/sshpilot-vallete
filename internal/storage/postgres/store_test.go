@@ -149,8 +149,15 @@ func TestReposPopulatesEveryRepository(t *testing.T) {
 	t.Parallel()
 	r := reposFor((*sql.DB)(nil))
 	if r.Owners == nil || r.Handles == nil || r.Devices == nil ||
-		r.PublicKeys == nil || r.KeySets == nil || r.Audit == nil || r.OwnerSalts == nil {
+		r.PublicKeys == nil || r.KeySets == nil || r.Audit == nil || r.OwnerSalts == nil ||
+		r.LinkedIdentities == nil || r.RefreshCredentials == nil || r.DevicePairings == nil ||
+		r.AccessKeys == nil || r.Admins == nil {
 		t.Errorf("Repos left a repository nil: %+v", r)
+	}
+	// The zero Repos has every field nil, so comparing against it also catches a
+	// field added to the port later and never wired up here.
+	if r == (repository.Repos{}) {
+		t.Error("reposFor returned an entirely empty Repos")
 	}
 }
 

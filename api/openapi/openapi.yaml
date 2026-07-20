@@ -76,12 +76,50 @@ info:
     ## Enumeration
 
     Every negative verdict on the publish path — an unknown handle, an unknown
-    set, a set owned by somebody else, an inactive or non-public set, a
-    malformed name — produces one byte-identical `404`. The cases are **not**
-    distinguishable, and are not documented as separate responses, because the
-    indistinguishability is the security property (ADR-0019): a stranger must
-    not be able to read the existence of a handle or set off a difference
-    between two error responses.
+    set, a set owned by somebody else, an inactive set, a malformed name, and
+    every refused access key — produces one byte-identical `404`. The cases are
+    **not** distinguishable, and are not documented as separate responses,
+    because the indistinguishability is the security property (ADR-0019): a
+    stranger must not be able to read the existence of a handle or set off a
+    difference between two error responses.
+
+    ## Protected key sets
+
+    A key set is public or protected, per set (ADR-0010, ADR-0016). A public set
+    is served to anyone. A protected set is served only to a request carrying
+    `Authorization: Bearer <access key>` minted for **that** set.
+
+    The credential is read from the `Authorization` header only. There is no
+    query parameter and no cookie that carries it, by design: both are recorded
+    by proxies and browser history and are sent by the client without a
+    deliberate act.
+
+    Anything short of a valid access key for the requested set — no header, a
+    malformed token, a revoked one, or one minted for another of the same
+    owner's sets — is answered with the same uniform `404` above, identical to a
+    set that does not exist. There is deliberately **no** `401` and **no** `403`
+    on these routes:
+
+    - A `401` would confirm the set exists to any unauthenticated prober, which
+      is the oracle the uniform `404` closes.
+    - A `403` for a token minted for a different set would leak the same fact to
+      a consumer holding any one of the owner's tokens. Such a consumer is not
+      the owner and must not learn the owner's other set names. Access keys are
+      bound to a single key set and carry no other scope dimension, so no
+      "authenticated but unauthorized" verdict exists on this path for a `403`
+      to describe.
+
+    The accepted cost, named in ADR-0019: a legitimate consumer with a mistyped
+    or stale key sees `404` rather than a diagnostic `401`.
+
+    A protected set is refused before its credential is examined if the set
+    itself is not active, so a still-valid token cannot resolve a quarantined or
+    retired set.
+
+    A successful protected response is `Cache-Control: private` and carries
+    `Vary: Authorization`, so no shared cache holds access-gated key material
+    and no cache serves one consumer's copy to a request bearing another
+    credential. The `404` carries neither, on either path.
 servers:
   - url: https://{host}
     description: A vallete deployment.
@@ -92,7 +130,10 @@ tags:
   - name: probes
     description: Liveness and readiness, for orchestrators and load balancers.
   - name: publish
-    description: The unauthenticated read path consumed by sshd and by operators.
+    description: |
+      The read path consumed by sshd and by operators. A public key set needs no
+      credential; a protected one needs an access key minted for that set. See
+      "Protected key sets" above.
   - name: install
     description: |
       The served helper installer and its SHA-256 digest (ADR-0013, ADR-0029).
@@ -322,6 +363,13 @@ paths:
     get:
       tags: [publish]
       operationId: getDefaultKeySet
+      security:
+        # Both entries are meaningful. The empty object is the public case: a
+        # public key set is served with no credential at all. bearerAuth is the
+        # protected case. A tool must not read the second entry as "a missing
+        # token yields 401" -- on these routes it yields the uniform 404.
+        - {}
+        - bearerAuth: []
       summary: Fetch an owner's default key set.
       description: |
         Returns the key set the owner designated as their default (ADR-0016).
@@ -339,6 +387,13 @@ paths:
     head:
       tags: [publish]
       operationId: headDefaultKeySet
+      security:
+        # Both entries are meaningful. The empty object is the public case: a
+        # public key set is served with no credential at all. bearerAuth is the
+        # protected case. A tool must not read the second entry as "a missing
+        # token yields 401" -- on these routes it yields the uniform 404.
+        - {}
+        - bearerAuth: []
       summary: Headers for an owner's default key set.
       parameters:
         - $ref: "#/components/parameters/IfNoneMatch"
@@ -358,6 +413,13 @@ paths:
     get:
       tags: [publish]
       operationId: getKeySet
+      security:
+        # Both entries are meaningful. The empty object is the public case: a
+        # public key set is served with no credential at all. bearerAuth is the
+        # protected case. A tool must not read the second entry as "a missing
+        # token yields 401" -- on these routes it yields the uniform 404.
+        - {}
+        - bearerAuth: []
       summary: Fetch a named key set.
       responses:
         "200":
@@ -371,6 +433,13 @@ paths:
     head:
       tags: [publish]
       operationId: headKeySet
+      security:
+        # Both entries are meaningful. The empty object is the public case: a
+        # public key set is served with no credential at all. bearerAuth is the
+        # protected case. A tool must not read the second entry as "a missing
+        # token yields 401" -- on these routes it yields the uniform 404.
+        - {}
+        - bearerAuth: []
       summary: Headers for a named key set.
       responses:
         "200":
@@ -776,6 +845,101 @@ paths:
           $ref: "#/components/responses/KeySetConflict"
         "500":
           $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/keysets/{keySetID}/default:
+    parameters:
+      - $ref: "#/components/parameters/KeySetID"
+    put:
+      tags: [keysets]
+      operationId: setDefaultKeySet
+      summary: Designate one of the token owner's key sets as the default.
+      description: |
+        Makes this set the one bare `GET /{handle}` resolves to (ADR-0016).
+
+        Exactly one set is the default at any moment. The previous designation
+        is cleared and the new one set inside a single transaction, backed by a
+        partial unique index, so two defaults — which would make bare
+        `GET /{handle}` non-deterministic — and zero defaults — which would make
+        it dangle — are both unreachable states rather than checked-for ones.
+
+        Designating a new default is what frees the previous one for deletion:
+        `DELETE /api/v1/keysets/{keySetID}` refuses the designated default, and
+        the refusal follows the designation.
+
+        There is no request body. The set is named by the path and the operation
+        has no other input.
+
+        A quarantined tombstone cannot be designated: a reserved name is not a
+        set, and pointing the bare handle at one would serve nothing. It answers
+        the same `404` an unknown identifier and another owner's identifier get;
+        the cases cannot be told apart.
+
+        Requires a token that permits mutation and **is not bound to a single
+        key set**, unlike rename and delete. Designating a default also writes
+        the previous default's row and repoints account-wide state, so a token
+        confined to one set must not be able to reach it.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/KeySetUpdated"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/KeySetNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/keysets/{keySetID}/visibility:
+    parameters:
+      - $ref: "#/components/parameters/KeySetID"
+    put:
+      tags: [keysets]
+      operationId: setKeySetVisibility
+      summary: Move one of the token owner's key sets between public and protected.
+      description: |
+        Sets whether the key set may be resolved without a credential (ADR-0010,
+        refined per key set by ADR-0016; publish semantics in ADR-0019).
+
+        Both directions are access-affecting and both are audited.
+        `protected`→`public` exposes the handle-to-keys association the owner
+        had chosen to restrict; `public`→`protected` breaks consumers still
+        polling the URL. Neither is the harmless direction.
+
+        The value is required and fails closed. An absent body, an absent field,
+        an empty string, and any value outside `{public, protected}` are all
+        refused with `400`; an unrecognized field is refused rather than
+        ignored. There is no shape of malformed request that publishes a set.
+
+        Re-asserting the visibility a set already has succeeds and is recorded.
+
+        A quarantined tombstone has no visibility to change — nothing resolves
+        through a reserved name — and answers the same `404` an unknown
+        identifier and another owner's identifier get.
+
+        Requires a token that permits mutation. A token bound to this key set is
+        sufficient; a token bound to a different one is refused.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetKeySetVisibilityRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/KeySetUpdated"
+        "400":
+          $ref: "#/components/responses/KeySetBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/KeySetNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
 components:
   securitySchemes:
     bearerAuth:
@@ -854,10 +1018,16 @@ components:
       required: true
       schema:
         type: string
-    CacheControlPublic:
+    CacheControlPublish:
       description: |
-        `public, max-age=60`. The TTL bounds the revocation window on the cached
+        `public, max-age=60` for a public key set, and `private, max-age=60` for
+        a protected one. The TTL bounds the revocation window on the cached
         path: a revoked key can be honored by a cache for at most this long.
+
+        `private` on the protected path is what keeps access-gated key material
+        out of shared caches (ADR-0019); it is paired with `Vary: Authorization`
+        so that a cache which stores the response anyway is keyed by the
+        credential rather than by the URL alone.
       required: true
       schema:
         type: string
@@ -867,6 +1037,18 @@ components:
         negative would keep answering `404` after the owner published the set,
         and a cached probe would let an unhealthy instance keep passing.
       required: true
+      schema:
+        type: string
+    VaryAuthorizationPublish:
+      description: |
+        `Authorization`, on a protected key set's response only. It is ABSENT on
+        a public one, which is shared-cacheable by URL alone and gains nothing
+        from being keyed by a credential no consumer sends.
+
+        It is likewise absent from the `404`. Emitting it for a protected miss
+        and not for an absent set would recreate, in a header, exactly the
+        distinguishable pair the uniform `404` exists to prevent.
+      required: false
       schema:
         type: string
     VaryAuthorization:
@@ -949,7 +1131,9 @@ components:
         ETag:
           $ref: "#/components/headers/ETag"
         Cache-Control:
-          $ref: "#/components/headers/CacheControlPublic"
+          $ref: "#/components/headers/CacheControlPublish"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorizationPublish"
         X-Content-Type-Options:
           $ref: "#/components/headers/ContentTypeOptions"
         Content-Length:
@@ -968,7 +1152,9 @@ components:
         ETag:
           $ref: "#/components/headers/ETag"
         Cache-Control:
-          $ref: "#/components/headers/CacheControlPublic"
+          $ref: "#/components/headers/CacheControlPublish"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorizationPublish"
         X-Content-Type-Options:
           $ref: "#/components/headers/ContentTypeOptions"
         Content-Length:
@@ -1011,7 +1197,9 @@ components:
         ETag:
           $ref: "#/components/headers/ETag"
         Cache-Control:
-          $ref: "#/components/headers/CacheControlPublic"
+          $ref: "#/components/headers/CacheControlPublish"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorizationPublish"
     RoutingNotFound:
       description: |
         This path is not routed. Returned when the documentation or install
@@ -1258,6 +1446,29 @@ components:
             is_default: false
             created_at: "2026-07-20T12:05:00Z"
             updated_at: "2026-07-20T12:05:00Z"
+    KeySetUpdated:
+      description: |
+        The key set as it now stands. The `id` is unchanged — unlike a rename,
+        neither of these operations replaces the row — so a client holding it
+        may keep using it.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/KeySet"
+          example:
+            id: 8MTPD3ZC6RKJ4WNHQXVY2BFG5A
+            name: production
+            visibility: public
+            is_default: true
+            created_at: "2026-07-20T12:05:00Z"
+            updated_at: "2026-07-20T12:10:00Z"
     KeySetDeleted:
       description: |
         The key set and its membership rows were removed; the underlying public
@@ -1662,6 +1873,22 @@ components:
           maxLength: 64
           pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
           description: The new set name, validated and blocklist-checked exactly as at creation.
+      additionalProperties: false
+    SetKeySetVisibilityRequest:
+      type: object
+      description: |
+        The visibility to move the set to. It is a required positive assertion:
+        there is no safe default the server could fall back to, because
+        `protected` would silently narrow and `public` would silently publish.
+      required: [visibility]
+      properties:
+        visibility:
+          type: string
+          enum: [public, protected]
+          description: |
+            `public` — the set resolves without a credential. `protected` — it
+            resolves only to a credentialed consumer. Any other value is
+            refused rather than persisted.
       additionalProperties: false
     DeleteKeySetRequest:
       type: object

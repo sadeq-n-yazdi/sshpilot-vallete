@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
 // buildTLSConfig assembles the server's TLS configuration from operator config,
@@ -19,10 +20,11 @@ import (
 // provider returns. Adding a provider therefore cannot weaken the negotiated
 // connection — that separation is the point of the seam.
 //
-// Only two modes are implemented in this track: self_signed (development
-// bring-up) and manual (operator-supplied files). ACME, Cloudflare origin, CSR
-// and upstream termination are later tracks and return [ErrTLSModeUnsupported]
-// rather than silently degrading to a weaker certificate.
+// Implemented modes: self_signed (development bring-up), manual
+// (operator-supplied files), csr (external signing), acme with the TLS-ALPN-01
+// solver, and cloudflare_origin. The ACME DNS-01 solver and upstream
+// termination are later tracks and return [ErrTLSModeUnsupported] rather than
+// silently degrading to a weaker certificate.
 //
 // The now argument is the validity clock, a function rather than an instant
 // because certificates are re-checked on every handshake and may be renewed
@@ -142,18 +144,87 @@ func startupProbeRequired(provider CertProvider) bool {
 // alternatives to refusing would be serving a self-signed certificate the
 // operator did not ask for, or no TLS at all. Both are the silent downgrade
 // ADR-0015 exists to prevent.
+//
+// Every case returns through [asCertProvider]. That is not decoration: each
+// constructor returns a CONCRETE pointer type, and `return newXProvider(...)`
+// would convert a nil pointer into a non-nil CertProvider interface holding a
+// typed nil. A caller that checked `provider != nil` instead of the error would
+// then proceed with a provider that is nil underneath. Every caller today
+// checks the error first, so this is not reachable now — asCertProvider makes it
+// unreachable by construction rather than by caller discipline, on a seam whose
+// failure mode is serving without the certificate policy it exists to enforce.
 func newCertProvider(ctx context.Context, cfg *config.Config, now func() time.Time) (CertProvider, error) {
 	switch cfg.TLS.Mode {
 	case "self_signed":
-		return newSelfSignedProvider(cfg, now)
+		return asCertProvider(newSelfSignedProvider(cfg, now))
 	case "manual":
-		return newManualProvider(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile)
+		return asCertProvider(newManualProvider(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile))
 	case "csr":
-		return newCSRProvider(cfg)
+		return asCertProvider(newCSRProvider(cfg))
 	case "acme":
 		return newACMEProviderForSolver(ctx, cfg, now)
+	case "cloudflare_origin":
+		// This case arrived on develop after the asCertProvider guard was
+		// written, and newOriginCAProvider returns a concrete
+		// *originCAProvider, so an unwrapped return here would reintroduce the
+		// exact typed nil this change exists to remove. Every case in this
+		// switch returns through asCertProvider; that is the invariant, and a
+		// new mode that quietly skips it is the failure this comment prevents.
+		return asCertProvider(newOriginCAProvider(ctx, cfg, now, builtinSecretResolver(cfg)))
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
+	}
+}
+
+// asCertProvider lifts a concrete provider constructor's (*T, error) result into
+// (CertProvider, error) without ever producing a typed-nil interface.
+//
+// The type parameter is constrained to CertProvider, so this cannot be used to
+// smuggle a non-provider through; on error the returned interface is the
+// UNTYPED nil literal, which is the only value for which `provider == nil` is
+// true. Returning p directly on the error path would satisfy the compiler and
+// silently defeat the whole point.
+func asCertProvider[T CertProvider](p T, err error) (CertProvider, error) {
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// secretResolver resolves a config secret reference to its value.
+//
+// It is a function type rather than the concrete *secrets.Resolver so that a
+// test can supply a missing or failing credential without standing up an
+// environment or a file, which is what makes the credential-missing failure
+// path testable at all.
+type secretResolver func(ctx context.Context, ref secrets.Ref) (secrets.Redacted, error)
+
+// builtinSecretResolver returns the resolver used in production: the built-in
+// env and file providers from ADR-0022.
+//
+// The file provider's permission posture is derived from the environment, which
+// is the split the secrets package documents — it never imports config, so the
+// config layer makes this call. Production REFUSES a world-readable secret
+// file, because a credential any local account can read must be treated as
+// already copied; development warns instead, so a contributor is not blocked by
+// a checkout's permissions.
+//
+// A resolver is built here, at the point of use, rather than threaded down from
+// main because this is currently the only production consumer of a secret
+// reference. When a second one appears, hoisting construction into bootstrap
+// and passing it in is the right move; doing it now would add a parameter to
+// Server.New that nothing else needs.
+func builtinSecretResolver(cfg *config.Config) secretResolver {
+	permMode := secrets.PermError
+	if cfg.Server.Environment != "production" {
+		permMode = secrets.PermWarn
+	}
+	return func(ctx context.Context, ref secrets.Ref) (secrets.Redacted, error) {
+		resolver, err := secrets.NewResolver(secrets.Builtin(secrets.FileOptions{PermMode: permMode})...)
+		if err != nil {
+			return "", err
+		}
+		return resolver.Resolve(ctx, ref)
 	}
 }
 
@@ -167,7 +238,10 @@ func newCertProvider(ctx context.Context, cfg *config.Config, now func() time.Ti
 func newACMEProviderForSolver(ctx context.Context, cfg *config.Config, now func() time.Time) (CertProvider, error) {
 	switch cfg.TLS.ACME.Solver {
 	case "tls_alpn_01":
-		return newACMEProvider(ctx, cfg, now)
+		// asCertProvider for the same reason as in newCertProvider: this is the
+		// TRUE source of the acme mode's interface value, so fixing the
+		// passthrough above without fixing it here would leave the hazard.
+		return asCertProvider(newACMEProvider(ctx, cfg, now))
 	default:
 		return nil, fmt.Errorf("%w: acme solver %q", ErrTLSModeUnsupported, cfg.TLS.ACME.Solver)
 	}

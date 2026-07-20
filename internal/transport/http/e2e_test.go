@@ -45,7 +45,7 @@ type e2e struct {
 	client *http.Client
 }
 
-func newE2E(t *testing.T) *e2e {
+func newE2E(t *testing.T, opts ...publish.Option) *e2e {
 	t.Helper()
 
 	db, err := sqlite.Open(sqlite.Options{Path: ":memory:"})
@@ -67,7 +67,7 @@ func newE2E(t *testing.T) *e2e {
 	}
 
 	store := sqlite.NewStore(db)
-	svc, err := publish.New(store.Repos())
+	svc, err := publish.New(store.Repos(), opts...)
 	if err != nil {
 		t.Fatalf("publish.New: %v", err)
 	}
@@ -153,6 +153,7 @@ func (e *e2e) addKey(ownerID domain.OwnerID, setID domain.KeySetID, comment stri
 		var addErr error
 		res, addErr = bootstrap.AddKey(ctx, r, bootstrap.AddKeyParams{
 			OwnerID: ownerID, KeySetID: setID, DeviceName: "e2e", Key: parsed, Now: e2eNow,
+			Guard: mustGuard(e.t),
 		})
 		return addErr
 	})
