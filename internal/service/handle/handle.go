@@ -46,7 +46,6 @@ import (
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/blocklist"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
@@ -349,14 +348,12 @@ func (s *Service) claim(
 		// against a concurrent claimant rather than the read above, which is
 		// only an early and friendlier refusal.
 		fresh := &domain.Handle{
-			ID:          domain.HandleID(s.newID()),
-			OwnerID:     ownerID,
-			Name:        name,
-			NameFold:    blocklist.Skeleton(name),
-			FoldVersion: blocklist.TableVersion,
-			State:       domain.NameStateActive,
-			CreatedAt:   now,
-			UpdatedAt:   now,
+			ID:        domain.HandleID(s.newID()),
+			OwnerID:   ownerID,
+			Name:      name,
+			State:     domain.NameStateActive,
+			CreatedAt: now,
+			UpdatedAt: now,
 		}
 		if err := r.Handles.Register(ctx, fresh); err != nil {
 			return nil, false, err

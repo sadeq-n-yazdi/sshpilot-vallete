@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/blocklist"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/schema"
@@ -15,19 +14,17 @@ import (
 
 // newHandle returns a fully populated active handle owned by ownerID.
 //
-// NameFold carries the real fold so these fixtures exercise the same unique
-// index production writes go through; a fixture that left it empty would have
-// every handle collide on the empty string.
+// The fixture sets no fold: there is no field for one. The adapter derives it
+// from Name on write, which is what makes the look-alike tests below evidence
+// about the adapter rather than about what the fixture happened to pass in.
 func newHandle(id, ownerID, name string) *domain.Handle {
 	return &domain.Handle{
-		ID:          domain.HandleID(id),
-		OwnerID:     domain.OwnerID(ownerID),
-		Name:        name,
-		NameFold:    blocklist.Skeleton(name),
-		FoldVersion: blocklist.TableVersion,
-		State:       domain.NameStateActive,
-		CreatedAt:   testClock,
-		UpdatedAt:   testClock,
+		ID:        domain.HandleID(id),
+		OwnerID:   domain.OwnerID(ownerID),
+		Name:      name,
+		State:     domain.NameStateActive,
+		CreatedAt: testClock,
+		UpdatedAt: testClock,
 	}
 }
 

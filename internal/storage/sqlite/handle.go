@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/blocklist"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
 )
@@ -47,8 +48,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 		string(h.ID),
 		string(h.OwnerID),
 		h.Name,
-		h.NameFold,
-		int64(h.FoldVersion),
+		// Derived here, from the name in this same row, so the two cannot
+		// disagree. A fold supplied by the caller would let a caller that set
+		// one not matching its name land a look-alike the unique index below
+		// never collides with, which would leave the index guaranteeing
+		// nothing against any path that did not choose to fold correctly.
+		blocklist.Skeleton(h.Name),
+		blocklist.TableVersion,
 		string(h.State),
 		encNullTime(h.QuarantineUntil),
 		encBool(h.FlaggedForReview),

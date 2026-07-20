@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/blocklist"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
@@ -170,14 +169,12 @@ func mustGuard(t *testing.T) *nameguard.Guard {
 func (f *fixture) seed(owner domain.OwnerID, name string) *domain.Handle {
 	f.t.Helper()
 	h := &domain.Handle{
-		ID:          domain.HandleID("h-" + name),
-		OwnerID:     owner,
-		Name:        name,
-		NameFold:    blocklist.Skeleton(name),
-		FoldVersion: blocklist.TableVersion,
-		State:       domain.NameStateActive,
-		CreatedAt:   f.clock.get(),
-		UpdatedAt:   f.clock.get(),
+		ID:        domain.HandleID("h-" + name),
+		OwnerID:   owner,
+		Name:      name,
+		State:     domain.NameStateActive,
+		CreatedAt: f.clock.get(),
+		UpdatedAt: f.clock.get(),
 	}
 	if err := f.store.Repos().Handles.Register(context.Background(), h); err != nil {
 		f.t.Fatalf("seed handle %q for %s: %v", name, owner, err)
@@ -256,8 +253,6 @@ func (f *fixture) seedHold(owner domain.OwnerID, name string, until time.Time) *
 		ID:              domain.HandleID("hold-" + name),
 		OwnerID:         owner,
 		Name:            name,
-		NameFold:        blocklist.Skeleton(name),
-		FoldVersion:     blocklist.TableVersion,
 		State:           domain.NameStateQuarantined,
 		QuarantineUntil: &until,
 		CreatedAt:       f.clock.get(),
@@ -276,14 +271,12 @@ func (f *fixture) seedHold(owner domain.OwnerID, name string, until time.Time) *
 func (f *fixture) seedRetired(owner domain.OwnerID, name string) *domain.Handle {
 	f.t.Helper()
 	h := &domain.Handle{
-		ID:          domain.HandleID("retired-" + name),
-		OwnerID:     owner,
-		Name:        name,
-		NameFold:    blocklist.Skeleton(name),
-		FoldVersion: blocklist.TableVersion,
-		State:       domain.NameStateRetired,
-		CreatedAt:   f.clock.get(),
-		UpdatedAt:   f.clock.get(),
+		ID:        domain.HandleID("retired-" + name),
+		OwnerID:   owner,
+		Name:      name,
+		State:     domain.NameStateRetired,
+		CreatedAt: f.clock.get(),
+		UpdatedAt: f.clock.get(),
 	}
 	if err := f.store.Repos().Handles.Register(context.Background(), h); err != nil {
 		f.t.Fatalf("seed retired %q for %s: %v", name, owner, err)
