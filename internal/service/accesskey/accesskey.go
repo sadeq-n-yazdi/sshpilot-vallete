@@ -269,7 +269,10 @@ func (s *Service) keySet(ctx context.Context, ownerID domain.OwnerID, setID doma
 		}
 		return nil, err
 	}
-	if set.State != domain.NameStateActive {
+	// Same reasoning as the guard in Verify: a nil row with a nil error is a port
+	// contract violation, and on an owner-scoped path the safe reading of one is
+	// "denied", not "dereference and panic".
+	if set == nil || set.State != domain.NameStateActive {
 		return nil, ErrNotFound
 	}
 	return set, nil
@@ -342,7 +345,8 @@ func (s *Service) Revoke(ctx context.Context, ownerID domain.OwnerID, id domain.
 		}
 		return err
 	}
-	if k.Status == domain.AccessKeyStatusRevoked {
+	// As above: a nil row with a nil error is refused rather than dereferenced.
+	if k == nil || k.Status == domain.AccessKeyStatusRevoked {
 		return ErrNotFound
 	}
 

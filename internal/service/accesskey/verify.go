@@ -52,6 +52,15 @@ func (s *Service) Verify(ctx context.Context, ownerID domain.OwnerID, setID doma
 		}
 		return nil, err
 	}
+	// A nil credential with a nil error violates the port contract, so no adapter
+	// in this tree reaches here. It is guarded because the two readings of a
+	// contract violation on this path are "dereference and panic" and "refuse",
+	// and only one of those is safe: Verify runs on every request for a protected
+	// set, so a panic here is reachable by anyone who can send a Bearer token and
+	// would take the process down rather than refuse one call.
+	if k == nil {
+		return nil, ErrNotFound
+	}
 
 	// THE SET-SCOPE CHECK. Get filtered by owner and id and not by key set, so
 	// at this point the caller has proven only that the id names one of this
