@@ -29,7 +29,9 @@
 // migration0004AuditRecords and migration0005OwnerErasureSalts for the full
 // rationale. administrators is a third: it is a system-axis principal table
 // with no owner at all, so there is nothing for an owner_id to reference; see
-// migration0009Administrators.
+// migration0009Administrators. list_overrides is a fourth, for the same reason:
+// the reserved-identifier lists are global service policy rather than any
+// owner's data; see migration0011ListOverrides.
 package schema
 
 import "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
@@ -49,7 +51,73 @@ func Registry() (*migrate.Registry, error) {
 		migration0007LinkedIdentities(),
 		migration0008DevicePairings(),
 		migration0009Administrators(),
+		migration0011ListOverrides(),
 	)
+}
+
+// migration0011ListOverrides creates the durable record of runtime edits to the
+// reserved-identifier lists (ADR-0017, Fb3).
+//
+// # Why a removal is a row and not a missing row
+//
+// The table stores a state per entry, including 'removed', rather than storing
+// only the entries that are in force. A removal recorded as an absent row
+// cannot outrank anything: the lists are composed at startup by replaying this
+// table over an operator-supplied seed, and an absent row leaves the seed's copy
+// of the entry standing. An entry an administrator deliberately removed would
+// come back on the next restart while the audit log still showed the removal.
+//
+// For the allowlist that direction is fail-open. Removing an allowlist entry
+// re-blocks a term, so a resurrected entry silently re-permits an identifier
+// somebody decided to refuse. Storing the tombstone lets replay rank it above
+// the seed, so a seed file that later re-adds a removed entry does not
+// resurrect it.
+//
+// # Keyed on the skeleton
+//
+// The primary key is (list, skeleton), not (list, entry). The skeleton is the
+// form the matcher compares on, so two confusable spellings are one rule to the
+// engine and must be one row here; keying on the raw spelling would let them
+// sit as separate overrides whose winner depended on replay order. The raw
+// entry is kept as an ordinary column for the audit and listing surfaces, since
+// a skeleton must never be displayed as the thing that was approved.
+//
+// The key also serves the only read this table has -- fetch every override,
+// ordered -- so no secondary index is created: one would duplicate the primary
+// key's leading column and earn nothing.
+//
+// actor_id carries no FOREIGN KEY to administrators, deliberately and for the
+// same reason audit_records has none. The policy decision must outlive the
+// principal who made it: an administrator's row being removed later must never
+// quietly delete the tombstones they set, because that would re-open every hole
+// they closed. Both CHECK constraints mirror the domain enums so the database
+// refuses a value the domain would not recognize, behind the adapter's own
+// validation.
+func migration0011ListOverrides() migrate.Migration {
+	const ddl = `CREATE TABLE list_overrides (
+	list TEXT NOT NULL CHECK (list IN ('allowlist', 'blocklist_term')),
+	skeleton TEXT NOT NULL,
+	entry TEXT NOT NULL,
+	state TEXT NOT NULL CHECK (state IN ('present', 'removed')),
+	actor_id TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (list, skeleton)
+)`
+	return migrate.Migration{
+		ID:   "0011",
+		Name: "list_overrides",
+		Preconditions: []migrate.Precondition{
+			migrate.TableAbsent("list_overrides"),
+		},
+		Up: migrate.Steps{
+			SQLite:   []string{ddl},
+			Postgres: []string{ddl},
+		},
+		Down: migrate.Steps{
+			SQLite:   []string{`DROP TABLE list_overrides`},
+			Postgres: []string{`DROP TABLE list_overrides`},
+		},
+	}
 }
 
 // migration0001Owners creates the owners root table and the owner-scoped

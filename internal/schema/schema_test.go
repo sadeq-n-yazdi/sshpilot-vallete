@@ -55,7 +55,11 @@ var namedIndexes = []string{
 }
 
 // migrationIDs are the IDs the registry is expected to apply, in order.
-var migrationIDs = []string{"0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009"}
+// 0010 is deliberately absent: it is claimed by the AccessKeyRepository
+// adapter, which is still in review. migrate.NewRegistry enforces strictly
+// ascending IDs, not contiguity, so the gap is legal and reserving the number
+// avoids a renumber when that work lands.
+var migrationIDs = []string{"0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0011"}
 
 // newRunner opens a fresh in-memory SQLite database, wraps it for the migrate
 // runner, and returns both the raw handle (for assertions) and the runner.
