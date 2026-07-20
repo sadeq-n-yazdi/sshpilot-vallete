@@ -121,6 +121,13 @@ ON CONFLICT (owner_id) DO NOTHING`
 	// concurrent caller won the race between the read above and this write.
 	// Adopt its salt rather than returning this caller's unwritten one, which
 	// was never stored and would mint tombstones no reader could verify.
+	//
+	// The re-read below sees the winner's row because Store.WithTx and
+	// withLocalTx both begin at the server default, READ COMMITTED, which takes
+	// a fresh snapshot per statement. Under REPEATABLE READ or SERIALIZABLE the
+	// snapshot is fixed at transaction start, so this re-read would still not
+	// see the row the INSERT just collided with and would return ErrNotFound.
+	// Raising the isolation level therefore requires revisiting this path.
 	n, aerr := res.RowsAffected()
 	if aerr != nil {
 		return nil, mapError(aerr)
