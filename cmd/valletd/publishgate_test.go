@@ -127,20 +127,28 @@ func (f *gateFixture) get(h http.Handler, target, bearer string) *httptest.Respo
 func (f *gateFixture) seedOwner(handle, comment string) bootstrap.Result {
 	f.t.Helper()
 
-	guard, err := nameguard.Default()
-	if err != nil {
-		f.t.Fatalf("nameguard.Default: %v", err)
-	}
 	res, err := bootstrap.Seed(context.Background(), f.store, bootstrap.Params{
 		Handle:  handle,
 		KeyLine: gateKeyLine(f.t, comment),
 		Now:     gateNow,
-		Guard:   guard,
+		Guard:   f.guard(),
 	})
 	if err != nil {
 		f.t.Fatalf("bootstrap.Seed(%q): %v", handle, err)
 	}
 	return res
+}
+
+// guard builds the default reserved-identifier matcher the seeding helpers
+// need. bootstrap refuses a nil one by design, so every seed path supplies it.
+func (f *gateFixture) guard() *nameguard.Guard {
+	f.t.Helper()
+
+	guard, err := nameguard.Default()
+	if err != nil {
+		f.t.Fatalf("nameguard.Default: %v", err)
+	}
+	return guard
 }
 
 // seedProtectedSet creates a protected key set holding one key.
@@ -163,6 +171,12 @@ func (f *gateFixture) seedProtectedSet(ownerID domain.OwnerID, name, comment str
 	err = f.store.WithTx(context.Background(), func(ctx context.Context, r repository.Repos) error {
 		_, addErr := bootstrap.AddKey(ctx, r, bootstrap.AddKeyParams{
 			OwnerID: ownerID, KeySetID: set.ID, DeviceName: "gate", Key: parsed, Now: gateNow,
+			// Required since the reserved-identifier blocklist reached device
+			// names: a nil Guard refuses every name rather than passing them
+			// through, so omitting it fails the seed rather than writing an
+			// unchecked name. Supplying the real default matcher keeps this
+			// fixture on the same path production takes.
+			Guard: f.guard(),
 		})
 		return addErr
 	})
