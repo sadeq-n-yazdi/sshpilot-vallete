@@ -66,8 +66,39 @@ func (r *ownerSaltRepo) Ensure(ctx context.Context, ownerID string) ([]byte, err
 }
 
 // ensureOwnerSalt is the read-or-mint body of Ensure, factored out so it can be
-// driven directly against an execer whose INSERT conflicts — the concurrent
-// path that a serialized in-process test cannot reliably provoke.
+// driven directly against an execer whose INSERT races — the concurrent path
+// that a serialized in-process test cannot reliably provoke.
+//
+// # Why this diverges from the SQLite adapter
+//
+// This is the one place where a faithful transliteration of the SQLite adapter
+// is not merely stylistically different but WRONG on this engine, so the shape
+// deliberately differs and the difference is load-bearing.
+//
+// The SQLite version issues a plain INSERT, lets a racing caller's INSERT fail
+// with a uniqueness violation, and then re-reads the winner's salt to adopt it.
+// That recovery is impossible inside a PostgreSQL transaction: any statement
+// error aborts the entire transaction, and every subsequent command in it —
+// including the re-read — fails with SQLSTATE 25P02 "current transaction is
+// aborted" until a rollback. Ensure runs its body inside withLocalTx, so the
+// transliterated version does not merely fail to adopt the winner's salt, it
+// fails outright under exactly the concurrency it exists to survive. Recovering
+// would need a SAVEPOINT around the INSERT purely to make the failure
+// survivable.
+//
+// ON CONFLICT DO NOTHING expresses the same intent without provoking an error
+// at all: the row is written if absent and left strictly untouched if present.
+// It is NOT an upsert and must never become one. The security property the
+// SQLite comment protects is that a loser can never overwrite the winner's
+// salt, because tombstones already minted under it would be orphaned — they
+// would remain in the log with no key able to verify them, permanently. DO
+// NOTHING preserves that property exactly; DO UPDATE would destroy it.
+//
+// Note the contrast with keySetRepo.AddMember, which deliberately does NOT use
+// ON CONFLICT DO NOTHING: there a duplicate must surface as domain.ErrConflict,
+// and swallowing it would downgrade the error. Here a duplicate is the expected
+// benign outcome of a race and must be absorbed. The two are opposite
+// requirements, so they get opposite statements.
 func ensureOwnerSalt(ctx context.Context, e execer, ownerID string) ([]byte, error) {
 	existing, err := getOwnerSalt(ctx, e, ownerID)
 	switch {
@@ -78,16 +109,24 @@ func ensureOwnerSalt(ctx context.Context, e execer, ownerID string) ([]byte, err
 	}
 
 	fresh := newSalt()
-	const q = `INSERT INTO owner_erasure_salts (owner_id, salt, created_at) VALUES ($1, $2, $3)`
-	if _, ierr := e.ExecContext(ctx, q, ownerID, fresh, encTime(time.Now())); ierr != nil {
-		// A conflict means a concurrent caller won the race; adopt its salt
-		// rather than failing, so Ensure stays idempotent. Adopting matters:
-		// if this caller kept its own salt instead, the winner's tombstones
-		// would be left with no key able to verify them.
-		if mapped := mapError(ierr); errors.Is(mapped, domain.ErrConflict) {
-			return getOwnerSalt(ctx, e, ownerID)
-		}
+	const q = `INSERT INTO owner_erasure_salts (owner_id, salt, created_at)
+VALUES ($1, $2, $3)
+ON CONFLICT (owner_id) DO NOTHING`
+	res, ierr := e.ExecContext(ctx, q, ownerID, fresh, encTime(time.Now()))
+	if ierr != nil {
 		return nil, mapError(ierr)
+	}
+
+	// Zero rows affected means the conflict target already held a row: a
+	// concurrent caller won the race between the read above and this write.
+	// Adopt its salt rather than returning this caller's unwritten one, which
+	// was never stored and would mint tombstones no reader could verify.
+	n, aerr := res.RowsAffected()
+	if aerr != nil {
+		return nil, mapError(aerr)
+	}
+	if n == 0 {
+		return getOwnerSalt(ctx, e, ownerID)
 	}
 	return fresh, nil
 }
