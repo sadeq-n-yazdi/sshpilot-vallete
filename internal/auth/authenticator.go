@@ -147,10 +147,25 @@ func (a *Authenticator) resolve(ctx context.Context, identity Identity) (domain.
 		return "", ErrAuthFailed
 	}
 
-	// B3 (revocation denylist) adds link revocation state. This is its single
-	// insertion point: the check belongs here, between matching the link and
-	// accepting its owner, so that both Authenticate and Resolve get it at once.
-	// No placeholder field is declared until the check that reads it ships.
+	// Link-level revocation would belong here, between matching the link and
+	// accepting its owner, so that every path through this function gets it at
+	// once. It is deferred, and deliberately not filled in by B3.
+	//
+	// B3's denylist (ADR-0018) is the access-token side of a hybrid scheme: it
+	// lists refresh credential identifiers so that a revocation reaches tokens
+	// already in circulation instead of waiting out their fifteen minutes.
+	// Nothing in that scheme revokes a *link*, and domain.LinkedIdentity has no
+	// revocation state for a check here to read. Adding one is a domain field,
+	// a migration and a repository change, which is a task of its own.
+	//
+	// A check was not added speculatively, and the reason is worth recording so
+	// it is not "fixed" later. It would read as an enforced control to everyone
+	// who passed it while enforcing nothing, since no event would ever populate
+	// it -- and combined with the fail-closed rule the denylist correctly uses,
+	// an unreachable store would then deny every login while never having
+	// revoked anything. Fail closed is right on a path that gates revocation;
+	// on a path with no writers it is an availability regression for no
+	// security gain. A documented gap beats a control that only looks like one.
 
 	// An authenticated, correctly linked principal still must not become a
 	// session for a suspended or deleted account. The link outlives the owner's

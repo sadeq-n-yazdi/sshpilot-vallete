@@ -461,10 +461,10 @@ func TestVerifyDelegatesToTheSigner(t *testing.T) {
 	_, svc := newService(t)
 	got := issue(t, svc, baseTime)
 
-	if _, err := svc.Verify(got.AccessToken, baseTime); err != nil {
+	if _, err := svc.Verify(context.Background(), got.AccessToken, baseTime); err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if _, err := svc.Verify(got.AccessToken, baseTime.Add(auth.AccessTokenLifetime)); !errors.Is(err, auth.ErrAuthFailed) {
+	if _, err := svc.Verify(context.Background(), got.AccessToken, baseTime.Add(auth.AccessTokenLifetime)); !errors.Is(err, auth.ErrAuthFailed) {
 		t.Fatalf("expired token: error = %v, want ErrAuthFailed", err)
 	}
 
@@ -473,7 +473,7 @@ func TestVerifyDelegatesToTheSigner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	if _, err := svc.Verify(foreign, baseTime); !errors.Is(err, auth.ErrAuthFailed) {
+	if _, err := svc.Verify(context.Background(), foreign, baseTime); !errors.Is(err, auth.ErrAuthFailed) {
 		t.Fatalf("foreign token: error = %v, want ErrAuthFailed", err)
 	}
 }

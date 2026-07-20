@@ -105,21 +105,28 @@ func (i Issued) LogValue() slog.Value { return slog.StringValue(i.redacted()) }
 //
 // A TokenService is immutable after construction and safe for concurrent use.
 type TokenService struct {
-	store  repository.Store
-	signer *AccessTokenSigner
+	store    repository.Store
+	signer   *AccessTokenSigner
+	denylist *Denylist
 }
 
-// NewTokenService builds a TokenService. Both dependencies are required: a nil
-// one is a wiring bug, and tolerating it would mean an authentication path that
-// silently skips whichever check the missing dependency performed.
-func NewTokenService(store repository.Store, signer *AccessTokenSigner) (*TokenService, error) {
+// NewTokenService builds a TokenService. All three dependencies are required: a
+// nil one is a wiring bug, and tolerating it would mean an authentication path
+// that silently skips whichever check the missing dependency performed. The
+// denylist in particular is not optional -- a service constructed without one
+// would verify access tokens that have been revoked, which is the single
+// failure this package's revocation story exists to prevent.
+func NewTokenService(store repository.Store, signer *AccessTokenSigner, denylist *Denylist) (*TokenService, error) {
 	if store == nil {
 		return nil, fmt.Errorf("auth: nil store: %w", domain.ErrInvalidInput)
 	}
 	if signer == nil {
 		return nil, fmt.Errorf("auth: nil access token signer: %w", domain.ErrInvalidInput)
 	}
-	return &TokenService{store: store, signer: signer}, nil
+	if denylist == nil {
+		return nil, fmt.Errorf("auth: nil denylist: %w", domain.ErrInvalidInput)
+	}
+	return &TokenService{store: store, signer: signer, denylist: denylist}, nil
 }
 
 // Issue starts a new rotation lineage for ownerID and returns the first
@@ -184,6 +191,9 @@ func (s *TokenService) Exchange(ctx context.Context, presented secrets.Redacted,
 	}
 
 	var out *Issued
+	// revoked carries the lineage from inside the transaction to the denylist
+	// write that follows it; see below.
+	var revoked []domain.RefreshCredential
 	// The whole exchange runs in one transaction so that consuming the old
 	// credential and creating its replacement cannot be observed or interrupted
 	// half-done. A crash between the two outside a transaction would destroy a
@@ -267,7 +277,8 @@ func (s *TokenService) Exchange(ctx context.Context, presented secrets.Redacted,
 		// the lineage dies. The revocation must be committed, hence the nil
 		// return on success below.
 		if cred.Status != domain.CredentialStatusActive {
-			return s.revokeLineage(ctx, r, cred, now)
+			revoked, err = s.revokeLineage(ctx, r, cred, now)
+			return err
 		}
 
 		// The expiry check is also the ninety-day cap, because a rotated
@@ -291,7 +302,8 @@ func (s *TokenService) Exchange(ctx context.Context, presented secrets.Redacted,
 		// as one.
 		if err := r.RefreshCredentials.MarkRotated(ctx, cred.OwnerID, cred.ID, now); err != nil {
 			if errors.Is(err, domain.ErrConflict) {
-				return s.revokeLineage(ctx, r, cred, now)
+				revoked, err = s.revokeLineage(ctx, r, cred, now)
+				return err
 			}
 			// A storage fault: roll back and deny.
 			return err
@@ -333,28 +345,99 @@ func (s *TokenService) Exchange(ctx context.Context, presented secrets.Redacted,
 		out = issued
 		return nil
 	})
+	if txErr == nil {
+		// The denylist write happens after the transaction has committed, never
+		// inside it. Two reasons, and the second is the one that binds on the
+		// shared backend Track I will add: a revocation that is listed but then
+		// rolled back would deny a lineage that is still live, and a network
+		// round trip to Redis inside a database transaction holds that
+		// transaction open for the duration of someone else's outage.
+		//
+		// It is best effort. A failure here is logged and does not change the
+		// outcome, because the durable revocation has already committed and
+		// this call is only what makes it take effect before the tokens expire
+		// on their own. Exchange denies on this path regardless.
+		s.denyRevoked(ctx, revoked, now)
+	}
 	if txErr != nil || out == nil {
 		return nil, ErrAuthFailed
 	}
 	return out, nil
 }
 
-// Verify checks a presented access token and returns its claims. It reads no
-// storage; see AccessTokenSigner for what that buys and what it costs.
-func (s *TokenService) Verify(presented secrets.Redacted, now time.Time) (*domain.AccessToken, error) {
-	return s.signer.Verify(presented, now)
+// denyRevoked lists a just-revoked lineage on the denylist. It reports nothing
+// to the caller: every path that reaches it is already denying.
+func (s *TokenService) denyRevoked(ctx context.Context, revoked []domain.RefreshCredential, now time.Time) {
+	if len(revoked) == 0 {
+		return
+	}
+	if err := s.denylist.RevokeLineage(ctx, revoked, now); err != nil {
+		// Logged without the credential identifiers. They are lookup keys
+		// rather than secrets, but an operator debugging this needs to know
+		// that immediate revocation degraded to TTL expiry, not which accounts
+		// were affected -- and a log line naming revoked credentials is a
+		// record of who was compromised and when.
+		slog.ErrorContext(ctx, "auth: lineage revoked in storage but not listed on the denylist; "+
+			"its access tokens stay valid until they expire",
+			slog.Int("credentials", len(revoked)),
+			slog.String("error", err.Error()),
+		)
+	}
 }
 
-// revokeLineage kills every credential in cred's lineage. It returns nil on
-// success so the enclosing transaction commits the revocation; the caller
-// denies regardless, because out is left nil.
-func (s *TokenService) revokeLineage(ctx context.Context, r repository.Repos, cred *domain.RefreshCredential, now time.Time) error {
+// Verify checks a presented access token and returns its claims.
+//
+// The stateless checks run first -- prefix, shape, MAC, version, scope set and
+// expiry -- and only a token that passes all of them is looked up in the
+// denylist. That ordering is deliberate: an unauthenticated caller must not be
+// able to make this service touch the denylist store by sending garbage, or the
+// revocation store becomes a free amplification target for anyone who can send
+// a request. It also means an expired token costs nothing to reject.
+//
+// Every denial returns bare ErrAuthFailed, so a revoked token is
+// indistinguishable from a forged or expired one. A denylist that cannot be
+// consulted is a denial too; see Denylist.Check for why that is the only
+// tolerable direction to fail.
+func (s *TokenService) Verify(ctx context.Context, presented secrets.Redacted, now time.Time) (*domain.AccessToken, error) {
+	tok, err := s.signer.Verify(presented, now)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.denylist.Check(ctx, tok); err != nil {
+		// Collapsed to the bare sentinel here rather than propagated: the
+		// distinction between "revoked" and "denylist unreachable" is for the
+		// server's logs, and this value can reach a client.
+		return nil, ErrAuthFailed
+	}
+	return tok, nil
+}
+
+// revokeLineage kills every credential in cred's lineage and returns those
+// credentials so the caller can list them on the denylist after the transaction
+// commits. It returns nil on success so the enclosing transaction commits the
+// revocation; the caller denies regardless, because out is left nil.
+//
+// The credentials are read back rather than derived from the revocation's
+// return value, which is only a count. The read happens inside the transaction,
+// where the rows are the ones that were just revoked; the denylist write
+// happens outside it, for the reason given in Exchange.
+func (s *TokenService) revokeLineage(ctx context.Context, r repository.Repos, cred *domain.RefreshCredential, now time.Time) ([]domain.RefreshCredential, error) {
 	if _, err := r.RefreshCredentials.RevokeLineage(ctx, cred.OwnerID, cred.LineageID, now); err != nil {
 		// The revocation failed, so there is nothing worth committing. Returning
 		// the error rolls back and still denies.
-		return err
+		return nil, err
 	}
-	return nil
+	revoked, err := r.RefreshCredentials.ListByLineage(ctx, cred.OwnerID, cred.LineageID)
+	if err != nil {
+		// The durable revocation is what matters and it has succeeded. Failing
+		// here would roll it back, un-revoking a lineage that was just detected
+		// as stolen in order to keep a fifteen-minute cache consistent -- the
+		// wrong trade by a wide margin. The lineage is committed; the access
+		// tokens already issued from it live out their remaining minutes, which
+		// is precisely the pre-denylist behavior.
+		return nil, nil
+	}
+	return revoked, nil
 }
 
 // mint derives an access token from a refresh credential and packages both into
