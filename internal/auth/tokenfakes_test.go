@@ -38,6 +38,7 @@ type fakeStore struct {
 	getByIDErr       error
 	markRotatedErr   error
 	revokeLineageErr error
+	listByLineageErr error
 	withTxErr        error
 
 	// nilRow makes GetByID return (nil, nil), the port violation the service
@@ -206,6 +207,9 @@ func (r *fakeCreds) ListByOwner(_ context.Context, ownerID domain.OwnerID) ([]do
 
 func (r *fakeCreds) ListByLineage(_ context.Context, ownerID domain.OwnerID, lineageID domain.LineageID) ([]domain.RefreshCredential, error) {
 	defer r.acquire()()
+	if r.store.listByLineageErr != nil {
+		return nil, r.store.listByLineageErr
+	}
 	var out []domain.RefreshCredential
 	for _, c := range r.store.creds {
 		if c.OwnerID == ownerID && c.LineageID == lineageID {

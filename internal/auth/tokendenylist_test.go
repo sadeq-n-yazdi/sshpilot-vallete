@@ -227,3 +227,33 @@ func TestExpiredTokenIsRejectedWithoutTheDenylist(t *testing.T) {
 		t.Fatal("the denylist was consulted for a token that had already expired")
 	}
 }
+
+// TestLineageRevocationSurvivesAFailedReadBack covers the other half of the
+// same rule. Reading the lineage back is only how the denylist learns which
+// identifiers to list; if that read fails, the revocation itself has already
+// succeeded and must still commit. Rolling it back would un-revoke a lineage
+// that was just detected as stolen because a follow-up query failed, which
+// trades the account for the fifteen minutes the denylist was going to save.
+func TestLineageRevocationSurvivesAFailedReadBack(t *testing.T) {
+	ctx := context.Background()
+	store, svc, _ := newServiceWithDenylist(t)
+
+	first := issue(t, svc, baseTime)
+	second := exchange(t, svc, first.RefreshToken, baseTime.Add(time.Minute))
+
+	store.listByLineageErr = errors.New("read replica unavailable")
+
+	replayed, err := svc.Exchange(ctx, first.RefreshToken, baseTime.Add(2*time.Minute))
+	denied(t, replayed, err)
+
+	// The revocation committed despite the failed read-back.
+	store.listByLineageErr = nil
+	if _, err := svc.Exchange(ctx, second.RefreshToken, baseTime.Add(3*time.Minute)); !errors.Is(err, auth.ErrAuthFailed) {
+		t.Fatalf("the lineage was rolled back by a failed read-back: err = %v", err)
+	}
+	for _, c := range store.creds {
+		if c.Status == domain.CredentialStatusActive {
+			t.Fatalf("credential %q is still active after the lineage was revoked", c.ID)
+		}
+	}
+}
