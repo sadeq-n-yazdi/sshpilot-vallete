@@ -58,8 +58,24 @@ import (
 // letter previously survived unfolded, so "𝛂dmin" did not match "admin".
 //
 // Version 4: Rework stage 1 to use standard NFKD normalization from the
-// golang.org/x/text/unicode/norm package, replacing hand-maintained range-folding tables.
-const TableVersion = 4
+// golang.org/x/text/unicode/norm package, replacing hand-maintained
+// range-folding tables. foldRange and its tables are gone; the compatibility
+// forms it enumerated by arithmetic -- fullwidth, mathematical alphanumerics,
+// circled, superscript, ligatures -- are now decomposed by NFKD, which also
+// covers the ones the hand table had not reached yet.
+//
+// Version 5: ambiguousReadings and the candidate expansion the match stage
+// performs with it. Skeleton itself is unchanged and still returns exactly one
+// string; what changed is that a skeleton is no longer compared only as itself.
+// The digit one and every codepoint that folds to "i" alongside it draw a glyph
+// with two readings, i and l, and a fold to a single output can only keep one.
+// Every version through 4 kept i, which is what makes "4dm1n" equal "admin" --
+// and which left every reserved word containing an l spellable past the list:
+// "he1p", "1ogin", "bi11ing", "officia1" were all permitted. The match stage
+// now expands the discarded reading back out; see ambiguousReadings in
+// tables.go. This changes which identifiers the system refuses, so it is a
+// table revision even though no folding table entry moved.
+const TableVersion = 5
 
 // Skeleton reduces s to its canonical comparison form. The result is a lossy,
 // one-way projection of s; see the package documentation.

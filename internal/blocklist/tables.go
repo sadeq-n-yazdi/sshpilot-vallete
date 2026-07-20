@@ -107,6 +107,109 @@ var leetspeak = map[rune]rune{
 	'$': 's', // dollar sign for S
 }
 
+// ambiguousReadings maps a rune of a FINISHED SKELETON to the readings that the
+// fold had to discard to produce it. It is the one table in this file that is
+// keyed on the pipeline's output rather than its input, and that is the whole
+// point of it.
+//
+// # Why a second reading is needed at all
+//
+// Every other table above is a function: a source glyph has one letter it
+// draws, and folding to that letter loses nothing worth keeping. The digit one
+// is not a function. "1" draws a bare vertical stroke, and a stroke is equally
+// the letter i and the letter l -- both readings are in common, deliberate use.
+// A fold that emits a single rune must pick one, and picking is where the
+// blocklist leaks: leetspeak folds "1" to i, so "4dm1n" correctly equals
+// "admin", and "he1p" equally correctly equals "heip", which is not a reserved
+// word. Every reserved word containing an l -- help, login, billing, official,
+// wallet, legal, null -- was registerable that way.
+//
+// Restoring the lost reading cannot be done by editing leetspeak, because the
+// choice is between two readings and the table has room for one. It is done
+// instead by the match stage, which expands a skeleton into the set of
+// skeletons it might have been and blocks if ANY of them matches a term. See
+// candidateSkeletons in match.go.
+//
+// # Why one entry covers the whole class
+//
+// The key is "i", not "1", and that is deliberate. By the time the pipeline
+// finishes, every stroke-shaped source has already converged on i, by one of
+// three routes:
+//
+//   - NFKD alone, into an ASCII digit that leetspeak then folds: fullwidth "１",
+//     circled "①", superscript "¹" and the mathematical digits all decompose to
+//     ASCII "1", which leetspeak reads as i. The ASCII digit takes the same
+//     last step directly.
+//   - NFKD into an ASCII letter that the case fold then lowers: ASCII capital
+//     I, fullwidth "Ｉ", the mathematical capital I forms and script capital ℐ
+//     (U+2110) all decompose to "I". Roman numeral ⅰ (U+2170) decomposes
+//     straight to "i".
+//   - NFKD into a letter that only the confusables table can reach: dotless ı
+//     (U+0131) and Greek iota ι (U+03B9) are NOT decomposed by NFKD, and the
+//     mathematical dotless i (U+1D6A4) and mathematical iota forms decompose
+//     TO them rather than to ASCII. These reach i solely through the 'ı' and
+//     'ι' entries in confusables above.
+//
+// That third route is load-bearing and easy to lose. The 'ı' and 'ι' confusable
+// entries must not be removed on the reasoning that "NFKD handles the
+// compatibility forms now" -- NFKD hands those forms to ı and ι and stops, so
+// dropping the entries would strand a whole family of stroke-shaped sources
+// short of i and silently reopen the evasion this table exists to close.
+// TestAmbiguousExpansionCoversEveryStrokeShapedSource enforces all three
+// routes.
+//
+// Keying the ambiguity on the fold's OUTPUT covers all of them with one entry,
+// and -- more usefully -- covers any future table entry that folds a new
+// stroke-shaped codepoint to i without this table needing to learn about it.
+// Keying on each source would need an entry per source and would silently miss
+// the next one added.
+//
+// # The direction is deliberately one-way
+//
+// i expands to l; l does not expand to i. The skeleton's l can only have come
+// from a source that unambiguously draws an l (l itself, ł, ℓ), so there is no
+// discarded reading to restore, and inventing one is not free. Measured against
+// /usr/share/dict/words (104334 entries) and the default lists: expanding i to
+// l blocks ZERO additional real words, while making i and l interchangeable in
+// both directions blocks "mall" and "Mali", which collide with the reserved
+// term "mail". Over-blocking refuses a real user their own name (see the note
+// at the top of this file), so the cheaper direction is the only one taken.
+//
+// Values are slices, and their order is part of the contract: it fixes the
+// order candidates are generated in and therefore which term a Result reports
+// when more than one could match. The table is looked up by key and MUST NEVER
+// be ranged over; see Matcher's determinism note.
+//
+// Keys and readings are single-byte ASCII, which TestAmbiguousReadingsAreASCII
+// enforces. candidateSkeletons relies on it to scan a skeleton byte by byte:
+// a UTF-8 continuation byte is always >= 0x80 and so can never be mistaken for
+// a key, and an ASCII-for-ASCII substitution cannot shift the offsets of the
+// bytes around it.
+var ambiguousReadings = map[byte][]byte{
+	'i': {'l'},
+}
+
+// maxAmbiguousRunes bounds how many ambiguous positions candidateSkeletons will
+// expand. Exceeding it is refused, not truncated; see candidateSkeletons.
+//
+// Expansion is exponential -- k ambiguous positions produce 2^k candidates --
+// and the string it expands is supplied by an unauthenticated caller, so an
+// unbounded version is a denial-of-service primitive: 64 of the digit one, well
+// inside the 64-character handle limit, would ask for 2^64 candidates.
+//
+// Twelve is chosen from the data rather than picked round. The most i-laden
+// word in /usr/share/dict/words is "indivisibility" with six, so the bound
+// leaves a factor of 64 of headroom over the worst legitimate identifier
+// anybody has been observed to want, while capping the work at 4096 candidates
+// -- a few milliseconds of substring scanning, paid once at create or rename
+// and never per request. An identifier needing a thirteenth ambiguous position
+// is not a name, and treating it as one is the failure this bound exists to
+// prevent.
+const maxAmbiguousRunes = 12
+
+// maxCandidateSkeletons is the resulting ceiling on the candidate set.
+const maxCandidateSkeletons = 1 << maxAmbiguousRunes
+
 // isSeparator reports whether r is padding an attacker inserts to break a
 // naive compare ("a-d-m-i-n", "a.d.m.i.n", "a d m i n") and is therefore
 // dropped from the skeleton.

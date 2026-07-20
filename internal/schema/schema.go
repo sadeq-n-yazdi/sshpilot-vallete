@@ -2,7 +2,8 @@
 // assembles them into a validated migrate.Registry.
 //
 // The migrations create the core publish-path schema — owners, handles,
-// devices, public keys, key sets, and the key-set membership relation — with
+// devices, public keys, key sets, and the key-set membership relation — plus
+// the append-only audit log, with
 // portable DDL that runs on both SQLite and PostgreSQL. The only engine-level
 // differences are the byte-blob type (SQLite BLOB, Postgres BYTEA) and booleans
 // (SQLite INTEGER constrained to 0/1, Postgres BOOLEAN); column semantics are
@@ -19,6 +20,11 @@
 // the boolean 0/1 checks, as defense-in-depth against a repository writing an
 // out-of-range value. Timestamps are stored as RFC3339 UTC text to match the
 // ledger and adapter convention.
+//
+// The one table that is deliberately not owner-scoped is audit_records: the
+// audit log is a cross-owner system record whose rows must outlive the owners
+// they mention, so it carries neither an owner_id nor a foreign key to owners.
+// See migration0004AuditRecords for the full rationale.
 package schema
 
 import "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
@@ -32,6 +38,7 @@ func Registry() (*migrate.Registry, error) {
 		migration0001Owners(),
 		migration0002Devices(),
 		migration0003KeySets(),
+		migration0004AuditRecords(),
 	)
 }
 
@@ -287,6 +294,78 @@ func migration0003KeySets() migrate.Migration {
 				`DROP TABLE key_set_members`,
 				`DROP TABLE key_sets`,
 			},
+		},
+	}
+}
+
+// migration0004AuditRecords creates the append-only audit log table (ADR-0007).
+//
+// Unlike every other table in this schema, audit_records carries NO owner_id and
+// NO foreign key to owners(id). That is deliberate on two counts. First, the log
+// is a cross-owner system record: an actor may be an administrator or the system
+// itself, and a target is polymorphic across entity types, so there is no single
+// owner to scope a row to. Second, an FK to owners(id) would actively break
+// ADR-0024: owner deletion must leave the structural audit trail standing
+// (pseudonymized), whereas an FK would force the deletion either to be blocked
+// or to cascade the history away. Records therefore outlive the owners they
+// mention, which is the entire point of an audit log.
+//
+// There is deliberately no BEFORE UPDATE / BEFORE DELETE trigger enforcing
+// immutability at the database level. Append-only is enforced by the shape of
+// the repository port (repository.AuditAppender exposes only Append, and
+// repository.AuditRepository adds only reads), and ADR-0024 requires a
+// controlled retention purge and pseudonymization path that a hard trigger would
+// have to be dropped to permit. Encoding the property as a trigger that the very
+// next track must rip out would weaken it, not strengthen it.
+//
+// The indexes serve the three access patterns the port declares: newest-first
+// keyset listing over (occurred_at, id), filtering by actor, and filtering by
+// target. occurred_at is fixed-width RFC3339 UTC text, so its index orders
+// chronologically under a plain lexical comparison.
+func migration0004AuditRecords() migrate.Migration {
+	return migrate.Migration{
+		ID:   "0004",
+		Name: "audit_records",
+		Preconditions: []migrate.Precondition{
+			migrate.TableAbsent("audit_records"),
+		},
+		Up: migrate.Steps{
+			SQLite: []string{
+				`CREATE TABLE audit_records (
+	id TEXT PRIMARY KEY,
+	actor_type TEXT NOT NULL CHECK (actor_type IN ('owner', 'administrator', 'system')),
+	actor_id TEXT NOT NULL,
+	action TEXT NOT NULL,
+	target_type TEXT NOT NULL CHECK (target_type IN ('owner', 'handle', 'device', 'public_key', 'key_set', 'access_key', 'refresh_credential', 'blocklist_entry', 'allowlist_entry')),
+	target_id TEXT NOT NULL,
+	occurred_at TEXT NOT NULL,
+	metadata TEXT NOT NULL DEFAULT '{}',
+	pseudonymized INTEGER NOT NULL DEFAULT 0 CHECK (pseudonymized IN (0, 1))
+)`,
+				`CREATE INDEX ix_audit_records_occurred_at ON audit_records (occurred_at, id)`,
+				`CREATE INDEX ix_audit_records_actor ON audit_records (actor_id)`,
+				`CREATE INDEX ix_audit_records_target ON audit_records (target_type, target_id)`,
+			},
+			Postgres: []string{
+				`CREATE TABLE audit_records (
+	id TEXT PRIMARY KEY,
+	actor_type TEXT NOT NULL CHECK (actor_type IN ('owner', 'administrator', 'system')),
+	actor_id TEXT NOT NULL,
+	action TEXT NOT NULL,
+	target_type TEXT NOT NULL CHECK (target_type IN ('owner', 'handle', 'device', 'public_key', 'key_set', 'access_key', 'refresh_credential', 'blocklist_entry', 'allowlist_entry')),
+	target_id TEXT NOT NULL,
+	occurred_at TEXT NOT NULL,
+	metadata TEXT NOT NULL DEFAULT '{}',
+	pseudonymized BOOLEAN NOT NULL DEFAULT FALSE
+)`,
+				`CREATE INDEX ix_audit_records_occurred_at ON audit_records (occurred_at, id)`,
+				`CREATE INDEX ix_audit_records_actor ON audit_records (actor_id)`,
+				`CREATE INDEX ix_audit_records_target ON audit_records (target_type, target_id)`,
+			},
+		},
+		Down: migrate.Steps{
+			SQLite:   []string{`DROP TABLE audit_records`},
+			Postgres: []string{`DROP TABLE audit_records`},
 		},
 	}
 }

@@ -3,6 +3,8 @@ package httpserver
 import (
 	"log/slog"
 	"net/http"
+
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 )
 
 // NewHandler builds the complete HTTP handler: the route table wrapped in the
@@ -17,7 +19,12 @@ import (
 // router is pulled in for a handful of routes. (Those patterns arrived in Go
 // 1.22, which is a note on the feature's history, not a compatibility floor:
 // the module requires go 1.26 per go.mod, and CI builds on exactly that.)
-func NewHandler(logger *slog.Logger, pinger Pinger, publisher Publisher) http.Handler {
+//
+// cfg supplies transport policy — which peers may be believed about the client
+// scheme. It may be nil, which yields the strictest posture (HSTS only on
+// connections this process terminated); that is the right default for an
+// embedder who has not thought about proxy trust.
+func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publisher) http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
@@ -40,9 +47,15 @@ func NewHandler(logger *slog.Logger, pinger Pinger, publisher Publisher) http.Ha
 	mux.Handle("GET /{handle}", pub)
 	mux.Handle("GET /{handle}/{set}", pub)
 
-	// Outermost first: every request gets an ID, then is logged, then is
-	// protected from panics.
+	// Outermost first: every response carries the transport policy, then every
+	// request gets an ID, then is logged, then is protected from panics.
+	//
+	// hstsMiddleware is outermost so the header is set before any inner layer
+	// can write — including the 500 that recoveryMiddleware writes for a
+	// panicking handler, which would otherwise be the one response that escapes
+	// without the policy.
 	return chain(mux,
+		hstsMiddleware(newHSTSPolicy(cfg)),
 		requestIDMiddleware,
 		loggingMiddleware(logger),
 		recoveryMiddleware(logger),
