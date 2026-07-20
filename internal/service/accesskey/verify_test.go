@@ -248,3 +248,49 @@ func TestVerifyPropagatesStorageFailure(t *testing.T) {
 		t.Fatalf("storage failure collapsed into the negative verdict: %v", err)
 	}
 }
+
+// TestHashBindsIDAndSecret asserts the digest is meaningful for exactly one
+// credential. Both properties are checked directly on the hasher because
+// neither is reachable through the write path: mint never produces two rows
+// sharing a secret, so a digest that attested only to "this secret is valid"
+// would pass every end-to-end test here while allowing a stored hash to be
+// moved between rows — including to a row for a different key set — and still
+// verify.
+func TestHashBindsIDAndSecret(t *testing.T) {
+	f := newFixture(t)
+	h := f.svc.hasher
+
+	if string(h.hash("id-one", "secret")) == string(h.hash("id-two", "secret")) {
+		t.Fatal("one secret digests identically under two key ids")
+	}
+	// The separator must make the message unambiguous: ("ab", "c") and
+	// ("a", "bc") concatenate to the same bytes without it.
+	if string(h.hash("ab", "c")) == string(h.hash("a", "bc")) {
+		t.Fatal("the id and secret boundary is ambiguous in the digested message")
+	}
+	if string(h.hash("id", "secret")) == string(h.hash("id", "secrets")) {
+		t.Fatal("two secrets digest identically under one id")
+	}
+}
+
+// TestHashIsKeyedByThePepper asserts an attacker holding only the database
+// cannot compute a valid digest: two services differing solely in their pepper
+// produce different hashes for the same credential, and a token minted under
+// one does not verify under the other.
+func TestHashIsKeyedByThePepper(t *testing.T) {
+	f := newFixture(t)
+	owner := f.seedOwner("alice")
+	k, token := f.mint(owner.OwnerID, owner.KeySetID, "ci")
+
+	repos := f.store.Repos()
+	other, err := New(repos.AccessKeys, repos.KeySets, f.audit, []byte("ffffffffffffffffffffffffffffffff"))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if string(other.hasher.hash(k.ID, "secret")) == string(f.svc.hasher.hash(k.ID, "secret")) {
+		t.Fatal("the digest does not depend on the pepper")
+	}
+
+	_, err = other.Verify(context.Background(), owner.OwnerID, owner.KeySetID, token)
+	denied(t, "Verify under a different pepper", err)
+}
