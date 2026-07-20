@@ -32,6 +32,12 @@ type Issued struct {
 	AccessExpiresAt time.Time
 	// OwnerID is the account both tokens speak for.
 	OwnerID domain.OwnerID
+	// LineageID names the rotation lineage the refresh credential belongs to.
+	// It is exposed so a caller that owns a durable record of this issuance --
+	// a device pairing, say -- can store the lineage and later revoke it, which
+	// is the only granularity at which access tokens already in circulation can
+	// be withdrawn. It is not a secret and identifies no credential on its own.
+	LineageID domain.LineageID
 	// Scopes is the grant carried by both tokens.
 	Scopes []domain.Scope
 }
@@ -462,6 +468,7 @@ func (s *TokenService) mint(cred *domain.RefreshCredential, secret []byte, now t
 		AccessToken:      raw,
 		AccessExpiresAt:  access.ExpiresAt,
 		OwnerID:          cred.OwnerID,
+		LineageID:        cred.LineageID,
 		Scopes:           cloneScopes(cred.Scopes),
 	}, nil
 }
