@@ -1,6 +1,7 @@
 package dns01
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -40,17 +41,31 @@ var blankCredentials = []struct {
 func TestAPIProvidersRejectBlankCredential(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"cloudflare", "route53", "digitalocean", "dnsimple"} {
-		t.Run(name, func(t *testing.T) {
+	// Each provider's own sentinel is named, so the refusal is asserted to be
+	// THIS one rather than any error at all. Without it a future check inserted
+	// ahead of the blank gate — an unreachable-endpoint probe, a client-build
+	// failure — would keep these tests green while the gate itself rotted.
+	providers := []struct {
+		name string
+		want error
+	}{
+		{"cloudflare", ErrCloudflareAPI},
+		{"route53", ErrRoute53API},
+		{"digitalocean", ErrDigitalOceanAPI},
+		{"dnsimple", ErrDNSimpleAPI},
+	}
+
+	for _, prov := range providers {
+		t.Run(prov.name, func(t *testing.T) {
 			t.Parallel()
 
 			for _, tc := range blankCredentials {
 				t.Run(tc.name, func(t *testing.T) {
 					t.Parallel()
 
-					p, err := NewAPIProvider(name, secrets.Redacted(tc.value), nil)
-					if err == nil {
-						t.Fatal("a blank credential must be refused at construction")
+					p, err := NewAPIProvider(prov.name, secrets.Redacted(tc.value), nil)
+					if !errors.Is(err, prov.want) {
+						t.Fatalf("err = %v, want %v", err, prov.want)
 					}
 					if p != nil {
 						t.Fatal("a provider with no usable credential must not be returned")
@@ -92,8 +107,8 @@ func TestRoute53RejectsBlankCredentialHalves(t *testing.T) {
 			t.Parallel()
 
 			p, err := NewAPIProvider("route53", secrets.Redacted(tt.credential), nil)
-			if err == nil {
-				t.Fatal("a credential with a blank half must be refused at construction")
+			if !errors.Is(err, ErrRoute53API) {
+				t.Fatalf("err = %v, want ErrRoute53API", err)
 			}
 			if p != nil {
 				t.Fatal("a provider with no usable credential must not be returned")
