@@ -58,13 +58,18 @@ type Server struct {
 // handshake on a server the operator believes is healthy.
 //
 // The pinger may be nil, in which case readiness reports 503 forever; that is
-// the honest answer for a server with no database.
-func New(cfg *config.Config, logger *slog.Logger, pinger Pinger) (*Server, error) {
+// the honest answer for a server with no database. The publisher may NOT be
+// nil: serving the publish endpoint is the whole point of the process, and a
+// server that cannot answer it should never bind a port.
+func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publisher) (*Server, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
+	if publisher == nil {
+		return nil, ErrNilPublisher
+	}
 
-	tlsCfg, err := buildTLSConfig(cfg)
+	tlsCfg, err := buildTLSConfig(cfg, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +79,7 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger) (*Server, error
 		addr:   cfg.Server.ListenAddr,
 		httpSrv: &http.Server{
 			Addr:              cfg.Server.ListenAddr,
-			Handler:           NewHandler(logger, pinger),
+			Handler:           NewHandler(cfg, logger, pinger, publisher),
 			TLSConfig:         tlsCfg,
 			ReadHeaderTimeout: readHeaderTimeout,
 			ReadTimeout:       readTimeout,

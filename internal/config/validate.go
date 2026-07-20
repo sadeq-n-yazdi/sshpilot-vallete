@@ -211,6 +211,25 @@ func isFQDN(host string) bool {
 	return strings.Contains(host, ".")
 }
 
+// ValidateDatabase validates ONLY the database section.
+//
+// It exists for offline administrative commands that open the datastore but
+// never bind a listener or issue a token. Running the full Validate there would
+// demand a TLS mode, a public base URL, and a token signing key that such a
+// command has no use for, which would either block a legitimate operation or —
+// far worse — push an operator into inventing throwaway production values just
+// to get past the check. Narrowing the gate to what the command actually
+// touches keeps the strict whole-config validation meaningful for the server
+// path, where every one of those settings is load-bearing.
+func (c *Config) ValidateDatabase() error {
+	v := &validator{}
+	c.validateDatabase(v)
+	if len(v.errs) == 0 {
+		return nil
+	}
+	return v.errs
+}
+
 func (c *Config) validateDatabase(v *validator) {
 	switch c.Database.Driver {
 	case "sqlite":

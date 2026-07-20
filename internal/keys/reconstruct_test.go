@@ -111,6 +111,47 @@ func TestAuthorizedKeyLineTrimsComment(t *testing.T) {
 	}
 }
 
+// TestAuthorizedKeyLineRejectsSurroundingLineBreaks pins the ORDER of the
+// comment checks, which is a security property rather than a stylistic one.
+//
+// The line-break rejection must run before the TrimSpace, because TrimSpace
+// strips leading and trailing whitespace — newlines among it. Checking after
+// trimming would silently launder exactly the input that matters: a comment of
+// "\n<a complete key line>" trims to a break-free string, passes validation,
+// and gets appended after the key, so a stored comment could smuggle attacker-
+// chosen text past the check that exists to stop it.
+//
+// Each case here has its line break only at the very start or very end, so each
+// one is caught solely by validating before trimming.
+func TestAuthorizedKeyLineRejectsSurroundingLineBreaks(t *testing.T) {
+	f := ed25519Fixture(t)
+
+	const forged = `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJm7t7g6Uu1PL7lxQvfLh7dGxzZBLcYqLxYUlD8HpXTd evil`
+
+	comments := map[string]string{
+		"leading line feed":        "\n" + forged,
+		"trailing line feed":       forged + "\n",
+		"leading carriage return":  "\r" + forged,
+		"trailing carriage return": forged + "\r",
+		"leading crlf":             "\r\n" + forged,
+		"trailing crlf":            forged + "\r\n",
+		"only a newline":           "\n",
+		"surrounded":               "\n" + forged + "\n",
+	}
+
+	for name, comment := range comments {
+		t.Run(name, func(t *testing.T) {
+			line, err := AuthorizedKeyLineFrom(f.alg, f.pub.Marshal(), comment)
+			if !errors.Is(err, ErrBadComment) {
+				t.Fatalf("error = %v, want ErrBadComment (line = %q)", err, line)
+			}
+			if line != "" {
+				t.Errorf("line = %q, want empty on rejection", line)
+			}
+		})
+	}
+}
+
 // assertCanonical verifies the structural invariants of a reconstructed line:
 // exactly one trailing newline, no carriage return, no interior newline, and
 // 2 or 3 single-space-separated fields (3 iff a comment is present).
