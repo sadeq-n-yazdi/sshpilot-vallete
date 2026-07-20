@@ -142,6 +142,8 @@ func NewAPIProvider(name string, credential secrets.Redacted, client *http.Clien
 	switch name {
 	case "cloudflare":
 		return NewCloudflare(credential, client)
+	case "route53":
+		return NewRoute53(credential, client)
 	default:
 		// The provider NAME is echoed because it came from the operator's own
 		// config file and is the diagnostic. The credential is not touched.
