@@ -145,6 +145,18 @@ func (c *Config) validateTLS(v *validator, prod bool) {
 		if t.Domain == "" {
 			v.add("tls.domain", "required for csr mode")
 		}
+		// All three paths are required. Defaulting any of them would have the
+		// server create or read key material at a location the operator never
+		// chose, and a key nobody knows exists is a key nobody protects.
+		if t.CSR.KeyFile == "" {
+			v.add("tls.csr.key_file", "required for csr mode")
+		}
+		if t.CSR.CSRFile == "" {
+			v.add("tls.csr.csr_file", "required for csr mode")
+		}
+		if t.CSR.CertFile == "" {
+			v.add("tls.csr.cert_file", "required for csr mode")
+		}
 	case "upstream":
 		if len(c.Server.TrustedProxies) == 0 {
 			v.add("server.trusted_proxies", "at least one required for upstream TLS mode")

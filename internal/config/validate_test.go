@@ -95,6 +95,27 @@ func TestValidateFailures(t *testing.T) {
 			c.TLS.Mode = "csr"
 			c.TLS.Domain = ""
 		}, "tls.domain"},
+		// The three csr paths have no defaults on purpose: a default key path
+		// would have the server create key material somewhere the operator
+		// never chose, and a key nobody knows exists is a key nobody protects.
+		{"csr missing key file", func(c *Config) {
+			c.TLS.Mode = "csr"
+			c.TLS.Domain = "vallet.example.com"
+			c.TLS.CSR.CSRFile = "/tmp/v.csr"
+			c.TLS.CSR.CertFile = "/tmp/v.crt"
+		}, "tls.csr.key_file"},
+		{"csr missing csr file", func(c *Config) {
+			c.TLS.Mode = "csr"
+			c.TLS.Domain = "vallet.example.com"
+			c.TLS.CSR.KeyFile = "/tmp/v.key"
+			c.TLS.CSR.CertFile = "/tmp/v.crt"
+		}, "tls.csr.csr_file"},
+		{"csr missing cert file", func(c *Config) {
+			c.TLS.Mode = "csr"
+			c.TLS.Domain = "vallet.example.com"
+			c.TLS.CSR.KeyFile = "/tmp/v.key"
+			c.TLS.CSR.CSRFile = "/tmp/v.csr"
+		}, "tls.csr.cert_file"},
 		{"self signed prod refused", func(c *Config) {
 			c.TLS.Mode = "self_signed"
 		}, "tls.mode"},
