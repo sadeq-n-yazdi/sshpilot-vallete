@@ -86,6 +86,26 @@ command -v go >/dev/null 2>&1 || die "go toolchain not found on PATH; install Go
 
 [ -n "${bin_dir}" ] || die "--bin-dir must not be empty"
 
+# A dry run must not touch the filesystem, so it exits before the directory is
+# created and before anything is resolved against it.
+if [ "$dry_run" -eq 1 ]; then
+	printf 'dry run: would install %s@%s into %s\n' "$PKG" "$version" "$bin_dir"
+	printf 'dry run: would run: go install %s@%s\n' "$PKG" "$version"
+	exit 0
+fi
+
+# `go install` rejects a relative GOBIN, and it does so from deep inside the
+# toolchain with a message that does not mention --bin-dir. Resolve to an
+# absolute path here instead. The directory has to exist before it can be
+# resolved, which is why it is created first rather than just before the
+# install.
+# CDPATH is cleared first: with it set, `cd bin` can silently land in a
+# completely different directory, which would send the binary somewhere the
+# operator never named.
+CDPATH=''
+mkdir -p -- "$bin_dir" || die "cannot create --bin-dir: $bin_dir"
+bin_dir=$(CDPATH='' cd -P -- "$bin_dir" && pwd) || die "cannot resolve --bin-dir to an absolute path: $bin_dir"
+
 # Force module verification on for this invocation regardless of how the
 # calling environment is configured. An operator with GOFLAGS=-insecure,
 # GONOSUMDB, or GOPRIVATE covering this module would otherwise install
@@ -103,13 +123,6 @@ export GOFLAGS GOPRIVATE GONOSUMDB GONOSUMCHECK GOINSECURE GONOSUMVERIFY GOSUMDB
 
 printf 'installing %s@%s into %s\n' "$PKG" "$version" "$bin_dir"
 printf 'module integrity is verified against %s\n' "$GOSUMDB"
-
-if [ "$dry_run" -eq 1 ]; then
-	printf 'dry run: would run: go install %s@%s\n' "$PKG" "$version"
-	exit 0
-fi
-
-mkdir -p "$bin_dir"
 
 # No `|| true`, and `set -e` is still in force: a failed or unverifiable
 # download aborts here rather than leaving a half-installed helper behind.

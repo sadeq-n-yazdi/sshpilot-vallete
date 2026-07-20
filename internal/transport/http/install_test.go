@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -407,10 +409,10 @@ func TestInstallServingPathNeverTouchesTheFilesystem(t *testing.T) {
 // TestInstallScriptFailsClosed reads the artifact itself and asserts the
 // properties that make it safe to hand to a stranger.
 //
-// It is a source-level check on purpose: the script's job is to install
-// software, and executing it in a test to observe its behavior would mean
-// running an installer in CI. These are the properties a reviewer would look
-// for, pinned so a later edit cannot quietly drop one.
+// It is a source-level check on purpose: these are properties of what the
+// script may contain, which no single execution can demonstrate the absence of.
+// The behavioral tests further down run the script instead, against a stub `go`
+// so nothing is installed, for the properties that only appear at runtime.
 func TestInstallScriptFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -485,6 +487,99 @@ func shellCode(script string) string {
 		kept = append(kept, line)
 	}
 	return strings.Join(kept, "\n")
+}
+
+// TestInstallScriptResolvesARelativeBinDirToAnAbsolutePath pins the fix for a
+// relative --bin-dir: `go install` rejects a relative GOBIN outright, so the
+// script has to resolve it before exporting or the documented flag simply does
+// not work.
+func TestInstallScriptResolvesARelativeBinDirToAnAbsolutePath(t *testing.T) {
+	t.Parallel()
+
+	work := realPath(t, t.TempDir())
+	res := runInstallScript(t, work, []string{"HOME=" + work},
+		"--version", "v1.2.3", "--bin-dir", "bin")
+
+	if res.err != nil {
+		t.Fatalf("script failed: %v\nstdout=%q\nstderr=%q", res.err, res.stdout, res.stderr)
+	}
+
+	want := "shim-gobin=" + filepath.Join(work, "bin")
+	if !strings.Contains(res.stdout, want) {
+		t.Errorf("GOBIN handed to go install is not the absolute form of --bin-dir\ngot:  %q\nwant to contain: %q", res.stdout, want)
+	}
+}
+
+// TestInstallScriptDryRunTouchesNothing keeps the directory creation that the
+// absolute-path resolution needs from turning --dry-run into something that
+// writes to the filesystem.
+func TestInstallScriptDryRunTouchesNothing(t *testing.T) {
+	t.Parallel()
+
+	work := realPath(t, t.TempDir())
+	res := runInstallScript(t, work, []string{"HOME=" + work},
+		"--version", "v1.2.3", "--bin-dir", "bin", "--dry-run")
+
+	if res.err != nil {
+		t.Fatalf("dry run failed: %v\nstderr=%q", res.err, res.stderr)
+	}
+	if strings.Contains(res.stdout, "shim-gobin=") {
+		t.Errorf("dry run invoked go: %q", res.stdout)
+	}
+	if _, err := os.Stat(filepath.Join(work, "bin")); !os.IsNotExist(err) {
+		t.Errorf("dry run created the install directory (stat err = %v)", err)
+	}
+}
+
+type installScriptResult struct {
+	stdout string
+	stderr string
+	err    error
+}
+
+// runInstallScript executes the served script with a stub `go` first on PATH,
+// so the argument handling can be observed without installing anything.
+//
+// The source-level checks above cannot see this: whether a relative --bin-dir
+// survives to GOBIN is a property of the running script, not of its text. The
+// stub prints the GOBIN it was handed, which is the value under test, and
+// never contacts the network.
+func runInstallScript(t *testing.T, dir string, env []string, args ...string) installScriptResult {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("the installer is a POSIX sh script")
+	}
+
+	shimDir := t.TempDir()
+	shim := "#!/bin/sh\nprintf 'shim-gobin=%s\\n' \"$GOBIN\"\nprintf 'shim-args=%s\\n' \"$*\"\n"
+	if err := os.WriteFile(filepath.Join(shimDir, "go"), []byte(shim), 0o700); err != nil {
+		t.Fatalf("write go stub: %v", err)
+	}
+
+	// HOME is supplied only by the caller: its absence is one of the behaviors
+	// under test, so it must not leak in from the test process.
+	cmd := exec.Command("/bin/sh", append([]string{installScriptFile(t)}, args...)...)
+	cmd.Dir = dir
+	cmd.Env = append([]string{"PATH=" + shimDir + ":/usr/bin:/bin"}, env...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	return installScriptResult{stdout: stdout.String(), stderr: stderr.String(), err: err}
+}
+
+// realPath resolves symlinks so a path compared against one the script produced
+// with `cd -P` matches; on macOS t.TempDir() sits under a symlinked /tmp.
+func realPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", path, err)
+	}
+	return resolved
 }
 
 // installScriptFile locates the authored script relative to this source file,
