@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -13,6 +14,35 @@ import (
 	"testing"
 	"time"
 )
+
+// manualCertificate loads operator-supplied files and validates the result at a
+// fixed instant, returning a usable certificate only if it passes.
+//
+// E2 split what used to be one function into a provider (file loading) and the
+// guard (validation), because validation now also runs on every handshake rather
+// than only at startup. This helper recomposes the two so the fail-closed cases
+// below keep testing the behavior an operator actually experiences — load then
+// validate — through the real production code path.
+//
+// It returns a ZERO certificate on error, which is what lets the tests assert
+// that no usable material escapes alongside a failure.
+func manualCertificate(certFile, keyFile string, now time.Time) (tls.Certificate, error) {
+	provider, err := newManualProvider(certFile, keyFile)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	cert, err := newCertGuard(provider, staticClock(now)).GetCertificate(nil)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return *cert, nil
+}
+
+// staticClock freezes time, so a validity window can be probed at a chosen
+// instant instead of whenever the test happens to run.
+func staticClock(now time.Time) func() time.Time {
+	return func() time.Time { return now }
+}
 
 // --- fail-closed tests -----------------------------------------------------
 
@@ -231,13 +261,13 @@ func TestBuildTLSConfigUsesInjectedClock(t *testing.T) {
 	cfg.TLS.Manual.CertFile = certFile
 	cfg.TLS.Manual.KeyFile = keyFile
 
-	if _, err := buildTLSConfig(cfg, base.Add(30*time.Minute)); err != nil {
+	if _, err := buildTLSConfig(cfg, staticClock(base.Add(30*time.Minute))); err != nil {
 		t.Fatalf("inside the validity window: %v", err)
 	}
-	if _, err := buildTLSConfig(cfg, base.Add(2*time.Hour)); !errors.Is(err, ErrTLSCertificateExpired) {
+	if _, err := buildTLSConfig(cfg, staticClock(base.Add(2*time.Hour))); !errors.Is(err, ErrTLSCertificateExpired) {
 		t.Fatalf("after expiry: err = %v, want ErrTLSCertificateExpired", err)
 	}
-	if _, err := buildTLSConfig(cfg, base.Add(-time.Minute)); !errors.Is(err, ErrTLSCertificateExpired) {
+	if _, err := buildTLSConfig(cfg, staticClock(base.Add(-time.Minute))); !errors.Is(err, ErrTLSCertificateExpired) {
 		t.Fatalf("before validity: err = %v, want ErrTLSCertificateExpired", err)
 	}
 }
@@ -271,13 +301,14 @@ func TestManualCertificateReparsesNilLeaf(t *testing.T) {
 func TestUnsupportedModesFailClosed(t *testing.T) {
 	t.Parallel()
 
-	for _, mode := range []string{"acme", "cloudflare_origin", "csr", "upstream", "", "nonsense"} {
+	// csr is deliberately absent: it is implemented now and has its own tests.
+	for _, mode := range []string{"acme", "cloudflare_origin", "upstream", "", "nonsense"} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			t.Parallel()
 
 			cfg := devConfig()
 			cfg.TLS.Mode = mode
-			tlsCfg, err := buildTLSConfig(cfg, time.Now())
+			tlsCfg, err := buildTLSConfig(cfg, time.Now)
 			if !errors.Is(err, ErrTLSModeUnsupported) {
 				t.Fatalf("err = %v, want ErrTLSModeUnsupported", err)
 			}
