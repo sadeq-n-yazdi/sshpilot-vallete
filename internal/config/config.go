@@ -230,10 +230,27 @@ type PostgresConfig struct {
 // AuthConfig configures management authentication. It is a stub extended by the
 // auth track.
 type AuthConfig struct {
-	AccessTokenTTL     Duration      `yaml:"access_token_ttl"`
-	RefreshTokenMaxAge Duration      `yaml:"refresh_token_max_age"`
-	TokenSigningKeyRef secrets.Ref   `yaml:"token_signing_key_ref"`
-	Providers          AuthProviders `yaml:"providers"`
+	AccessTokenTTL     Duration    `yaml:"access_token_ttl"`
+	RefreshTokenMaxAge Duration    `yaml:"refresh_token_max_age"`
+	TokenSigningKeyRef secrets.Ref `yaml:"token_signing_key_ref"`
+
+	// AccessKeyPepperRef references the HMAC pepper that keys the stored digest
+	// of every key-set access key (ADR-0016). It must resolve to at least
+	// accesskey.MinPepperLen (32) bytes; a shorter or unresolvable value is a
+	// startup failure, never a downgrade.
+	//
+	// OPERATIONAL CONSEQUENCE: the pepper is part of every digest, so changing
+	// it invalidates EVERY existing access key at once. Every consumer of every
+	// protected key set stops verifying the moment the new pepper is loaded and
+	// must be re-issued a freshly minted token. Rotate deliberately, not as
+	// cleanup.
+	//
+	// Required in production, where its absence is refused. Left empty in
+	// development the server still starts, with no verifier at all: protected
+	// key sets then answer the same 404 an absent set gets, for everyone.
+	AccessKeyPepperRef secrets.Ref `yaml:"access_key_pepper_ref"`
+
+	Providers AuthProviders `yaml:"providers"`
 }
 
 // AuthProviders toggles the available authentication providers.

@@ -354,6 +354,15 @@ func (c *Config) validateAuth(v *validator, prod bool) {
 	if prod && a.TokenSigningKeyRef.IsZero() {
 		v.add("auth.token_signing_key_ref", "required in production")
 	}
+	// Without a pepper no access key can be verified, so every protected key set
+	// answers 404 to everyone. That is safe but it is also silent, and a
+	// production deployment that believes it is serving protected sets and is
+	// not should be told at startup rather than by a consumer's ticket.
+	// Development is allowed the verifier-less mode so a checkout runs with no
+	// secret material at all.
+	if prod && a.AccessKeyPepperRef.IsZero() {
+		v.add("auth.access_key_pepper_ref", "required in production")
+	}
 }
 
 func (c *Config) validateRateLimit(v *validator) {
@@ -583,6 +592,7 @@ func (c *Config) allRefs() []refField {
 		{"tls.cloudflare_origin.api_token_ref", c.TLS.CloudflareOrigin.APITokenRef},
 		{"database.postgres.dsn_ref", c.Database.Postgres.DSNRef},
 		{"auth.token_signing_key_ref", c.Auth.TokenSigningKeyRef},
+		{"auth.access_key_pepper_ref", c.Auth.AccessKeyPepperRef},
 		{"rate_limit.shared.password_ref", c.RateLimit.Shared.PasswordRef},
 		{"telemetry.metrics.otlp.headers_ref", c.Telemetry.Metrics.OTLP.HeadersRef},
 	}
