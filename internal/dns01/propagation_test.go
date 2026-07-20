@@ -1,6 +1,8 @@
 package dns01
 
 import (
+	"context"
+	"errors"
 	"slices"
 	"sort"
 	"testing"
@@ -88,5 +90,98 @@ func TestAuthoritativeLookupFailsClosedOnAnUnresolvableZone(t *testing.T) {
 	if err == nil {
 		t.Error("lookup of a name with no authoritative nameserver returned no error; " +
 			"an empty success would be read as a propagated-but-empty record")
+	}
+}
+
+// fakeAt builds a per-address TXT query whose answers -- and whose failures --
+// are fixed by the test. An address absent from the map is unreachable.
+func fakeAt(answers map[string][]string) func(ctx context.Context, server, name string) ([]string, error) {
+	return func(_ context.Context, server, _ string) ([]string, error) {
+		values, ok := answers[server]
+		if !ok {
+			return nil, errors.New("no route to host")
+		}
+		return values, nil
+	}
+}
+
+// TestUnreachableAddressDoesNotBlockAReachableNameserver is the dual-stack case.
+//
+// A nameserver with both an A and a AAAA record, on a host with no IPv6 route,
+// has one address this process can never reach. Treating each ADDRESS as an
+// authority that must answer made that permanent: the result was empty on every
+// poll, the bounded wait always expired, and no certificate could ever be
+// issued on an IPv4-only host -- with nothing misconfigured to find.
+func TestUnreachableAddressDoesNotBlockAReachableNameserver(t *testing.T) {
+	t.Parallel()
+
+	servers := [][]string{{"192.0.2.1:53", "[2001:db8::1]:53"}}
+	got, err := commonTXT(context.Background(), servers, "_acme-challenge.example.com",
+		fakeAt(map[string][]string{"192.0.2.1:53": {"token"}}))
+	if err != nil {
+		t.Fatalf("commonTXT: %v", err)
+	}
+	if !slices.Equal(got, []string{"token"}) {
+		t.Fatalf("commonTXT = %v, want [token]: an unreachable address blocked a nameserver that answered", got)
+	}
+}
+
+// TestAddressesOfOneNameserverMustAgree keeps the strictness where it is
+// observable. Skipping unreachable addresses must not become "one yes is
+// enough": two addresses of a nameserver that both answer, differing because
+// they are anycast instances converging at different rates, still means the
+// zone has not settled.
+func TestAddressesOfOneNameserverMustAgree(t *testing.T) {
+	t.Parallel()
+
+	servers := [][]string{{"192.0.2.1:53", "192.0.2.2:53"}}
+	got, err := commonTXT(context.Background(), servers, "_acme-challenge.example.com",
+		fakeAt(map[string][]string{
+			"192.0.2.1:53": {"token"},
+			"192.0.2.2:53": {"stale"},
+		}))
+	if err != nil {
+		t.Fatalf("commonTXT: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("commonTXT = %v, want empty: two answering addresses disagreed and it reported propagated", got)
+	}
+}
+
+// TestNameserverWithNoReachableAddressIsNotPropagated holds the fail-closed
+// rule at the level it now applies to. An authority observed at no address is
+// unobserved, and an unobserved authority is never "assume yes" -- the CA may
+// be the one that asks it.
+func TestNameserverWithNoReachableAddressIsNotPropagated(t *testing.T) {
+	t.Parallel()
+
+	servers := [][]string{{"192.0.2.1:53"}, {"192.0.2.9:53", "[2001:db8::9]:53"}}
+	got, err := commonTXT(context.Background(), servers, "_acme-challenge.example.com",
+		fakeAt(map[string][]string{"192.0.2.1:53": {"token"}}))
+	if err != nil {
+		t.Fatalf("commonTXT: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("commonTXT = %v, want empty: a nameserver nothing could reach was counted as serving the value", got)
+	}
+}
+
+// TestEveryNameserverMustServeTheValue is the property the gate exists for,
+// asserted through the grouped shape: one authority still missing the record
+// means not propagated, however many others have it.
+func TestEveryNameserverMustServeTheValue(t *testing.T) {
+	t.Parallel()
+
+	servers := [][]string{{"192.0.2.1:53"}, {"192.0.2.2:53"}}
+	got, err := commonTXT(context.Background(), servers, "_acme-challenge.example.com",
+		fakeAt(map[string][]string{
+			"192.0.2.1:53": {"token"},
+			"192.0.2.2:53": {},
+		}))
+	if err != nil {
+		t.Fatalf("commonTXT: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("commonTXT = %v, want empty: a nameserver without the record was counted as propagated", got)
 	}
 }

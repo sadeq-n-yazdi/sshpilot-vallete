@@ -48,38 +48,81 @@ type TXTLookup func(ctx context.Context, name string) ([]string, error)
 // Querying every authoritative nameserver and INTERSECTING the answers makes a
 // positive result mean "every server the CA could ask is already serving this",
 // which is the only condition under which it is safe to tell the CA to
-// validate. A nameserver that errors or times out contributes an empty set, so
-// it drags the intersection to empty — an unreachable authority is "not
-// propagated", never "assume yes".
+// validate. A nameserver that errors or times out contributes nothing, so it
+// drags the result to empty — an unreachable authority is "not propagated",
+// never "assume yes".
+//
+// That fail-closed rule applies per NAMESERVER, not per address; see
+// commonTXT for why the distinction is load-bearing.
 func NewAuthoritativeTXTLookup() TXTLookup {
 	return func(ctx context.Context, name string) ([]string, error) {
 		servers, err := authoritativeServers(ctx, name)
 		if err != nil {
 			return nil, err
 		}
-
-		var common map[string]bool
-		for _, server := range servers {
-			values, err := lookupTXTAt(ctx, server, name)
-			if err != nil {
-				// One unreachable or erroring authority means the answer is not
-				// yet uniform. Reported as "no values" rather than as an error
-				// so the caller keeps polling until its bounded deadline, which
-				// is the correct behavior while a zone is still converging.
-				return nil, nil
-			}
-			common = intersect(common, values)
-			if len(common) == 0 {
-				return nil, nil
-			}
-		}
-
-		out := make([]string, 0, len(common))
-		for v := range common {
-			out = append(out, v)
-		}
-		return out, nil
+		return commonTXT(ctx, servers, name, lookupTXTAt)
 	}
+}
+
+// commonTXT reports the values every authoritative nameserver serves for name,
+// given those nameservers grouped by their addresses.
+//
+// It takes the per-address query as a parameter so the gate can be driven
+// deterministically in tests. The gate is a security control, and the cases it
+// exists to get right — an address with no route to it, two addresses of one
+// nameserver disagreeing — cannot be produced against live DNS on demand.
+func commonTXT(ctx context.Context, servers [][]string, name string,
+	at func(ctx context.Context, server, name string) ([]string, error),
+) ([]string, error) {
+	var common map[string]bool
+	for _, addrs := range servers {
+		// A nameserver is one authority reachable at several addresses, and
+		// the two must not be conflated. Requiring every ADDRESS to answer
+		// is a deployment trap rather than extra safety: a dual-stack
+		// nameserver on an IPv4-only host has an AAAA address this process
+		// can never reach, so the intersection would be empty on every
+		// poll, the deadline would always expire, and issuance would be
+		// permanently blocked with nothing misconfigured. The CA itself
+		// reaches each nameserver over whichever family it has.
+		//
+		// Strictness is kept where it is observable. Every address that
+		// DOES answer is intersected, so two addresses of one nameserver
+		// disagreeing -- distinct anycast instances converging at
+		// different rates -- still reads as not-yet-propagated. Only
+		// unreachability is skipped, and only per address.
+		var answered map[string]bool
+		for _, addr := range addrs {
+			values, err := at(ctx, addr, name)
+			if err != nil {
+				continue
+			}
+			answered = intersect(answered, values)
+		}
+		if answered == nil {
+			// No address of this nameserver answered at all, so this authority
+			// is unobserved -- and an unobserved authority is never "assume
+			// yes", because the CA may be the one that asks it. Reported as "no
+			// values" rather than as an error so the caller keeps polling until
+			// its bounded deadline, which is the correct behavior while a zone
+			// is still converging.
+			//
+			// This branch is redundant today and is kept deliberately: falling
+			// through would reach intersect with an empty set, which empties
+			// common and returns the same verdict two lines later. Mutating the
+			// branch away changes no test, and that is the honest reason it is
+			// here -- the fail-closed reading of "unobserved" should be stated
+			// where a reader looks for it, not left to be re-derived from
+			// intersect's behavior on an empty set every time someone touches
+			// this loop.
+			return nil, nil
+		}
+		common = intersect(common, keys(answered))
+		if len(common) == 0 {
+			return nil, nil
+		}
+	}
+
+	return keys(common), nil
 }
 
 // intersect narrows the running set of values to those also present in next. A
@@ -100,14 +143,30 @@ func intersect(current map[string]bool, next []string) map[string]bool {
 	return current
 }
 
+// keys returns the members of a value set, so an inner intersection can seed an
+// outer one.
+func keys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for v := range set {
+		out = append(out, v)
+	}
+	return out
+}
+
 // authoritativeServers resolves the addresses of the nameservers authoritative
-// for the zone containing name.
+// for the zone containing name, GROUPED BY NAMESERVER.
+//
+// The grouping is what lets the caller distinguish "this authority cannot be
+// reached at this address" from "this authority does not serve the value yet".
+// Flattening the addresses into one list loses that distinction, and losing it
+// means an address the host has no route to reads as a zone that never
+// converges.
 //
 // The zone is found by walking up the labels until a name has NS records: the
 // challenge record itself never has any, and a delegated subdomain must be
 // preferred over its parent because only the subdomain's own nameservers will
 // carry the record.
-func authoritativeServers(ctx context.Context, name string) ([]string, error) {
+func authoritativeServers(ctx context.Context, name string) ([][]string, error) {
 	zone := strings.TrimSuffix(name, ".")
 
 	for range maxZoneLabels {
@@ -125,18 +184,22 @@ func authoritativeServers(ctx context.Context, name string) ([]string, error) {
 			continue
 		}
 
-		var addrs []string
+		var grouped [][]string
 		for _, server := range ns {
 			ips, err := net.DefaultResolver.LookupIPAddr(ctx, strings.TrimSuffix(server.Host, "."))
 			if err != nil {
 				continue
 			}
+			addrs := make([]string, 0, len(ips))
 			for _, ip := range ips {
 				addrs = append(addrs, net.JoinHostPort(ip.IP.String(), "53"))
 			}
+			if len(addrs) > 0 {
+				grouped = append(grouped, addrs)
+			}
 		}
-		if len(addrs) > 0 {
-			return addrs, nil
+		if len(grouped) > 0 {
+			return grouped, nil
 		}
 	}
 	return nil, fmt.Errorf("dns01: no authoritative nameserver found for %q", name)
