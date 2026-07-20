@@ -142,6 +142,20 @@ func NewEnrollmentService(store repository.Store, a *Authenticator, tokens *Toke
 	case now == nil:
 		return nil, fmt.Errorf("auth: nil clock: %w", domain.ErrInvalidInput)
 	}
+	// A non-nil Store can still hand out a Repos with these three fields nil,
+	// and the pairing, approval and redemption paths dereference them without
+	// checking. Approval and redemption are authorization decisions, so a panic
+	// on one is a denial of service rather than a refused request; catching the
+	// wiring bug at construction makes it a startup failure instead.
+	repos := store.Repos()
+	switch {
+	case repos.DevicePairings == nil:
+		return nil, fmt.Errorf("auth: nil device pairing repository: %w", domain.ErrInvalidInput)
+	case repos.LinkedIdentities == nil:
+		return nil, fmt.Errorf("auth: nil linked identity repository: %w", domain.ErrInvalidInput)
+	case repos.RefreshCredentials == nil:
+		return nil, fmt.Errorf("auth: nil refresh credential repository: %w", domain.ErrInvalidInput)
+	}
 	return &EnrollmentService{store: store, auth: a, tokens: tokens, denylist: denylist, limiter: limiter, now: now}, nil
 }
 
