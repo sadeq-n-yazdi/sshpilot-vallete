@@ -24,6 +24,26 @@ var (
 	// below the TLS 1.2 floor. Downgrading below 1.2 is never honored.
 	ErrTLSMinVersion = errors.New("httpserver: unsupported tls min version")
 
+	// ErrTLSCertificateInvalid is returned when operator-supplied certificate
+	// material cannot be used: unreadable, malformed PEM, or a private key that
+	// does not match the certificate's public key.
+	//
+	// It deliberately wraps rather than replaces the underlying crypto/tls
+	// error, so the operator learns which file and which defect, but the error
+	// text is built only from the certificate side of the pair — a key-parsing
+	// failure must never quote the bytes it choked on.
+	ErrTLSCertificateInvalid = errors.New("httpserver: invalid tls certificate material")
+
+	// ErrTLSCertificateExpired is returned when operator-supplied certificate
+	// material is outside its validity window (expired, or not yet valid).
+	//
+	// ADR-0015 §4 requires failing closed on expiry: a server that starts with
+	// an expired certificate would present it to every client, and the only
+	// alternatives to refusing are serving material clients must reject or
+	// falling back to plaintext. Both are worse than not starting, because a
+	// process that will not start is visible to the operator immediately.
+	ErrTLSCertificateExpired = errors.New("httpserver: tls certificate outside its validity window")
+
 	// ErrNilPinger is returned when a readiness pinger is required but absent.
 	ErrNilPinger = errors.New("httpserver: nil readiness pinger")
 
