@@ -18,10 +18,11 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 )
 
-// The media types the docs endpoints can produce. These are the complete set:
-// there is no code path that emits any other representation, which is what
-// makes "no request data influences the bytes returned beyond the negotiated
-// media type" checkable rather than aspirational.
+// The machine-readable media types the docs endpoints can produce; mediaHTML,
+// the rendered UI, is declared alongside the page it serves. The three together
+// are the complete set — no code path emits any other representation, which is
+// what makes "no request data influences the bytes returned beyond the
+// negotiated media type" checkable rather than aspirational.
 const (
 	mediaJSON = "application/json"
 	mediaYAML = "application/yaml"
@@ -122,7 +123,7 @@ func quality(ranges []acceptRange, typ, sub string) float64 {
 
 // yamlQuality scores YAML across the spellings in the wild. application/yaml is
 // the registered type (RFC 9512); the other two predate it and are still what
-// most tooling sends, so honouring only the modern one would quietly serve JSON
+// most tooling sends, so honoring only the modern one would quietly serve JSON
 // to clients that clearly asked for YAML.
 func yamlQuality(ranges []acceptRange) float64 {
 	return max(
@@ -140,20 +141,27 @@ func yamlQuality(ranges []acceptRange) float64 {
 // header, an unparseable header, and a type this server does not produce all
 // land on JSON. Nothing here can produce a 406 — an endpoint whose whole job is
 // to hand out one static document has no business refusing to.
+//
+// A browser lands on HTML because it sends text/html at q=1 ahead of a trailing
+// */*;q=0.8, while curl sends no Accept at all and gets JSON. Neither needs to
+// know anything about this server to get the representation it wants.
 func negotiateDocs(accept string) string {
 	ranges := parseAccept(accept)
 	chosen, chosenQuality := mediaJSON, quality(ranges, "application", "json")
 	if q := yamlQuality(ranges); q > chosenQuality {
-		chosen = mediaYAML
+		chosen, chosenQuality = mediaYAML, q
+	}
+	if q := quality(ranges, "text", "html"); q > chosenQuality {
+		chosen = mediaHTML
 	}
 	return chosen
 }
 
 // writeSpec writes one representation of the contract.
 //
-// http.ServeContent does the conditional-request and HEAD handling: it honours
+// http.ServeContent does the conditional-request and HEAD handling: it honors
 // If-None-Match against the ETag set below and, for HEAD, writes the headers
-// and no body. Delegating means those behaviours cannot be got subtly wrong
+// and no body. Delegating means those behaviors cannot be got subtly wrong
 // here, and a HEAD can never disagree with the GET it describes because the
 // same call produces both.
 func writeSpec(w http.ResponseWriter, r *http.Request, mediaType string, body []byte) {
@@ -168,8 +176,12 @@ func writeSpec(w http.ResponseWriter, r *http.Request, mediaType string, body []
 
 // writeSpecAs writes the contract in mediaType, converting if needed.
 func writeSpecAs(w http.ResponseWriter, r *http.Request, mediaType string) {
+	if mediaType == mediaHTML {
+		writeDocsUI(w, r)
+		return
+	}
 	if mediaType == mediaYAML {
-		// The embedded bytes, verbatim. Not re-serialised: a round trip
+		// The embedded bytes, verbatim. Not re-serialized: a round trip
 		// through a YAML parser would reformat the document and silently
 		// discard its comments, so what is served would no longer be what was
 		// reviewed.

@@ -234,7 +234,7 @@ type RetentionConfig struct {
 // the spec only ever describing endpoints that are already reachable.
 //
 // Deployers who do not accept that trade (internal-only installations, or
-// anyone minimising an unauthenticated attack surface) set enabled: false and
+// anyone minimizing an unauthenticated attack surface) set enabled: false and
 // the routes stop existing, indistinguishably from any other unknown path.
 //
 // ADR-0021 also contemplates a third posture — docs served but behind

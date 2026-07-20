@@ -57,6 +57,7 @@ func TestDocsContentNegotiation(t *testing.T) {
 	const (
 		jsonType = "application/json; charset=utf-8"
 		yamlType = "application/yaml; charset=utf-8"
+		htmlType = "text/html; charset=utf-8"
 	)
 
 	tests := []struct {
@@ -83,7 +84,11 @@ func TestDocsContentNegotiation(t *testing.T) {
 		// the higher q: RFC 9110 selects by specificity first. Scoring by
 		// quality alone would read this as a request for YAML.
 		{"specificity beats quality", "application/json, */*;q=0.9", jsonType},
-		{"browser accept prefers html but html is not json", "text/html,application/xhtml+xml,*/*;q=0.8", jsonType},
+		{"explicit html", "text/html", htmlType},
+		{"a real browser accept yields the ui", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", htmlType},
+		{"html declined by quality stays json", "text/html;q=0.1, application/json;q=0.9", jsonType},
+		{"yaml outranks html", "text/html;q=0.3, application/yaml;q=0.8", yamlType},
+		{"html outranks yaml", "text/html;q=0.8, application/yaml;q=0.3", htmlType},
 	}
 
 	for _, tt := range tests {
@@ -238,7 +243,7 @@ func TestDocsEnabledByDefault(t *testing.T) {
 		t.Error("a nil config must fall back to the documented default posture")
 	}
 	if docsEnabled(&config.Config{Docs: config.DocsConfig{Enabled: false}}) {
-		t.Error("an explicit enabled:false must be honoured")
+		t.Error("an explicit enabled:false must be honored")
 	}
 }
 
@@ -303,7 +308,7 @@ func TestDocsExposeNoParameterizedFetch(t *testing.T) {
 			rr := docsGet(t, target, "")
 			// A traversal that reached a file would be a 200 carrying bytes
 			// that are not this contract. Anything that is not a 200 is fine;
-			// a 200 is only fine if the mux normalised the path onto one of
+			// a 200 is only fine if the mux normalized the path onto one of
 			// the real routes.
 			if rr.Code == http.StatusOK && !bytes.Contains(rr.Body.Bytes(), []byte("openapi")) {
 				t.Errorf("status 200 with a body that is not the contract: %.80q", rr.Body.String())

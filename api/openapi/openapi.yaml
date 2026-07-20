@@ -103,7 +103,7 @@ paths:
         "301":
           description: Moved permanently to `/docs/`.
         "404":
-          $ref: "#/components/responses/UniformNotFound"
+          $ref: "#/components/responses/RoutingNotFound"
   /docs/:
     get:
       tags: [docs]
@@ -116,8 +116,15 @@ paths:
         one static document has no reason to refuse a request. YAML is returned
         only when the client ranks it strictly above JSON; `application/yaml`,
         `text/yaml`, and `application/x-yaml` are all understood. Quality values
-        are honoured with RFC 9110 specificity, so an explicit preference beats
+        are honored with RFC 9110 specificity, so an explicit preference beats
         a trailing `*/*`.
+
+        A browser gets `text/html`: a rendered UI whose markup, styles, and
+        script are embedded in the binary and served in this one response. It
+        loads no external assets, and its `Content-Security-Policy` pins the
+        inline script and style by SHA-256 hash under `default-src 'none'`,
+        with no `unsafe-inline` and no `unsafe-eval`. `curl`, which sends no
+        `Accept`, is unaffected and receives JSON.
 
         The response carries `Vary: Accept`; a cache that ignored it would serve
         one client's representation to another.
@@ -128,7 +135,7 @@ paths:
         - $ref: "#/components/parameters/IfNoneMatch"
       responses:
         "200":
-          description: The API contract, as JSON or YAML.
+          description: The API contract, as JSON, YAML, or a rendered page.
           headers:
             ETag:
               $ref: "#/components/headers/ETag"
@@ -140,10 +147,11 @@ paths:
           content:
             application/json: {}
             application/yaml: {}
+            text/html: {}
         "304":
           $ref: "#/components/responses/NotModified"
         "404":
-          $ref: "#/components/responses/UniformNotFound"
+          $ref: "#/components/responses/RoutingNotFound"
   /docs/spec/openapi.json:
     get:
       tags: [docs]
@@ -166,7 +174,7 @@ paths:
         "304":
           $ref: "#/components/responses/NotModified"
         "404":
-          $ref: "#/components/responses/UniformNotFound"
+          $ref: "#/components/responses/RoutingNotFound"
   /docs/spec/openapi.yaml:
     get:
       tags: [docs]
@@ -174,7 +182,7 @@ paths:
       summary: Fetch this document as YAML at a fixed URL.
       description: |
         The bytes embedded in the binary at build time, verbatim — comments and
-        formatting intact, never re-serialised and never read from disk.
+        formatting intact, never re-serialized and never read from disk.
       parameters:
         - $ref: "#/components/parameters/IfNoneMatch"
       responses:
@@ -188,7 +196,7 @@ paths:
         "304":
           $ref: "#/components/responses/NotModified"
         "404":
-          $ref: "#/components/responses/UniformNotFound"
+          $ref: "#/components/responses/RoutingNotFound"
   /{handle}:
     parameters:
       - $ref: "#/components/parameters/Handle"
@@ -397,6 +405,21 @@ components:
           $ref: "#/components/headers/ETag"
         Cache-Control:
           $ref: "#/components/headers/CacheControlPublic"
+    RoutingNotFound:
+      description: |
+        This path is not routed. Returned when the documentation endpoints are
+        disabled, and byte-for-byte identical to the response any unrouted path
+        produces, so probing cannot reveal that the feature exists to be
+        disabled. Distinct from the publish `404`, which is a handler response
+        with its own cache directives.
+      headers:
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: "404 page not found\n"
     UniformNotFound:
       description: |
         No key set is served for this path. This single response covers every
