@@ -44,6 +44,7 @@ func Registry() (*migrate.Registry, error) {
 		migration0004AuditRecords(),
 		migration0005OwnerErasureSalts(),
 		migration0007LinkedIdentities(),
+		migration0006RefreshCredentials(),
 	)
 }
 
@@ -506,6 +507,107 @@ func migration0007LinkedIdentities() migrate.Migration {
 		Down: migrate.Steps{
 			SQLite:   []string{`DROP TABLE linked_identities`},
 			Postgres: []string{`DROP TABLE linked_identities`},
+// migration0006RefreshCredentials creates the refresh_credentials table: the
+// rotatable, single-use credentials from which access tokens are minted
+// (ADR-0018).
+//
+// # Only the digest is stored
+//
+// secret_hash holds a digest of the refresh secret, never the secret itself.
+// The secret exists only in the response that minted it, so a stolen database
+// backup yields nothing that can be presented as a credential. The column is
+// BLOB/BYTEA rather than TEXT because it holds raw digest bytes, and the
+// comparison that consumes it is a constant-time one in internal/auth — the
+// repository only ever stores and returns the bytes.
+//
+// # status is the single-use interlock
+//
+// A refresh credential is redeemed exactly once. That property is not enforced
+// by the application reading the row and deciding it looks unused; it is
+// enforced by a conditional UPDATE whose WHERE clause carries
+// status = 'active', so that of two concurrent redemptions of the same
+// credential exactly one can affect a row. The CHECK constraint here is
+// defense-in-depth for the value set; the interlock itself lives in the
+// single-statement transition. See refreshCredentialRepo.MarkRotated.
+//
+// # lineage_id and rotated_from_id
+//
+// lineage_id groups a rotation chain so that detecting reuse of any credential
+// in the chain can revoke the whole chain in one statement — the
+// reuse-detection response, which must reach the successor an attacker minted
+// as well as the token they replayed. rotated_from_id records the predecessor
+// and is nullable because the first credential in a lineage has none. It
+// carries no foreign key to refresh_credentials(id) deliberately: DeleteExpired
+// sweeps rows out by expiry without regard to chain position, and an FK would
+// either block the sweep or cascade it into deleting live successors of an
+// expired predecessor.
+//
+// # rotated_at is write-only for now
+//
+// MarkRotated is specified to stamp the credential's timestamps with the
+// supplied now, but domain.RefreshCredential exposes no rotated-at field to
+// carry it back, so the column is written and not read. It is kept rather than
+// dropped because the moment a credential was rotated is exactly the datum a
+// replay investigation needs: ErrConflict tells an operator a token was
+// presented twice, and this column tells them when the legitimate presentation
+// happened. The domain type can surface it later without a schema change.
+//
+// The indexes serve the two owner-scoped access patterns the port declares —
+// listing an owner's credentials and listing one lineage — plus the expiry
+// sweep, which scans by expires_at across all owners. expires_at is fixed-width
+// RFC3339 UTC text, so its index orders chronologically under a plain lexical
+// comparison.
+func migration0006RefreshCredentials() migrate.Migration {
+	return migrate.Migration{
+		ID:       "0006",
+		Name:     "refresh_credentials",
+		Requires: []string{"0001"},
+		Preconditions: []migrate.Precondition{
+			migrate.TableAbsent("refresh_credentials"),
+		},
+		Up: migrate.Steps{
+			SQLite: []string{
+				`CREATE TABLE refresh_credentials (
+	id TEXT PRIMARY KEY,
+	owner_id TEXT NOT NULL REFERENCES owners(id),
+	lineage_id TEXT NOT NULL,
+	secret_hash BLOB NOT NULL,
+	scopes TEXT NOT NULL DEFAULT '[]',
+	client_label TEXT NOT NULL DEFAULT '',
+	rotated_from_id TEXT,
+	issued_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('active', 'rotated', 'revoked', 'expired')),
+	rotated_at TEXT,
+	revoked_at TEXT
+)`,
+				`CREATE INDEX ix_refresh_credentials_owner_id ON refresh_credentials (owner_id)`,
+				`CREATE INDEX ix_refresh_credentials_lineage ON refresh_credentials (owner_id, lineage_id)`,
+				`CREATE INDEX ix_refresh_credentials_expires_at ON refresh_credentials (expires_at)`,
+			},
+			Postgres: []string{
+				`CREATE TABLE refresh_credentials (
+	id TEXT PRIMARY KEY,
+	owner_id TEXT NOT NULL REFERENCES owners(id),
+	lineage_id TEXT NOT NULL,
+	secret_hash BYTEA NOT NULL,
+	scopes TEXT NOT NULL DEFAULT '[]',
+	client_label TEXT NOT NULL DEFAULT '',
+	rotated_from_id TEXT,
+	issued_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('active', 'rotated', 'revoked', 'expired')),
+	rotated_at TEXT,
+	revoked_at TEXT
+)`,
+				`CREATE INDEX ix_refresh_credentials_owner_id ON refresh_credentials (owner_id)`,
+				`CREATE INDEX ix_refresh_credentials_lineage ON refresh_credentials (owner_id, lineage_id)`,
+				`CREATE INDEX ix_refresh_credentials_expires_at ON refresh_credentials (expires_at)`,
+			},
+		},
+		Down: migrate.Steps{
+			SQLite:   []string{`DROP TABLE refresh_credentials`},
+			Postgres: []string{`DROP TABLE refresh_credentials`},
 		},
 	}
 }
