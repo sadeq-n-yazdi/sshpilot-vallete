@@ -483,13 +483,12 @@ func (s *Service) Delete(ctx context.Context, ownerID domain.OwnerID, id domain.
 		return ErrNotFound
 	}
 
-	var name string
+	var details audit.Details
 	if err := s.store.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
 		set, err := live(r.KeySets.Get(ctx, ownerID, id))
 		if err != nil {
 			return err
 		}
-		name = set.Name
 
 		// ListMembers is owner-scoped through its join, so a stranger's set
 		// would have produced ErrNotFound above and never reach this count.
@@ -499,6 +498,16 @@ func (s *Service) Delete(ctx context.Context, ownerID domain.OwnerID, id domain.
 		}
 		if len(members) > 0 && !confirm {
 			return ErrConfirmationRequired
+		}
+
+		// The details are built here: after the read that supplies the name,
+		// and before the delete. A detail the audit screen refuses then aborts
+		// the transaction rather than leaving a committed deletion with no
+		// record of what was removed. requestID reaches the screen for the
+		// first time on this path, so this is a value that can genuinely be
+		// refused, not a formality.
+		if details, err = setDetails(set.Name, requestID); err != nil {
+			return err
 		}
 
 		if err := r.KeySets.Delete(ctx, ownerID, id); err != nil {
@@ -515,13 +524,6 @@ func (s *Service) Delete(ctx context.Context, ownerID domain.OwnerID, id domain.
 		return err
 	}
 
-	details, err := setDetails(name, requestID)
-	if err != nil {
-		// The name was stored earlier rather than supplied by this caller, so a
-		// refusal here is not the caller's fault and is not reported as invalid
-		// input: it is a server fault the caller cannot fix.
-		return errors.New("keyset: deleted set cannot be recorded")
-	}
 	return s.emit(ctx, domain.AuditActionKeySetDeleted, ownerID, id, details)
 }
 
