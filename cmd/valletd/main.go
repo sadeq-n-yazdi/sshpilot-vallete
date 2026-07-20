@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/logging"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
@@ -74,7 +75,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	logger := newLogger(cfg, stderr)
+	logger, err := newLogger(cfg, stderr)
+	if err != nil {
+		return err
+	}
 
 	db, err := openDatabase(cfg)
 	if err != nil {
@@ -87,6 +91,27 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	// SEAM: the authenticated management surface is mounted but not yet wired.
+	//
+	// httpserver.NewHandler registers the device management routes
+	// unconditionally, and with no httpserver.WithAuthorizer here they are
+	// guarded by an authorizer that refuses every credential. That is the
+	// intended interim state: the routes exist, they are documented, and they
+	// answer 401 to everyone, so no request is ever served unauthenticated.
+	//
+	// Completing the wiring needs an *auth.Guard, which needs the token
+	// verifier and the credential denylist, whose storage adapters are still in
+	// review (the auth/pairing adapters). When they land, this call gains
+	//
+	//	httpserver.WithAuthorizer(guard),
+	//	httpserver.WithDeviceService(deviceSvc),
+	//
+	// and nothing else here changes.
+	//
+	// The behavior described above is pinned by
+	// TestManagementRoutesFailClosedWithoutAnAuthorizer, which builds a handler
+	// with no authorizer -- this function's exact option set -- and asserts every
+	// management route answers 401. This wiring in main is not itself under test.
 	srv, err := httpserver.New(cfg, logger, db, publisher)
 	if err != nil {
 		return err
@@ -139,31 +164,25 @@ func serve(srv *httpserver.Server, logger *slog.Logger) error {
 	return nil
 }
 
-// newLogger builds the structured logger from telemetry config. Logs go to
-// stderr so that stdout stays free for anything the process is asked to emit as
-// data, and so container runtimes capture them by default.
-func newLogger(cfg *config.Config, w io.Writer) *slog.Logger {
-	opts := &slog.HandlerOptions{Level: parseLevel(cfg.Telemetry.Log.Level)}
-	if cfg.Telemetry.Log.Format == "text" {
-		return slog.New(slog.NewTextHandler(w, opts))
+// newLogger builds the structured, secret-redacting logger from telemetry
+// config. Logs go to stderr so that stdout stays free for anything the process
+// is asked to emit as data, and so container runtimes capture them by default.
+//
+// It returns an error rather than falling back. The previous implementation
+// defaulted an unrecognized level to info on the stated grounds that "config
+// validation already rejects bad levels" -- which it did not: validateTelemetry
+// checked the OTLP endpoints and never looked at the level or format at all.
+// The comment described the intended invariant and the code silently supplied
+// the opposite, so every typo'd level ran at a volume the operator had not
+// asked for. Validation now covers both fields (see internal/config), and this
+// path fails closed as well so the guarantee does not rest on one caller
+// remembering to call Validate first.
+func newLogger(cfg *config.Config, w io.Writer) (*slog.Logger, error) {
+	logger, err := logging.New(w, cfg.Telemetry.Log.Level, cfg.Telemetry.Log.Format)
+	if err != nil {
+		return nil, fmt.Errorf("telemetry.log: %w", err)
 	}
-	return slog.New(slog.NewJSONHandler(w, opts))
-}
-
-// parseLevel maps the configured level name onto slog. An unrecognized value
-// falls back to info rather than failing: config validation already rejects
-// bad levels, and losing logs must never be the reason startup aborts.
-func parseLevel(name string) slog.Level {
-	switch name {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
+	return logger, nil
 }
 
 // openDatabase opens the configured datastore and verifies it answers before
