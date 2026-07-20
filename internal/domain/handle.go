@@ -27,6 +27,15 @@ func (s NameState) IsValid() bool {
 }
 
 // Handle is an owner's globally unique public name.
+//
+// There is deliberately no fold field here. The database carries a name_fold
+// column so it can refuse a look-alike of a live claim, but that value is
+// derived from Name by the adapter on write. Exposing it as a field would make
+// it independently settable, and a caller that set a fold disagreeing with the
+// name would slip a look-alike past the index that exists to catch it. The
+// value is also never read back: nothing resolves a handle through the fold, so
+// a request for a look-alike must miss rather than land on the name it
+// resembles.
 type Handle struct {
 	ID                  HandleID
 	OwnerID             OwnerID
