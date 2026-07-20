@@ -38,9 +38,8 @@ func NewStore(db *sql.DB) *Store {
 }
 
 // Repos returns repositories whose operations each auto-commit against the
-// underlying *sql.DB. Only Owners, Handles, Devices, PublicKeys, and KeySets
-// are populated in this slice; the remaining fields stay nil and are filled by
-// later slices.
+// underlying *sql.DB. Owners, Handles, Devices, PublicKeys, KeySets, and Audit
+// are populated; the remaining fields stay nil and are filled by later slices.
 func (s *Store) Repos() repository.Repos {
 	return reposFor(s.db)
 }
@@ -49,12 +48,13 @@ func (s *Store) Repos() repository.Repos {
 // repository.AuditAppender so a caller that emits events cannot also read,
 // rewrite, or delete them.
 //
-// This is a separate accessor rather than a populated Repos.Audit field because
-// Repos.Audit is typed repository.AuditRepository, which also declares the
-// ADR-0024 maintenance operations (PurgeOlderThan, Pseudonymize) that this
-// slice deliberately does not implement. Filling that field would require
-// granting those powers here as a side effect of wiring; the retention and
-// crypto-erasure work adds them deliberately and completes Repos.Audit then.
+// This is a separate accessor rather than a reuse of the Repos.Audit field
+// because Repos.Audit is typed repository.AuditRepository, which also declares
+// the ADR-0024 maintenance operations (PurgeOlderThan, Pseudonymize). Emitting
+// code must not be able to reach those, so it is handed the narrow interface
+// here; maintenance jobs take Repos.Audit instead. The same concrete type backs
+// both — what differs, and what is the actual control, is the interface the
+// caller is given.
 //
 // Consequently an audit emit taken from this accessor auto-commits on its own
 // and does not join a caller's WithTx transaction. That is acceptable for an
@@ -63,7 +63,7 @@ func (s *Store) Repos() repository.Repos {
 // change with no record) is the failure mode that matters — but the
 // transaction-bound path arrives with Repos.Audit.
 func (s *Store) AuditAppender() repository.AuditAppender {
-	return &auditRepo{e: s.db}
+	return auditAppenderOnly{r: &auditRepo{e: s.db}}
 }
 
 // WithTx runs fn inside a single transaction with transaction-bound
@@ -106,8 +106,8 @@ func (s *Store) WithTx(ctx context.Context, fn func(ctx context.Context, r repos
 
 // reposFor builds a repository.Repos backed by the given execer, which is
 // either the *sql.DB (auto-commit) or an in-flight *sql.Tx. Only the
-// repositories implemented so far — Owners, Handles, Devices, PublicKeys, and
-// KeySets — are populated; the rest are left nil for later slices to fill.
+// repositories implemented so far — Owners, Handles, Devices, PublicKeys,
+// KeySets, and Audit — are populated; the rest are left nil for later slices.
 func reposFor(e execer) repository.Repos {
 	return repository.Repos{
 		Owners:     &ownerRepo{e: e},
@@ -115,5 +115,6 @@ func reposFor(e execer) repository.Repos {
 		Devices:    &deviceRepo{e: e},
 		PublicKeys: &publicKeyRepo{e: e},
 		KeySets:    &keySetRepo{e: e},
+		Audit:      &auditRepo{e: e},
 	}
 }
