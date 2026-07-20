@@ -122,7 +122,7 @@ func serverTLSConfig(t *testing.T) *tls.Config {
 	cfg.TLS.Manual.CertFile = certFile
 	cfg.TLS.Manual.KeyFile = keyFile
 
-	tlsCfg, _, err := buildTLSConfig(t.Context(), cfg, staticClock(now))
+	tlsCfg, _, err := buildTLSConfig(t.Context(), cfg, staticClock(now), nil)
 	if err != nil {
 		t.Fatalf("buildTLSConfig: %v", err)
 	}

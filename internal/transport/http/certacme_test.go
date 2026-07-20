@@ -80,7 +80,7 @@ func mustTestAccountKey(t *testing.T) crypto.Signer {
 func acmeTestProvider(t *testing.T, now time.Time) *acmeProvider {
 	t.Helper()
 
-	return &acmeProvider{
+	p := &acmeProvider{
 		domains:   []string{"vallet.example.com"},
 		cacheDir:  t.TempDir(),
 		now:       staticClock(now),
@@ -88,6 +88,8 @@ func acmeTestProvider(t *testing.T, now time.Time) *acmeProvider {
 		stop:      func() {},
 		done:      make(chan struct{}),
 	}
+	p.solver = newTLSALPNSolver(p)
+	return p
 }
 
 // TestACMEChallengeCertIsolatedFromOrdinaryTraffic is the central security test
@@ -469,7 +471,7 @@ func TestACMEProviderRefusesWithoutTOS(t *testing.T) {
 	// The directory URL points nowhere reachable, so if the TOS check were
 	// removed this would fail with a network error instead — which is why the
 	// assertion is on the specific sentinel, not merely on "an error".
-	_, err := newACMEProvider(t.Context(), cfg, time.Now)
+	_, err := newACMEProvider(t.Context(), cfg, time.Now, newTLSALPNSolver)
 	if !errors.Is(err, ErrACMETermsNotAccepted) {
 		t.Errorf("error = %v, want ErrACMETermsNotAccepted", err)
 	}
@@ -485,7 +487,7 @@ func TestACMEProviderFailsClosedOnUnreachableDirectory(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 
-	p, err := newACMEProvider(ctx, cfg, time.Now)
+	p, err := newACMEProvider(ctx, cfg, time.Now, newTLSALPNSolver)
 	if err == nil {
 		_ = p.Close()
 		t.Fatal("provider constructed against an unreachable directory; must fail closed")

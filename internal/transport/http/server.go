@@ -100,7 +100,7 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publi
 	ctx, cancel := context.WithTimeout(context.Background(), tlsStartupTimeout)
 	defer cancel()
 
-	tlsCfg, certCloser, err := buildTLSConfig(ctx, cfg, time.Now)
+	tlsCfg, certCloser, err := buildTLSConfig(ctx, cfg, time.Now, logger)
 	if err != nil {
 		return nil, err
 	}
