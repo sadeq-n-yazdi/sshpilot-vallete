@@ -282,8 +282,7 @@ func TestHashIsKeyedByThePepper(t *testing.T) {
 	owner := f.seedOwner("alice")
 	k, token := f.mint(owner.OwnerID, owner.KeySetID, "ci")
 
-	repos := f.store.Repos()
-	other, err := New(repos.AccessKeys, repos.KeySets, f.audit, []byte("ffffffffffffffffffffffffffffffff"))
+	other, err := New(f.store, f.audit, []byte("ffffffffffffffffffffffffffffffff"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

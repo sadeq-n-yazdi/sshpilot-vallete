@@ -16,37 +16,53 @@ import (
 
 func TestNewRejectsMissingDependencies(t *testing.T) {
 	f := newFixture(t)
-	repos := f.store.Repos()
 
-	if _, err := New(nil, repos.KeySets, f.audit, testPepper); !errors.Is(err, ErrMissingDependency) {
-		t.Fatalf("New with no access key repository: %v", err)
+	if _, err := New(nil, f.audit, testPepper); !errors.Is(err, ErrMissingDependency) {
+		t.Fatalf("New with no store: %v", err)
 	}
-	if _, err := New(repos.AccessKeys, nil, f.audit, testPepper); !errors.Is(err, ErrMissingDependency) {
-		t.Fatalf("New with no key set repository: %v", err)
+	if _, err := New(emptyStore{}, f.audit, testPepper); !errors.Is(err, ErrMissingDependency) {
+		t.Fatalf("New with a store handing out no repositories: %v", err)
 	}
-	if _, err := New(repos.AccessKeys, repos.KeySets, nil, testPepper); !errors.Is(err, ErrMissingDependency) {
+	if _, err := New(f.store, nil, testPepper); !errors.Is(err, ErrMissingDependency) {
 		t.Fatalf("New with no auditor: %v", err)
 	}
-	if _, err := New(repos.AccessKeys, repos.KeySets, f.audit, nil); !errors.Is(err, ErrMissingDependency) {
+	if _, err := New(f.store, f.audit, nil); !errors.Is(err, ErrMissingDependency) {
 		t.Fatalf("New with no pepper: %v", err)
 	}
 	short := make([]byte, MinPepperLen-1)
-	if _, err := New(repos.AccessKeys, repos.KeySets, f.audit, short); !errors.Is(err, ErrMissingDependency) {
+	if _, err := New(f.store, f.audit, short); !errors.Is(err, ErrMissingDependency) {
 		t.Fatalf("New with a short pepper: %v", err)
 	}
-	if _, err := New(repos.AccessKeys, repos.KeySets, f.audit, testPepper, nil); !errors.Is(err, ErrMissingDependency) {
+	if _, err := New(f.store, f.audit, testPepper, nil); !errors.Is(err, ErrMissingDependency) {
 		t.Fatalf("New with a nil option: %v", err)
 	}
+	// The non-positive window is the fail-closed one: it must stop
+	// construction, never be normalized into a rotation with no real deadline.
+	for _, window := range []time.Duration{0, -time.Second} {
+		if _, err := New(f.store, f.audit, testPepper, WithGraceWindow(window)); !errors.Is(err, ErrMissingDependency) {
+			t.Fatalf("New with a %v grace window: %v", window, err)
+		}
+	}
+}
+
+// emptyStore is a Store whose Repos carries no repositories, standing in for a
+// wiring mistake that hands the service a store addressing nothing. It exists
+// because New can no longer be passed a nil repository directly.
+type emptyStore struct{}
+
+func (emptyStore) Repos() repository.Repos { return repository.Repos{} }
+
+func (emptyStore) WithTx(ctx context.Context, fn func(context.Context, repository.Repos) error) error {
+	return fn(ctx, repository.Repos{})
 }
 
 // TestNewCopiesPepper asserts a caller that zeroes its buffer after
 // construction cannot change the key underneath a running service.
 func TestNewCopiesPepper(t *testing.T) {
 	f := newFixture(t)
-	repos := f.store.Repos()
 
 	pepper := append([]byte(nil), testPepper...)
-	svc, err := New(repos.AccessKeys, repos.KeySets, f.audit, pepper)
+	svc, err := New(f.store, f.audit, pepper)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -64,9 +80,8 @@ func TestNewCopiesPepper(t *testing.T) {
 // rather than leaving the service to panic on its first timestamp.
 func TestWithClockIgnoresNil(t *testing.T) {
 	f := newFixture(t)
-	repos := f.store.Repos()
 
-	svc, err := New(repos.AccessKeys, repos.KeySets, f.audit, testPepper, WithClock(nil))
+	svc, err := New(f.store, f.audit, testPepper, WithClock(nil))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -526,8 +541,9 @@ func assertNoSecret(t *testing.T, details audit.Details, token secrets.Redacted,
 // the invariants that live in the SQL predicates are still enforced by the SQL.
 type faultyKeys struct {
 	repository.AccessKeyRepository
-	createErr error
-	revokeErr error
+	createErr      error
+	revokeErr      error
+	markRotatedErr error
 }
 
 func (f *faultyKeys) Create(ctx context.Context, k *domain.AccessKey) error {
@@ -544,14 +560,55 @@ func (f *faultyKeys) Revoke(ctx context.Context, ownerID domain.OwnerID, id doma
 	return f.AccessKeyRepository.Revoke(ctx, ownerID, id, now)
 }
 
+func (f *faultyKeys) MarkRotated(ctx context.Context, ownerID domain.OwnerID, id, replacedBy domain.AccessKeyID, graceUntil time.Time) error {
+	if f.markRotatedErr != nil {
+		return f.markRotatedErr
+	}
+	return f.AccessKeyRepository.MarkRotated(ctx, ownerID, id, replacedBy, graceUntil)
+}
+
+// faultyStore is the real store with the access key repository decorated, on
+// BOTH seams: the auto-commit Repos and the transaction-bound ones WithTx hands
+// its closure. Decorating only the former would leave Rotate — which does all
+// of its work inside the transaction — running against the undecorated
+// repository, so a fault injected for it would never fire and the test would
+// pass by never having tested anything.
+//
+// The transaction itself is the real one. That is the point: the atomicity
+// assertion is that SQLite rolls the mint back, not that a fake remembered to.
+type faultyStore struct {
+	inner  repository.Store
+	faulty *faultyKeys
+}
+
+func (s *faultyStore) Repos() repository.Repos {
+	r := s.inner.Repos()
+	r.AccessKeys = s.faulty
+	return r
+}
+
+func (s *faultyStore) WithTx(ctx context.Context, fn func(context.Context, repository.Repos) error) error {
+	return s.inner.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
+		// The decorator wraps the TRANSACTION-bound repository, so a delegated
+		// call still writes inside the transaction and is still rolled back.
+		r.AccessKeys = &faultyKeys{
+			AccessKeyRepository: r.AccessKeys,
+			createErr:           s.faulty.createErr,
+			revokeErr:           s.faulty.revokeErr,
+			markRotatedErr:      s.faulty.markRotatedErr,
+		}
+		return fn(ctx, r)
+	})
+}
+
 // withFaultyKeys rebuilds the fixture's service over a fault-injecting access
 // key repository, returning the injector.
 func (f *fixture) withFaultyKeys(t *testing.T) *faultyKeys {
 	t.Helper()
 
-	repos := f.store.Repos()
-	faulty := &faultyKeys{AccessKeyRepository: repos.AccessKeys}
-	svc, err := New(faulty, repos.KeySets, f.audit, testPepper, WithClock(func() time.Time { return f.now }))
+	faulty := &faultyKeys{AccessKeyRepository: f.store.Repos().AccessKeys}
+	svc, err := New(&faultyStore{inner: f.store, faulty: faulty}, f.audit, testPepper,
+		WithClock(func() time.Time { return f.now }))
 	if err != nil {
 		t.Fatalf("accesskey.New: %v", err)
 	}
