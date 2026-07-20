@@ -93,6 +93,8 @@ func newCertProvider(cfg *config.Config, now func() time.Time) (CertProvider, er
 		return newSelfSignedProvider(cfg, now)
 	case "manual":
 		return newManualProvider(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile)
+	case "csr":
+		return newCSRProvider(cfg)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
 	}

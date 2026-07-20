@@ -301,7 +301,8 @@ func TestManualCertificateReparsesNilLeaf(t *testing.T) {
 func TestUnsupportedModesFailClosed(t *testing.T) {
 	t.Parallel()
 
-	for _, mode := range []string{"acme", "cloudflare_origin", "csr", "upstream", "", "nonsense"} {
+	// csr is deliberately absent: it is implemented now and has its own tests.
+	for _, mode := range []string{"acme", "cloudflare_origin", "upstream", "", "nonsense"} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			t.Parallel()
 

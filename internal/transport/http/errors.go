@@ -55,6 +55,26 @@ var (
 	// instead of a downgrade to a self-signed or plaintext fallback.
 	ErrTLSCertificateUnavailable = errors.New("httpserver: no tls certificate available")
 
+	// ErrTLSCSRPending is returned in csr mode when no signed certificate has
+	// been installed yet.
+	//
+	// It is a distinct sentinel because on a first run it is the EXPECTED
+	// state, not a misconfiguration: the provider has just written a CSR and
+	// the operator's next step is to get it signed. The server still refuses to
+	// start — ADR-0015 permits no plaintext or self-signed fallback while
+	// waiting — but the operator needs to tell "do the round trip" apart from
+	// "your path is wrong".
+	ErrTLSCSRPending = errors.New("httpserver: awaiting an externally signed certificate")
+
+	// ErrTLSKeyPermissions is returned when a private key file is readable or
+	// writable by group or other.
+	//
+	// Failing closed is the only defensible response: a key at 0644 may already
+	// have been copied by any local account, so it must be treated as
+	// compromised. Silently tightening the mode would serve with suspect
+	// material and hide that the exposure ever happened.
+	ErrTLSKeyPermissions = errors.New("httpserver: tls private key has unsafe file permissions")
+
 	// ErrNilPinger is returned when a readiness pinger is required but absent.
 	ErrNilPinger = errors.New("httpserver: nil readiness pinger")
 
