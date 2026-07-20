@@ -33,6 +33,8 @@ var domainTables = []string{
 // listed: only stable, portable names are asserted.
 var namedIndexes = []string{
 	"ux_handles_name",
+	"ux_handles_name_fold",
+	"ux_handles_owner_active",
 	"ix_handles_owner_id",
 	"ix_devices_owner_id",
 	"ux_public_keys_owner_fingerprint",
@@ -58,7 +60,7 @@ var namedIndexes = []string{
 }
 
 // migrationIDs are the IDs the registry is expected to apply, in order.
-var migrationIDs = []string{"0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010"}
+var migrationIDs = []string{"0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0012"}
 
 // newRunner opens a fresh in-memory SQLite database, wraps it for the migrate
 // runner, and returns both the raw handle (for assertions) and the runner.

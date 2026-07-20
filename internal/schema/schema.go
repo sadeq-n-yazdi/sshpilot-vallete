@@ -50,6 +50,7 @@ func Registry() (*migrate.Registry, error) {
 		migration0008DevicePairings(),
 		migration0009Administrators(),
 		migration0010AccessKeys(),
+		migration0012HandleLifecycle(),
 	)
 }
 
@@ -850,6 +851,88 @@ func migration0010AccessKeys() migrate.Migration {
 		Down: migrate.Steps{
 			SQLite:   []string{`DROP TABLE access_keys`},
 			Postgres: []string{`DROP TABLE access_keys`},
+		},
+	}
+}
+
+// migration0012HandleLifecycle adds the two DB-enforced invariants that make
+// handle rename safe (ADR-0026), plus the look-alike guard column.
+//
+// This migration is numbered 0012 rather than 0011 because 0011
+// (list_overrides) is developed on a sibling branch; see the pull request for
+// the required merge order.
+//
+// # ux_handles_owner_active
+//
+// A handle row is a name-claim, and an owner may hold several: one active name
+// plus the quarantined tombstones of names they have renamed away from. The
+// repository's GetActiveByOwner is singular, but nothing enforced that
+// singularity, so an interrupted or concurrent rename could leave an owner with
+// two active claims and make "which name publishes this owner's keys" a race.
+// The partial unique index makes the invariant the database's, mirroring
+// ux_key_sets_owner_default.
+//
+// # name_fold and fold_version
+//
+// name_fold stores blocklist.Skeleton(name) so that a UNIQUE index can refuse a
+// look-alike of an existing handle -- paypa1 against paypal, ad-min against
+// admin. Uniqueness on the raw name (ux_handles_name, migration 0001) cannot
+// see those: they are distinct, individually valid slugs.
+//
+// DELIBERATE DEVIATION: blocklist.Skeleton documents that its output must never
+// be stored or used as a database key, because the fold is lossy and its table
+// revision moves. That rule protects *identity* -- resolution must never go
+// through the fold, or a request for paypa1 would serve paypal's keys, which is
+// the very impersonation this guards against. Nothing reads this column: it is
+// write-only, indexed, and never appears in a WHERE or JOIN that resolves a
+// handle. GetByName continues to match the exact name. fold_version records the
+// blocklist.TableVersion the value was computed under, so a table bump is
+// detectable and the column can be recomputed; a stale fold weakens only this
+// auxiliary look-alike layer and never the exact-name uniqueness or the
+// quarantine hold that carry the account-takeover defence.
+//
+// Existing rows are backfilled with name_fold = name, which is the correct fold
+// for any slug containing no digits and no separators and a provisional value
+// otherwise. They are marked fold_version = 0 -- a version no table revision
+// uses -- so a recompute pass can find them.
+func migration0012HandleLifecycle() migrate.Migration {
+	const (
+		addFold        = `ALTER TABLE handles ADD COLUMN name_fold TEXT NOT NULL DEFAULT ''`
+		addFoldVersion = `ALTER TABLE handles ADD COLUMN fold_version INTEGER NOT NULL DEFAULT 0`
+		backfill       = `UPDATE handles SET name_fold = name WHERE name_fold = ''`
+		indexFold      = `CREATE UNIQUE INDEX ux_handles_name_fold ON handles (name_fold)`
+
+		indexActiveSQLite   = `CREATE UNIQUE INDEX ux_handles_owner_active ON handles (owner_id) WHERE state = 'active'`
+		indexActivePostgres = `CREATE UNIQUE INDEX ux_handles_owner_active ON handles (owner_id) WHERE state = 'active'`
+
+		dropFold        = `ALTER TABLE handles DROP COLUMN name_fold`
+		dropFoldVersion = `ALTER TABLE handles DROP COLUMN fold_version`
+		dropIndexFold   = `DROP INDEX ux_handles_name_fold`
+		dropIndexActive = `DROP INDEX ux_handles_owner_active`
+	)
+
+	return migrate.Migration{
+		ID:       "0012",
+		Name:     "handle_lifecycle",
+		Requires: []string{"0001"},
+		Preconditions: []migrate.Precondition{
+			migrate.TableExists("handles"),
+		},
+		Up: migrate.Steps{
+			SQLite: []string{
+				addFold, addFoldVersion, backfill, indexFold, indexActiveSQLite,
+			},
+			Postgres: []string{
+				addFold, addFoldVersion, backfill, indexFold, indexActivePostgres,
+			},
+		},
+		Down: migrate.Steps{
+			SQLite: []string{
+				dropIndexActive, dropIndexFold, dropFoldVersion, dropFold,
+			},
+			Postgres: []string{
+				dropIndexActive, dropIndexFold, dropFoldVersion, dropFold,
+			},
 		},
 	}
 }
