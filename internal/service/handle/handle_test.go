@@ -398,3 +398,85 @@ func hasAction(actions []domain.AuditAction, want domain.AuditAction) bool {
 	}
 	return false
 }
+
+// TestReclaimChecksOwnershipNotOnlyState isolates the reclaim check from the
+// index that usually backs it up.
+//
+// TestReclaimCannotBeUsedOnAnotherOwnersHold exercises the same refusal, but in
+// that setup the hold's owner is also active under their new name, so
+// ux_handles_owner_active would refuse a wrongful takeover even if the service
+// never looked at whose hold it was. Deleting the ownership half of the check
+// therefore leaves that test green — the database catches it — which makes the
+// test evidence about the index rather than about the check.
+//
+// Here the hold's owner has no active claim, so the index has nothing to say
+// and the service's own check is the only thing standing between another owner
+// and a name that is not theirs. Removing the ownership comparison must break
+// this.
+func TestReclaimChecksOwnershipNotOnlyState(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t)
+
+	held := f.seedHold(ownerA, "alice", fixedNow.Add(handle.DefaultQuarantineWindow))
+	f.seed(ownerB, "bob")
+
+	if _, err := f.svc.Rename(ctx, ownerB, "alice", "req-1"); !errors.Is(err, handle.ErrNameTaken) {
+		t.Fatalf("B taking A's hold = %v, want ErrNameTaken", err)
+	}
+
+	// A's claim must be untouched: same owner, still quarantined, same deadline.
+	got, err := f.byName("alice")
+	if err != nil {
+		t.Fatalf("A's hold vanished: %v", err)
+	}
+	if got.OwnerID != ownerA {
+		t.Errorf("hold changed hands to %q", got.OwnerID)
+	}
+	if got.State != domain.NameStateQuarantined {
+		t.Errorf("hold state = %q, want quarantined", got.State)
+	}
+	if got.QuarantineUntil == nil || !got.QuarantineUntil.Equal(*held.QuarantineUntil) {
+		t.Errorf("hold deadline moved to %v, want %v", got.QuarantineUntil, held.QuarantineUntil)
+	}
+
+	// And B must still hold its own name rather than having vacated it into a
+	// rename that then failed.
+	bob, err := f.byName("bob")
+	if err != nil || bob.State != domain.NameStateActive {
+		t.Fatalf("B lost its handle to a refused rename: %+v %v", bob, err)
+	}
+}
+
+// TestOwnerCannotReclaimARetiredName is the other half of the reclaim check.
+//
+// NameStateRetired is the operator's never-release decision — the affordance
+// ADR-0026 leaves open for permanently withdrawing a name, typically after
+// abuse. The reclaim exception is scoped to QUARANTINED holds for exactly that
+// reason: if it turned on ownership alone, the owner whose name was retired
+// would be the one person able to take it back, which inverts the control.
+func TestOwnerCannotReclaimARetiredName(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t)
+
+	f.seedRetired(ownerA, "banned")
+	f.seed(ownerA, "alice")
+
+	if _, err := f.svc.Rename(ctx, ownerA, "banned", "req-1"); !errors.Is(err, handle.ErrNameTaken) {
+		t.Fatalf("reclaiming a retired name = %v, want ErrNameTaken", err)
+	}
+
+	// The retirement must be intact, and the caller must still hold the name
+	// they started with rather than having vacated it into a failed rename.
+	got, err := f.byName("banned")
+	if err != nil {
+		t.Fatalf("retired claim vanished: %v", err)
+	}
+	if got.State != domain.NameStateRetired {
+		t.Errorf("retired claim state = %q, want retired", got.State)
+	}
+	if _, err := f.byName("alice"); err != nil {
+		t.Fatalf("refused rename left the caller without a handle: %v", err)
+	}
+}

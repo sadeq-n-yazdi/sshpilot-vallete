@@ -239,3 +239,54 @@ func wantDetail(t *testing.T, rec *domain.AuditRecord, key audit.DetailKey, want
 		t.Errorf("%s record: %s = %q, want %q", rec.Action, key, got, want)
 	}
 }
+
+// seedHold registers a quarantined name-claim for owner WITHOUT giving them an
+// active one.
+//
+// Rename cannot currently produce that shape — it always leaves the owner
+// active under the new name — so this reaches past the service to build it. It
+// is worth building anyway: the reclaim check tests whose hold it is AND that
+// the hold is quarantined, and with an active claim present the per-owner
+// active index would refuse a wrongful takeover regardless, which hides whether
+// the check itself works. Any future flow that leaves an owner holding names
+// without an active one (a suspension, an admin freeze) makes this shape real.
+func (f *fixture) seedHold(owner domain.OwnerID, name string, until time.Time) *domain.Handle {
+	f.t.Helper()
+	h := &domain.Handle{
+		ID:              domain.HandleID("hold-" + name),
+		OwnerID:         owner,
+		Name:            name,
+		NameFold:        blocklist.Skeleton(name),
+		FoldVersion:     blocklist.TableVersion,
+		State:           domain.NameStateQuarantined,
+		QuarantineUntil: &until,
+		CreatedAt:       f.clock.get(),
+		UpdatedAt:       f.clock.get(),
+	}
+	if err := f.store.Repos().Handles.Register(context.Background(), h); err != nil {
+		f.t.Fatalf("seed hold %q for %s: %v", name, owner, err)
+	}
+	return h
+}
+
+// seedRetired registers a name an operator has permanently withdrawn. Nothing
+// in this service produces that state — retiring is an admin affordance — so
+// the test builds it directly in order to assert that this service refuses to
+// undo it.
+func (f *fixture) seedRetired(owner domain.OwnerID, name string) *domain.Handle {
+	f.t.Helper()
+	h := &domain.Handle{
+		ID:          domain.HandleID("retired-" + name),
+		OwnerID:     owner,
+		Name:        name,
+		NameFold:    blocklist.Skeleton(name),
+		FoldVersion: blocklist.TableVersion,
+		State:       domain.NameStateRetired,
+		CreatedAt:   f.clock.get(),
+		UpdatedAt:   f.clock.get(),
+	}
+	if err := f.store.Repos().Handles.Register(context.Background(), h); err != nil {
+		f.t.Fatalf("seed retired %q for %s: %v", name, owner, err)
+	}
+	return h
+}
