@@ -34,7 +34,8 @@ import (
 // The spec is parsed with gopkg.in/yaml.v3, already a direct dependency, rather
 // than with an OpenAPI toolkit. The drift being detected is route-level, not
 // schema-level, so a validator's object model would be a large new dependency
-// bought for a document this test reads four fields out of.
+// bought for a document this test reads three fields out of: openapi, paths,
+// and each operation's responses.
 
 // routeParams are the concrete values substituted for the wildcard segments of
 // a spec path so it can be requested. Any value routes; these are only readable
@@ -58,8 +59,21 @@ const minRegisteredRoutes = 8
 // alongside the operations sits a "parameters" sequence, which does not fit an
 // operation's shape.
 type specDoc struct {
-	Paths map[string]map[string]yaml.Node `yaml:"paths"`
+	Version string                          `yaml:"openapi"`
+	Paths   map[string]map[string]yaml.Node `yaml:"paths"`
 }
+
+// specVersionPrefix is the OpenAPI version the served document is declared to
+// be, in api/openapi/embed.go and in ADR-0021.
+//
+// Nothing else in the tree checks it. The spec is embedded at build time and
+// served verbatim, so a downgrade to 3.0.x would be published under a doc
+// comment still claiming 3.1 -- and the two versions disagree on things a
+// generated client acts on, notably how nullability and examples are spelled.
+// A consumer generating from a mislabelled document gets a client that
+// disagrees with the server about what a field may hold, which is exactly the
+// drift the rest of this file exists to catch, one level up.
+const specVersionPrefix = "3.1"
 
 type specOperation struct {
 	Responses map[string]yaml.Node `yaml:"responses"`
@@ -87,6 +101,15 @@ func loadSpec(t *testing.T) []operation {
 	var doc specDoc
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		t.Fatalf("parse spec: %v", err)
+	}
+
+	// The separator is part of the comparison on purpose: a bare prefix test
+	// would also accept "3.10.0", a different minor version that happens to
+	// share the leading characters. Accepting a version this check was written
+	// to reject is the one way it can fail silently.
+	if doc.Version != specVersionPrefix && !strings.HasPrefix(doc.Version, specVersionPrefix+".") {
+		t.Errorf("spec declares openapi %q, want %s.x: the embedded document is served under a %s doc comment",
+			doc.Version, specVersionPrefix, specVersionPrefix)
 	}
 
 	var ops []operation

@@ -45,7 +45,7 @@ type e2e struct {
 	client *http.Client
 }
 
-func newE2E(t *testing.T) *e2e {
+func newE2E(t *testing.T, opts ...publish.Option) *e2e {
 	t.Helper()
 
 	db, err := sqlite.Open(sqlite.Options{Path: ":memory:"})
@@ -67,7 +67,7 @@ func newE2E(t *testing.T) *e2e {
 	}
 
 	store := sqlite.NewStore(db)
-	svc, err := publish.New(store.Repos())
+	svc, err := publish.New(store.Repos(), opts...)
 	if err != nil {
 		t.Fatalf("publish.New: %v", err)
 	}
