@@ -119,5 +119,7 @@ func reposFor(e execer) repository.Repos {
 		KeySets:    &keySetRepo{e: e},
 		Audit:      &auditRepo{e: e},
 		OwnerSalts: &ownerSaltRepo{e: e},
+
+		LinkedIdentities: &linkedIdentityRepo{e: e},
 	}
 }
