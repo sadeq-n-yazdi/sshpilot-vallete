@@ -57,6 +57,9 @@ type dnsimpleAPI struct {
 
 	// nullAccount makes whoami answer as a USER token does: no account.
 	nullAccount bool
+	// zeroAccount makes whoami answer with an account object carrying no usable
+	// id, which is how a broken or impersonating identity endpoint would answer.
+	zeroAccount bool
 	// createFails makes the create call return an API-level rejection.
 	createFails bool
 	// ignoreNameFilter makes the listing return every TXT record in the zone
@@ -164,6 +167,10 @@ func (a *dnsimpleAPI) whoami(w http.ResponseWriter) {
 	if a.nullAccount {
 		// A USER token: DNSimple answers with the user and a null account.
 		a.write(w, http.StatusOK, `{"data":{"user":{"id":9},"account":null}}`)
+		return
+	}
+	if a.zeroAccount {
+		a.write(w, http.StatusOK, `{"data":{"user":null,"account":{"id":0}}}`)
 		return
 	}
 	a.write(w, http.StatusOK, fmt.Sprintf(`{"data":{"user":null,"account":{"id":%d}}}`, dsAccountID))
@@ -622,6 +629,27 @@ func TestDNSimpleRefusesAUserToken(t *testing.T) {
 	if len(api.requests) != 1 {
 		t.Errorf("requests = %v, want only the whoami: nothing may be written "+
 			"before the account is known", api.requests)
+	}
+}
+
+// TestDNSimpleRefusesAnAccountWithoutAUsableID covers the other half of the
+// account guard. An identity endpoint that is broken -- or impersonating -- can
+// answer with an account object carrying no usable id, and accepting it would
+// scope every later write to account "0": a path that addresses nothing, failing
+// later and further away as a missing zone rather than here as the unusable
+// identity it is.
+func TestDNSimpleRefusesAnAccountWithoutAUsableID(t *testing.T) {
+	api, provider := newDNSimpleAPI(t)
+	api.zeroAccount = true
+
+	rec := Record{Name: ChallengeRecordName("example.com"), Value: dsChallengeValue}
+	_, err := provider.Present(t.Context(), rec)
+	if err == nil {
+		t.Fatal("Present succeeded with an account carrying no usable id")
+	}
+	if len(api.requests) != 1 {
+		t.Errorf("requests = %v, want only the whoami: nothing may be written "+
+			"before a usable account is known", api.requests)
 	}
 }
 
