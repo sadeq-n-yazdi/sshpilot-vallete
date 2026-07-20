@@ -75,19 +75,40 @@ import (
 // now expands the discarded reading back out; see ambiguousReadings in
 // tables.go. This changes which identifiers the system refuses, so it is a
 // table revision even though no folding table entry moved.
-const TableVersion = 5
+//
+// Version 6: repair the confusable coverage that version 4 silently lost, and
+// restore idempotence. Running NFKD ahead of every other stage let it
+// canonicalize a confusable into a base form the confusables table does not
+// cover, so a codepoint that used to fold survived unfolded. Ϲ (U+03F9 GREEK
+// CAPITAL LUNATE SIGMA SYMBOL) decomposed to Σ and lowercased to σ instead of
+// reaching the 'ϲ' entry, making "Ϲonsole" a working homoglyph bypass of the
+// reserved-word list; 𝚥 (U+1D6A5 MATHEMATICAL ITALIC SMALL DOTLESS J)
+// decomposed to ȷ (U+0237), for which there was no entry at all, so "blow𝚥ob"
+// and "𝚥s" passed. Two changes close the class rather than the two instances: a
+// sanitize pass now consults confusables BEFORE NFKD can rewrite the source
+// away, and 'ȷ' joins its sibling 'ı' in the table. Version 4 also broke the
+// documented idempotence guarantee, because NFKD does not decompose reliably
+// across invalid UTF-8: Skeleton("\xf7ʰ") returned "ʰ" while Skeleton("ʰ")
+// returned "h". The same sanitize pass drops invalid UTF-8 ahead of NFKD, which
+// is what makes a second pass a no-op again.
+const TableVersion = 6
 
 // Skeleton reduces s to its canonical comparison form. The result is a lossy,
 // one-way projection of s; see the package documentation.
 //
 // The pipeline runs in this order. The order is deliberate:
 //
+//  0. Sanitize. Invalid UTF-8 is dropped, and confusables is consulted on the
+//     RAW input. See sanitize -- both halves exist because NFKD, left to run
+//     first, destroys work the later stages depend on.
 //  1. Compatibility Decomposition (NFKD). Compatibility characters (such as
 //     mathematical letters/digits, fullwidth forms, circled letters/digits,
 //     and ligatures) and accents are decomposed to their base form and
 //     combining marks.
-//  2. Ignorables. Invalid UTF-8, combining marks (Mn) and format characters
-//     (Cf, e.g. zero-width space/joiner and soft hyphen) are dropped.
+//  2. Ignorables. Combining marks (Mn) and format characters (Cf, e.g.
+//     zero-width space/joiner and soft hyphen) are dropped. These can only be
+//     recognized after stage 1, because that is what produces them from
+//     precomposed forms.
 //  3. Case folding, via unicode.ToLower, which applies the full Unicode simple
 //     lowercase mapping.
 //  4. Confusables: the arbitrary, non-algorithmic visual equivalences --
@@ -112,18 +133,12 @@ func Skeleton(s string) string {
 		return s
 	}
 
-	// Stage 1: NFKD normalization
-	s = norm.NFKD.String(s)
+	// Stage 0, then stage 1: NFKD normalization.
+	s = norm.NFKD.String(sanitize(s))
 
 	var out strings.Builder
 	out.Grow(len(s))
 	for _, r := range s {
-		// A decoding error over invalid UTF-8 yields utf8.RuneError; so does a
-		// literal U+FFFD in the input. Both are dropped, which is what keeps
-		// the output valid UTF-8 unconditionally.
-		if r == utf8.RuneError {
-			continue
-		}
 		if unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Cf, r) {
 			continue
 		}
@@ -141,6 +156,64 @@ func Skeleton(s string) string {
 			continue
 		}
 		writeFolded(&out, r)
+	}
+	return out.String()
+}
+
+// sanitize is stage 0. It does the two things that MUST happen before NFKD
+// runs, because NFKD destroys the information each of them needs.
+//
+// # Dropping invalid UTF-8 first is what makes Skeleton idempotent
+//
+// A decoding error over invalid UTF-8 yields utf8.RuneError; so does a literal
+// U+FFFD in the input. Both are dropped here, which is what keeps the output
+// valid UTF-8 unconditionally -- but the ORDER is the security-relevant part.
+// norm.NFKD does not decompose reliably across an invalid byte: it treats the
+// undecodable region as a boundary and passes the neighboring segment through
+// untouched. Dropping the invalid bytes afterwards therefore left a
+// compatibility character behind that a second call, no longer seeing an
+// invalid byte, would go on to decompose -- Skeleton("\xf7ʰ") was "ʰ" while
+// Skeleton("ʰ") was "h". Handing NFKD only well-formed UTF-8 removes the
+// boundary, so every compatibility form decomposes on the first pass and a
+// second pass is a no-op.
+//
+// Idempotence is restored by this reordering rather than by iterating Skeleton
+// to a fixed point. The input is attacker-supplied and unauthenticated, so a
+// loop is a work multiplier it is better not to own at all: a bound would have
+// to be chosen, and choosing one only converts a non-idempotent result into a
+// non-idempotent result that also costs N passes. Making the single pass
+// closed is strictly cheaper and is the property FuzzSkeleton enforces.
+//
+// # Consulting confusables before NFKD is what keeps confusables reachable
+//
+// A confusable is folded by the glyph it DRAWS, which is a judgement no
+// algorithm makes for us. NFKD folds by compatibility, which is a different
+// relation, and where the two disagree NFKD wins if it runs first -- it
+// rewrites the source into a base form the table was never keyed on, and the
+// entry silently stops firing. Ϲ (U+03F9) is the case that proved it: it
+// lowercases to ϲ, which the table maps to "c", but NFKD first decomposes it
+// to Σ, which lowercases to σ, which is nothing. Looking the raw rune up here
+// gets the table its answer while the source still exists.
+//
+// The lookup is on unicode.ToLower(r) because the table is keyed lowercase;
+// runes that miss are written through unchanged rather than lowercased, so
+// NFKD still sees the input it expects. The main loop repeats the confusables
+// lookup after NFKD, and that second lookup is equally load-bearing in the
+// other direction: it is what catches the compatibility forms NFKD decomposes
+// INTO a table key, such as the mathematical dotless i at U+1D6A4 landing on
+// 'ı'. Neither lookup subsumes the other; both are required.
+func sanitize(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+	for _, r := range s {
+		if r == utf8.RuneError {
+			continue
+		}
+		if mapped, ok := confusables[unicode.ToLower(r)]; ok {
+			out.WriteString(mapped)
+			continue
+		}
+		out.WriteRune(r)
 	}
 	return out.String()
 }

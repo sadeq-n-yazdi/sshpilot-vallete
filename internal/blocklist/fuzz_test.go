@@ -25,6 +25,10 @@ func FuzzSkeleton(f *testing.F) {
 		"adm\U0001D6A4n", "\U0001D6C2dmin", "admin\U0001D6D0",
 		"\U0001D6A8dmin", "\U0001D7AAdmin", "\U0001D7CB",
 		"\U0001D6C1\U0001D6DB",
+		// Version 6: the two confusables NFKD-before-everything stopped
+		// reaching, and the invalid-UTF-8 shape that broke idempotence.
+		"Ϲonsole", "seϹurity", "\U0001D6A5s", "blow\U0001D6A5ob", "ȷs",
+		"\xf7ʰ", "ʰ", "\xffﬁ", "á\x80",
 	}
 	for _, s := range seeds {
 		f.Add(s)
