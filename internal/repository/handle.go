@@ -69,6 +69,6 @@ type HandleRepository interface {
 	// row matched, which is the benign outcome of exactly that race.
 	//
 	// UNSCOPED: the release sweep is system maintenance across all owners, and
-	// the elapsed hold — not a caller's identity — is what authorises the delete.
+	// the elapsed hold — not a caller's identity — is what authorizes the delete.
 	Release(ctx context.Context, id domain.HandleID, now time.Time) error
 }

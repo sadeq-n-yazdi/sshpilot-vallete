@@ -374,7 +374,7 @@ func TestHandleRegisterLookAlikeConflict(t *testing.T) {
 }
 
 // TestHandleFoldMissesAmbiguousReadings pins a KNOWN GAP rather than a
-// behaviour worth having, so that closing it later is a visible change.
+// behavior worth having, so that closing it later is a visible change.
 //
 // blocklist.Skeleton folds '1' to 'i', so "paypa1" becomes "paypai" and does
 // not equal "paypal". The i/l/1 family is genuinely ambiguous and the matcher

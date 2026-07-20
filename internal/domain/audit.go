@@ -75,6 +75,14 @@ const (
 
 	AuditActionHandleRegistered AuditAction = "handle.registered"
 	AuditActionHandleRenamed    AuditAction = "handle.renamed"
+	// AuditActionHandleReclaimed records an owner taking back a name they had
+	// renamed away from, before its quarantine elapsed.
+	AuditActionHandleReclaimed AuditAction = "handle.reclaimed"
+	// AuditActionHandleReleased records a quarantine ending and the name
+	// returning to the pool. It is the moment a name becomes claimable by
+	// someone else, so it is the record an incident review needs to place a
+	// change of ownership in time.
+	AuditActionHandleReleased AuditAction = "handle.released"
 
 	AuditActionDeviceRegistered AuditAction = "device.registered"
 	AuditActionDeviceRevoked    AuditAction = "device.revoked"

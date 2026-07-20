@@ -889,7 +889,7 @@ func migration0010AccessKeys() migrate.Migration {
 // blocklist.TableVersion the value was computed under, so a table bump is
 // detectable and the column can be recomputed; a stale fold weakens only this
 // auxiliary look-alike layer and never the exact-name uniqueness or the
-// quarantine hold that carry the account-takeover defence.
+// quarantine hold that carry the account-takeover defense.
 //
 // Existing rows are backfilled with name_fold = name, which is the correct fold
 // for any slug containing no digits and no separators and a provisional value
