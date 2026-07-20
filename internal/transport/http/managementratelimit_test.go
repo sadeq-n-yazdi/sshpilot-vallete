@@ -96,9 +96,18 @@ func newMgmtEnv(t *testing.T, limit int) *mgmtEnv {
 // from per-owner keying.
 func (e *mgmtEnv) token(t *testing.T, owner domain.OwnerID, cred string) string {
 	t.Helper()
+	return e.tokenWithID(t, owner, cred, "jti-"+cred)
+}
+
+// tokenWithID mints a token whose access-token id is chosen independently of
+// its credential. The two are otherwise 1:1 in these fixtures, which would make
+// per-credential and per-token keying indistinguishable -- and that is the
+// difference TestManagementLimitSurvivesATokenRefresh exists to pin.
+func (e *mgmtEnv) tokenWithID(t *testing.T, owner domain.OwnerID, cred, jti string) string {
+	t.Helper()
 
 	tok, err := e.signer.Issue(domain.AccessToken{
-		ID:                  "jti-" + cred,
+		ID:                  jti,
 		OwnerID:             owner,
 		RefreshCredentialID: domain.RefreshCredentialID(cred),
 		Scopes:              []domain.Scope{{Kind: domain.ScopeFullOwner}},
@@ -236,6 +245,36 @@ func TestManagementLimitDoesNotLeakAcrossCredentials(t *testing.T) {
 			t.Errorf("%s = %d, want 200: an exhausted credential spent a budget that was not its own",
 				tc.name, rec.Code)
 		}
+	}
+}
+
+// TestManagementLimitSurvivesATokenRefresh is the test that distinguishes
+// keying on the CREDENTIAL from keying on the access token.
+//
+// A client refreshes routinely, and each refresh mints a new access token id
+// from the same credential. If the limiter keyed on the token id, every refresh
+// would hand the caller a brand-new budget -- so the tier would cap nothing at
+// all for any client willing to refresh, while the route table and every other
+// test still read as correctly limited. The two ids are 1:1 everywhere else in
+// these fixtures, so without this case that substitution is invisible.
+func TestManagementLimitSurvivesATokenRefresh(t *testing.T) {
+	t.Parallel()
+
+	const limit = 2
+	env := newMgmtEnv(t, limit)
+	before := env.tokenWithID(t, "owner-a", "cred-a", "jti-before-refresh")
+	after := env.tokenWithID(t, "owner-a", "cred-a", "jti-after-refresh")
+
+	for range limit {
+		if rec := env.do(http.MethodGet, devicesPath, before, ""); rec.Code != http.StatusOK {
+			t.Fatalf("within-limit request = %d, want 200", rec.Code)
+		}
+	}
+
+	// Same credential, a token the caller could obtain at any time by
+	// refreshing. The budget must already be spent.
+	if rec := env.do(http.MethodGet, devicesPath, after, ""); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("request under a refreshed token = %d, want 429: refreshing bought a fresh budget", rec.Code)
 	}
 }
 
