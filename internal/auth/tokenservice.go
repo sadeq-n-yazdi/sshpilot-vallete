@@ -136,8 +136,10 @@ func NewTokenService(store repository.Store, signer *AccessTokenSigner, denylist
 	// Issue and Exchange dereference both without checking. A panic on Exchange
 	// is a denial of service on the token path, so the wiring bug is caught
 	// here instead. The auto-commit Repos stands in for the transaction-bound
-	// one Exchange receives from WithTx: both real stores build the two from
-	// the same wiring, so a nil in one means a nil in the other.
+	// one Exchange receives from WithTx -- which is where Owners is actually
+	// read, to refuse a suspended owner. Both stores build the two by calling
+	// one reposFor(execer) over the db handle and the tx handle respectively,
+	// so a field non-nil in one is non-nil in the other.
 	repos := store.Repos()
 	switch {
 	case repos.RefreshCredentials == nil:

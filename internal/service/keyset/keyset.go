@@ -193,9 +193,10 @@ func New(store repository.Store, guard *nameguard.Guard, auditor Auditor, opts .
 	// service uses left nil, and every method here dereferences it. Checking at
 	// construction turns that wiring bug into a startup failure instead of a
 	// panic on the first request that names a key set. The auto-commit Repos is
-	// checked as a proxy for the transaction-bound one WithTx passes: both real
-	// stores populate the two from the same wiring, so a nil in one means a nil
-	// in the other.
+	// checked as a proxy for the transaction-bound one WithTx passes, which is
+	// where most of this service's dereferences happen: both stores build the
+	// two by calling one reposFor(execer) over the db handle and the tx handle
+	// respectively, so a field non-nil in one is non-nil in the other.
 	if store.Repos().KeySets == nil {
 		return nil, fmt.Errorf("%w: key set repository", ErrMissingDependency)
 	}
