@@ -39,7 +39,7 @@ func TestHealthzIsLivenessOnly(t *testing.T) {
 	// A broken dependency must NOT affect liveness: restarting the process
 	// would not fix a database outage.
 	logger, _ := newTestLogger()
-	h := NewHandler(logger, errPinger{err: errors.New("database down")})
+	h := NewHandler(logger, errPinger{err: errors.New("database down")}, stubPublisher{})
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -115,7 +115,7 @@ func TestReadyzReflectsDependencyHealth(t *testing.T) {
 
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/readyz", nil).WithContext(ctx)
-			NewHandler(logger, tc.pinger).ServeHTTP(rec, req)
+			NewHandler(logger, tc.pinger, stubPublisher{}).ServeHTTP(rec, req)
 
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
@@ -139,7 +139,7 @@ func TestReadyzDoesNotDiscloseTheFailureReason(t *testing.T) {
 	logger, buf := newTestLogger()
 
 	rec := httptest.NewRecorder()
-	NewHandler(logger, errPinger{err: errors.New(detail)}).
+	NewHandler(logger, errPinger{err: errors.New(detail)}, stubPublisher{}).
 		ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 
 	if strings.Contains(rec.Body.String(), detail) {
@@ -154,7 +154,7 @@ func TestRoutesRejectWrongMethodAndUnknownPaths(t *testing.T) {
 	t.Parallel()
 
 	logger, _ := newTestLogger()
-	h := NewHandler(logger, okPinger{})
+	h := NewHandler(logger, okPinger{}, stubPublisher{})
 
 	tests := []struct {
 		name       string
@@ -164,9 +164,15 @@ func TestRoutesRejectWrongMethodAndUnknownPaths(t *testing.T) {
 	}{
 		{name: "post healthz", method: http.MethodPost, path: "/healthz", wantStatus: http.StatusMethodNotAllowed},
 		{name: "post readyz", method: http.MethodPost, path: "/readyz", wantStatus: http.StatusMethodNotAllowed},
-		// Publish routes are a later track; nothing beyond health is mounted.
-		{name: "unknown handle route", method: http.MethodGet, path: "/someone", wantStatus: http.StatusNotFound},
+		// The publish routes accept only GET (and the HEAD that GET implies);
+		// a write to a read-only endpoint is refused by the mux itself.
+		{name: "post handle", method: http.MethodPost, path: "/someone", wantStatus: http.StatusMethodNotAllowed},
+		{name: "post handle set", method: http.MethodPost, path: "/someone/work", wantStatus: http.StatusMethodNotAllowed},
+		// The root is not a handle: a wildcard segment never matches empty, so
+		// "/" stays unrouted rather than resolving to some default account.
 		{name: "root", method: http.MethodGet, path: "/", wantStatus: http.StatusNotFound},
+		// Nothing is mounted below a set, so a third segment is not a route.
+		{name: "too many segments", method: http.MethodGet, path: "/someone/work/extra", wantStatus: http.StatusNotFound},
 	}
 
 	for _, tc := range tests {
@@ -186,7 +192,7 @@ func TestNewHandlerToleratesNilLogger(t *testing.T) {
 	t.Parallel()
 
 	rec := httptest.NewRecorder()
-	NewHandler(nil, okPinger{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	NewHandler(nil, okPinger{}, stubPublisher{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", rec.Code)
