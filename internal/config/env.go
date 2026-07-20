@@ -195,6 +195,8 @@ func bindings() []binding {
 		{"VALLET_RETENTION_AUDIT_PURGE_MAX_PER_RUN", setInt(func(c *Config) *int { return &c.Retention.AuditPurgeMaxPerRun })},
 		{"VALLET_RETENTION_MAX_SETS_PER_OWNER", setInt(func(c *Config) *int { return &c.Retention.MaxSetsPerOwner })},
 
+		// install
+		{"VALLET_INSTALL_ENABLED", setBool(func(c *Config) *bool { return &c.Install.Enabled })},
 		// docs
 		{"VALLET_DOCS_ENABLED", setBool(func(c *Config) *bool { return &c.Docs.Enabled })},
 	}

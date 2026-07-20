@@ -145,6 +145,14 @@ retention:
   audit_purge_max_per_run: 100000
   max_sets_per_owner: 100
 
+install:
+  # Serve the helper installation script and its SHA-256 digest under /install/
+  # (ADR-0013, ADR-0029). Enabled by default: the script is the documented
+  # bootstrap path for a host that has nothing from this project yet, and it is
+  # not secret. Set to false on locked-down installations; both routes then
+  # behave exactly like any unknown path.
+  enabled: true
+
 docs:
   # Serve the OpenAPI contract and the embedded documentation UI at /docs/
   # (ADR-0021). Enabled by default: the contract is not secret, and consumers
