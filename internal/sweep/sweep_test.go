@@ -165,6 +165,15 @@ func TestRunnerReportsAPanicAsAnError(t *testing.T) {
 		if !strings.Contains(err.Error(), "panicked") || !strings.Contains(err.Error(), "boom") {
 			t.Errorf("panic error = %q, want it to name the job and carry the panic value", err)
 		}
+		// The stack is the half an operator cannot reconstruct later: the job
+		// runs on its own goroutine on a timer, so "nil pointer dereference"
+		// with no frames names the fault without locating it. Asserting on a
+		// frame proves the capture happened while the panicking frames were
+		// still live, rather than after they had unwound.
+		if !strings.Contains(err.Error(), "runGuarded") ||
+			!strings.Contains(err.Error(), "sweep_test.go") {
+			t.Errorf("panic error = %q, want it to carry the stack of the panicking pass", err)
+		}
 	case <-time.After(10 * time.Second):
 		cancel()
 		join()
