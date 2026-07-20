@@ -87,7 +87,14 @@ func Default() Config {
 		Retention: RetentionConfig{
 			HandleQuarantine: Duration(30 * day),
 			AuditRetention:   Duration(365 * day),
-			MaxSetsPerOwner:  100,
+			// A concrete, non-zero cadence: the default must actually schedule
+			// a pass. Defaulting this to 0 would ship a retention policy that
+			// is documented and never enforced, which is the exact defect this
+			// wiring exists to remove.
+			AuditPurgeInterval:  Duration(24 * time.Hour),
+			AuditPurgeBatch:     500,
+			AuditPurgeMaxPerRun: 100_000,
+			MaxSetsPerOwner:     100,
 		},
 		Docs: DocsConfig{
 			// Enabled and public by default, per ADR-0021: the contract is
