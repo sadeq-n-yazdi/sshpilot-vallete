@@ -461,7 +461,7 @@ func (p *originCAProvider) requestCertificate(ctx context.Context, csr []byte) (
 
 	if resp.StatusCode != http.StatusOK || !decoded.Success {
 		return nil, fmt.Errorf("%w: api rejected the request (status %d): %s",
-			ErrOriginCAIssuance, resp.StatusCode, originCAErrorSummary(decoded))
+			ErrOriginCAIssuance, resp.StatusCode, originCAErrorSummary(decoded, p.token))
 	}
 
 	chain := parseCertChainPEM([]byte(decoded.Result.Certificate))
@@ -495,14 +495,23 @@ func originCAAuthHeader(token secrets.Redacted) (name, value string) {
 	return "Authorization", "Bearer " + raw
 }
 
-// originCAErrorSummary renders the API's own error list for the operator.
+// originCAErrorSummary renders the API's own error list for the operator, with
+// the credential scrubbed out of it.
 //
-// Cloudflare's error messages describe the request (a hostname outside the
-// zone, an invalid validity, an unauthenticated key) and are what an operator
-// needs. They are truncated because the length is remote-controlled, and the
-// credential never appears in them — the API has no reason to echo a header it
-// rejected, and this server does not put it in the body.
-func originCAErrorSummary(resp originCAResponse) string {
+// Cloudflare's error messages describe the request — a hostname outside the
+// zone, an invalid validity, an unauthenticated key — and are exactly what an
+// operator needs, so they are surfaced rather than swallowed. But the message
+// is REMOTE-CONTROLLED text, and an endpoint that echoes the rejected
+// credential back in its own error (a plausible thing for an API, a proxy, or a
+// hostile impostor to do) would otherwise round-trip the key straight into this
+// server's error paths and from there into logs.
+//
+// So the credential is replaced wherever it appears before the message is
+// returned, and the whole thing is truncated because its length is
+// remote-controlled too. Scrubbing rather than dropping the message keeps the
+// diagnostic while making the leak structurally impossible: the value cannot
+// survive this function no matter what the endpoint sends.
+func originCAErrorSummary(resp originCAResponse, token secrets.Redacted) string {
 	if len(resp.Errors) == 0 {
 		return "no error detail provided"
 	}
@@ -513,11 +522,19 @@ func originCAErrorSummary(resp originCAResponse) string {
 		}
 		fmt.Fprintf(&b, "%d %s", e.Code, e.Message)
 	}
+
+	s := b.String()
+	// The empty check is not decorative: replacing the empty string would
+	// splice the marker between every character of the message.
+	if raw := token.Reveal(); raw != "" {
+		s = strings.ReplaceAll(s, raw, "[REDACTED]")
+	}
+
 	const maxSummary = 512
-	if s := b.String(); len(s) > maxSummary {
+	if len(s) > maxSummary {
 		return s[:maxSummary] + "..."
 	}
-	return b.String()
+	return s
 }
 
 // parseCertChainPEM decodes every CERTIFICATE block in a PEM bundle to DER.
