@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -211,7 +212,15 @@ func (p *cloudflareProvider) zoneID(ctx context.Context, recordName string) (str
 		var zones []struct {
 			ID string `json:"id"`
 		}
-		if err := p.do(ctx, http.MethodGet, "/zones?status=active&name="+name, nil, &zones); err != nil {
+		// Built with url.Values rather than concatenated. The candidate is a
+		// domain suffix derived from the certificate name, so in normal
+		// operation it is not arbitrary text — but concatenating it raw means a
+		// name containing "&" or "#" splits the query or truncates it, and the
+		// zone lookup would then be answered for a name nobody asked about.
+		// Encoding the whole parameter set makes that unrepresentable rather
+		// than relying on each call site to remember one escape.
+		query := url.Values{"status": {"active"}, "name": {name}}.Encode()
+		if err := p.do(ctx, http.MethodGet, "/zones?"+query, nil, &zones); err != nil {
 			return "", fmt.Errorf("%w: look up zone %q: %w", ErrCloudflareAPI, name, err)
 		}
 		if len(zones) > 0 && zones[0].ID != "" {

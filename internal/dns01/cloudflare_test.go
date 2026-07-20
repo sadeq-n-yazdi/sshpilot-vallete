@@ -376,3 +376,55 @@ func TestCloudflareErrorMessageTruncationKeepsValidUTF8(t *testing.T) {
 		t.Errorf("truncation discarded more than a partial rune: %d bytes", len(got))
 	}
 }
+
+// TestCloudflareZoneLookupEscapesTheNameParameter pins that the zone-lookup
+// query parameter is encoded rather than concatenated.
+//
+// A candidate containing "&" would otherwise split the query into extra
+// parameters, and one containing "#" would truncate it — either way the zone
+// lookup is answered for a name nobody asked about, and the challenge record
+// could be written into the wrong zone.
+//
+// The assertion is that the parameter DECODES BACK to the intended name. That
+// is derived independently, from the record name the test itself supplied, and
+// not from anything the provider computed.
+func TestCloudflareZoneLookupEscapesTheNameParameter(t *testing.T) {
+	var gotNames []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/zones" {
+			// r.URL.Query() decodes; a correctly encoded "&" survives as part
+			// of the single name value, a raw one becomes a separate parameter.
+			gotNames = append(gotNames, r.URL.Query().Get("name"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if _, err := w.Write([]byte(`{"success":true,"result":[]}`)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	provider, err := NewCloudflare(secrets.NewRedacted(testToken), srv.Client())
+	if err != nil {
+		t.Fatalf("NewCloudflare: %v", err)
+	}
+	provider.(*cloudflareProvider).client = &http.Client{
+		Transport: rewriteHost{srv.URL, srv.Client().Transport},
+	}
+
+	// The zone walk strips the leftmost label, so this candidate is the one the
+	// lookup asks about.
+	const hostile = "evil&status=inactive.example.com"
+	_, _ = provider.Present(t.Context(), Record{
+		Name:  ChallengeRecordName(hostile),
+		Value: "challenge-value",
+	})
+
+	if len(gotNames) == 0 {
+		t.Fatal("no zone lookup was issued")
+	}
+	if gotNames[0] != hostile {
+		t.Errorf("name parameter decoded to %q, want %q: an unescaped %q splits "+
+			"the query into separate parameters", gotNames[0], hostile, "&")
+	}
+}
