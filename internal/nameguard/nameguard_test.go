@@ -160,7 +160,7 @@ func TestGuardUsesInjectedMatcher(t *testing.T) {
 		t.Errorf("Check(handle, create, \"forbidden\") = %v, want ErrBlockedName", err)
 	}
 	// "admin" is in the DEFAULT lists but not in this matcher's list, so a
-	// guard honouring its injected matcher must allow it.
+	// guard honoring its injected matcher must allow it.
 	if err := g.Check(nameguard.KindHandle, nameguard.OpCreate, "admin"); err != nil {
 		t.Errorf("Check(handle, create, \"admin\") with custom list = %v, want nil", err)
 	}
