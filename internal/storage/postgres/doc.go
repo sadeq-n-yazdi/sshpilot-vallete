@@ -22,6 +22,12 @@
 // value. This keeps the driver an implementation detail and prevents engine
 // error text, SQL, or bound values from escaping the storage boundary.
 //
+// One relationship is not expressible in the schema: key_set_members carries no
+// owner_id, and its foreign keys constrain only that the referenced key set and
+// public key EXIST — never that the two share an owner. keySetRepo.AddMember is
+// therefore the sole enforcement point preventing a membership that links one
+// owner's set to another owner's key, and it carries the reasoning inline.
+//
 // # Error-mapping contract
 //
 // Adapter methods translate driver and database/sql errors into domain
@@ -41,7 +47,10 @@
 //
 //   - Bind placeholders are $1, $2, … rather than ?.
 //   - Booleans are real BOOLEAN columns, so Go bools bind and scan directly
-//     instead of being encoded as 0/1 integers.
+//     instead of being encoded as 0/1 integers, and predicates compare against
+//     TRUE/FALSE rather than 1/0.
+//   - A public key's blob is a BYTEA column rather than a BLOB; the driver
+//     binds and scans the []byte identically either way.
 //   - Timestamps are stored as fixed-width UTC RFC3339 text, identical to the
 //     SQLite adapter. This is dictated by internal/schema, whose Postgres DDL
 //     declares every timestamp column TEXT so both engines share one column
