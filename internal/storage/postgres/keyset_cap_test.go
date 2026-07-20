@@ -69,12 +69,21 @@ func newCapService(t *testing.T, store *Store, maxSets int, owners ...domain.Own
 	return svc
 }
 
-// countSets returns how many key set rows the owner holds.
+// countSets returns how many key set rows the owner holds, asking the database
+// directly rather than through KeySetRepository.CountByOwner.
+//
+// Going around the repository is the point. CountByOwner is part of what these
+// tests are checking -- it is the query whose owner_id predicate makes the cap
+// per-owner -- so using it as the oracle would let a fault hide itself. An
+// unscoped count would report the same global total for every owner and satisfy
+// an assertion written in its own terms, which is exactly what happened when
+// this helper was first written against the repository.
 func countSets(t *testing.T, store *Store, owner domain.OwnerID) int {
 	t.Helper()
-	n, err := store.Repos().KeySets.CountByOwner(context.Background(), owner)
-	if err != nil {
-		t.Fatalf("CountByOwner(%s): %v", owner, err)
+	const q = `SELECT COUNT(*) FROM key_sets WHERE owner_id = $1`
+	var n int
+	if err := store.db.QueryRowContext(context.Background(), q, string(owner)).Scan(&n); err != nil {
+		t.Fatalf("count key sets for %s: %v", owner, err)
 	}
 	return n
 }
