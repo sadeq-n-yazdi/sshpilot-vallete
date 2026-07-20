@@ -31,6 +31,13 @@
 // swallowed: a device that was created or revoked with no accountability trail
 // is precisely the state an audit log exists to make impossible, so the
 // operation is reported as failed instead of silently proceeding unrecorded.
+//
+// A REFUSED registration emits nothing, matching the syntax-rejection path
+// beside it: an audit record describes a change to which keys can access an
+// owner's hosts (ADR-0007), and a device that was never created is not one. It
+// is also the difference between a rejected request costing a validation pass
+// and costing an append to the audit log, which is what a caller spamming
+// blocked names would be buying.
 package device
 
 import (
@@ -42,6 +49,7 @@ import (
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
 )
 
@@ -71,6 +79,7 @@ type Auditor interface {
 type Service struct {
 	devices repository.DeviceRepository
 	auditor Auditor
+	guard   *nameguard.Guard
 	now     func() time.Time
 	newID   func() string
 }
@@ -97,17 +106,29 @@ func WithClock(now func() time.Time) Option {
 
 // New builds a Service.
 //
-// Both the repository and the auditor are required. The auditor especially: a
-// Service without one would look wired up and would register and revoke devices
-// leaving no trace, which is worse than not starting.
-func New(devices repository.DeviceRepository, auditor Auditor, opts ...Option) (*Service, error) {
+// The repository, the auditor and the name guard are all required. The auditor
+// especially: a Service without one would look wired up and would register and
+// revoke devices leaving no trace, which is worse than not starting. The guard
+// is required for the same reason in the other direction: a Service built
+// without one would accept every name the charset rule permits, and the
+// blocklist would be a control that exists in the tree and nowhere in the
+// running system. Making it a constructor argument rather than an Option means
+// a future call site cannot acquire an unguarded Service by forgetting to
+// opt in — it has to fail to compile instead.
+//
+// A non-nil Guard is not by itself proof of enforcement; see Register for why
+// the guard is consulted rather than trusted.
+func New(devices repository.DeviceRepository, auditor Auditor, guard *nameguard.Guard, opts ...Option) (*Service, error) {
 	if devices == nil {
 		return nil, fmt.Errorf("%w: device repository", ErrMissingDependency)
 	}
 	if auditor == nil {
 		return nil, fmt.Errorf("%w: auditor", ErrMissingDependency)
 	}
-	s := &Service{devices: devices, auditor: auditor, now: time.Now, newID: newDeviceID}
+	if guard == nil {
+		return nil, fmt.Errorf("%w: name guard", ErrMissingDependency)
+	}
+	s := &Service{devices: devices, auditor: auditor, guard: guard, now: time.Now, newID: newDeviceID}
 	for i, opt := range opts {
 		// A nil option is rejected rather than skipped, matching audit.NewEmitter:
 		// skipping it would leave a Service that looks configured and is not.
@@ -139,6 +160,29 @@ func newDeviceID() string {
 // the caller is an authenticated owner creating its own resource, so there is
 // no namespace to probe and no existence to leak — the input is simply wrong
 // and saying so is what lets a client fix it.
+//
+// # Why the guard and not domain.ValidateDeviceName
+//
+// This used to call domain.ValidateDeviceName directly. It now goes through
+// nameguard, which applies that same validator (nameguard.validateSyntax
+// dispatches to it) and then the blocklist. Routing through the guard rather
+// than calling both here is deliberate: it leaves ONE definition of what a
+// device name may be, so "syntactically valid" and "not blocked" cannot drift
+// apart, and a reviewer looking for unenforced identifier paths can find them
+// by looking for create paths that do not mention nameguard.
+//
+// The blocklist is checked on the normalized skeleton, not the raw string.
+// That matters more here than for handles and key-set names: those are
+// constrained to [a-z0-9-] by their slug rule, so a Unicode homoglyph never
+// survives long enough to be folded, whereas a device name is any printable
+// UTF-8 (domain.ValidateDeviceName). A Cyrillic "аdmin" is a legal device name
+// by charset and is caught only by the confusable folding.
+//
+// A blocked name returns domain.ErrBlockedName, carrying only the matcher's
+// fixed public message — never the term that matched, the list it came from,
+// or the skeleton. Naming the term would turn every rejected registration into
+// one bit of a search over the curated list, and the list is a moving target
+// an operator curates precisely because publishing it is not the intent.
 func (s *Service) Register(ctx context.Context, ownerID domain.OwnerID, name, requestID string) (*domain.Device, error) {
 	if ownerID == "" {
 		// An empty owner would produce a device belonging to nobody, reachable
@@ -147,7 +191,11 @@ func (s *Service) Register(ctx context.Context, ownerID domain.OwnerID, name, re
 		// attempted.
 		return nil, fmt.Errorf("device: missing owner: %w", domain.ErrInvalidInput)
 	}
-	if err := domain.ValidateDeviceName(name); err != nil {
+	// Both the syntax and the blocklist verdict, in that order, before any
+	// write is attempted. A nil guard refuses rather than skipping; New
+	// rejects one, so reaching here with nil means the Service was built by
+	// something other than New, and refusing is the only safe reading.
+	if err := s.guard.Check(nameguard.KindDeviceName, nameguard.OpCreate, name); err != nil {
 		return nil, err
 	}
 

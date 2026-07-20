@@ -153,6 +153,7 @@ func (e *e2e) addKey(ownerID domain.OwnerID, setID domain.KeySetID, comment stri
 		var addErr error
 		res, addErr = bootstrap.AddKey(ctx, r, bootstrap.AddKeyParams{
 			OwnerID: ownerID, KeySetID: setID, DeviceName: "e2e", Key: parsed, Now: e2eNow,
+			Guard: mustGuard(e.t),
 		})
 		return addErr
 	})
