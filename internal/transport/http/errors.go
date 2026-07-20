@@ -169,4 +169,10 @@ var (
 	// on the route rather than a startup refusal, because the management routes
 	// are mounted unconditionally so that they always exist and always refuse.
 	ErrNilPublicKeyService = errors.New("httpserver: nil public key service")
+
+	// ErrNilKeySetService is logged when a key set management route is reached
+	// with no service behind it. Like the two above it is a 500 on the route
+	// rather than a startup refusal, because the management routes are mounted
+	// unconditionally so that they always exist and always refuse.
+	ErrNilKeySetService = errors.New("httpserver: nil key set service")
 )

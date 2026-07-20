@@ -200,6 +200,53 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	mux.Handle("DELETE /api/v1/keys/{keyID}",
 		guardian.Protect(AccountAccess, mgmt(revokeKeyHandler(o.keys, logger))))
 
+	// The key set routes split their access declarations, and the split is the
+	// security decision on this block. Create and list address the account, so
+	// they declare AccountAccess and a set-bound token cannot reach them --
+	// a token scoped to one set must not be able to mint or enumerate others.
+	// Rename and delete address one set, so they declare KeySetAccess, which
+	// names the set from the path and lets auth.Guard confine a set-bound token
+	// to the set it was issued for.
+	//
+	// This is deliberately NOT the all-AccountAccess shape the key routes above
+	// use. Those have no choice: auth.ResourceKind has no kind for a key. Key
+	// sets have auth.ResourceKeySet, so declaring the account here would widen
+	// every set-bound token into an account-wide one.
+	//
+	// PATCH is the rename verb rather than PUT: the request carries the one
+	// field it changes, and a PUT would imply the body replaces the resource --
+	// inviting a later edit to accept visibility and is_default in it, which are
+	// C4's decisions with their own authorization story.
+	mux.Handle("POST /api/v1/keysets", guardian.Protect(AccountAccess, createKeySetHandler(o.keySets, logger)))
+	mux.Handle("GET /api/v1/keysets", guardian.Protect(AccountAccess, listKeySetsHandler(o.keySets, logger)))
+	mux.Handle("PATCH /api/v1/keysets/{keySetID}",
+		guardian.Protect(KeySetAccess, renameKeySetHandler(o.keySets, logger)))
+	mux.Handle("DELETE /api/v1/keysets/{keySetID}",
+		guardian.Protect(KeySetAccess, deleteKeySetHandler(o.keySets, logger)))
+
+	// The two C4 sub-resources split their access declarations for the same
+	// reason, and the split is the security decision on this pair.
+	//
+	// Visibility declares KeySetAccess: the repository's Update is scoped to the
+	// addressed row and touches nothing else, so a set-bound token performing it
+	// changes only the set it was issued for -- the same blast radius rename has.
+	//
+	// Default declares AccountAccess even though its path names a set, and that
+	// is deliberate. Designating a default also WRITES THE PREVIOUS DEFAULT'S
+	// ROW: the repository clears is_default on it in the same transaction. A
+	// set-bound token reaching this route would therefore mutate a set it was
+	// never scoped to, and would repoint bare GET /{handle} -- account-wide
+	// state that belongs to no single set. AccountAccess refuses a
+	// resource-bound token before the handler runs, which is the conservative
+	// reading and the same one DELETE /api/v1/keys/{keyID} takes.
+	//
+	// PUT rather than PATCH: each request carries the complete new state of the
+	// one thing it addresses, and repeating it is idempotent.
+	mux.Handle("PUT /api/v1/keysets/{keySetID}/default",
+		guardian.Protect(AccountAccess, setDefaultKeySetHandler(o.keySets, logger)))
+	mux.Handle("PUT /api/v1/keysets/{keySetID}/visibility",
+		guardian.Protect(KeySetAccess, setVisibilityKeySetHandler(o.keySets, logger)))
+
 	// Outermost first: every response carries the transport policy, then every
 	// request gets an ID, then a span and a metric, then is logged, then is
 	// protected from panics.

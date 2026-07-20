@@ -177,23 +177,53 @@ type deferredIssuanceProvider interface {
 // alternatives to refusing would be serving a self-signed certificate the
 // operator did not ask for, or no TLS at all. Both are the silent downgrade
 // ADR-0015 exists to prevent.
+//
+// Every case returns through [asCertProvider]. That is not decoration: each
+// constructor returns a CONCRETE pointer type, and `return newXProvider(...)`
+// would convert a nil pointer into a non-nil CertProvider interface holding a
+// typed nil. A caller that checked `provider != nil` instead of the error would
+// then proceed with a provider that is nil underneath. Every caller today
+// checks the error first, so this is not reachable now — asCertProvider makes it
+// unreachable by construction rather than by caller discipline, on a seam whose
+// failure mode is serving without the certificate policy it exists to enforce.
 func newCertProvider(
 	ctx context.Context, cfg *config.Config, now func() time.Time, logger *slog.Logger,
 ) (CertProvider, error) {
 	switch cfg.TLS.Mode {
 	case "self_signed":
-		return newSelfSignedProvider(cfg, now)
+		return asCertProvider(newSelfSignedProvider(cfg, now))
 	case "manual":
-		return newManualProvider(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile)
+		return asCertProvider(newManualProvider(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile))
 	case "csr":
-		return newCSRProvider(cfg)
+		return asCertProvider(newCSRProvider(cfg))
 	case "acme":
 		return newACMEProviderForSolver(ctx, cfg, now, logger)
 	case "cloudflare_origin":
-		return newOriginCAProvider(ctx, cfg, now, builtinSecretResolver(cfg))
+		// This case arrived on develop after the asCertProvider guard was
+		// written, and newOriginCAProvider returns a concrete
+		// *originCAProvider, so an unwrapped return here would reintroduce the
+		// exact typed nil this change exists to remove. Every case in this
+		// switch returns through asCertProvider; that is the invariant, and a
+		// new mode that quietly skips it is the failure this comment prevents.
+		return asCertProvider(newOriginCAProvider(ctx, cfg, now, builtinSecretResolver(cfg)))
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
 	}
+}
+
+// asCertProvider lifts a concrete provider constructor's (*T, error) result into
+// (CertProvider, error) without ever producing a typed-nil interface.
+//
+// The type parameter is constrained to CertProvider, so this cannot be used to
+// smuggle a non-provider through; on error the returned interface is the
+// UNTYPED nil literal, which is the only value for which `provider == nil` is
+// true. Returning p directly on the error path would satisfy the compiler and
+// silently defeat the whole point.
+func asCertProvider[T CertProvider](p T, err error) (CertProvider, error) {
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // secretResolver resolves a config secret reference to its value.
@@ -245,7 +275,10 @@ func newACMEProviderForSolver(
 ) (CertProvider, error) {
 	switch cfg.TLS.ACME.Solver {
 	case "tls_alpn_01":
-		return newACMEProvider(ctx, cfg, now, newTLSALPNSolver)
+		// asCertProvider for the same reason as in newCertProvider: this is the
+		// TRUE source of the acme mode's interface value, so fixing the
+		// passthrough above without fixing it here would leave the hazard.
+		return asCertProvider(newACMEProvider(ctx, cfg, now, newTLSALPNSolver))
 	case "dns_01":
 		return newDNS01ACMEProvider(ctx, cfg, now, logger)
 	default:
@@ -269,7 +302,13 @@ func newDNS01ACMEProvider(
 	}
 
 	solver := newDNS01Solver(dnsProvider, dns01.NewAuthoritativeTXTLookup(), logger)
-	return newACMEProvider(ctx, cfg, now, func(*acmeProvider) acmeSolver { return solver })
+	// asCertProvider for the same reason as the tls_alpn_01 case above.
+	// newACMEProvider returns a CONCRETE *acmeProvider, so returning it directly
+	// into this function's CertProvider result would convert a nil pointer into
+	// a non-nil interface holding a typed nil on every error path. This case and
+	// the ALPN one arrived on separate branches, so the guard has to be restated
+	// here rather than inherited.
+	return asCertProvider(newACMEProvider(ctx, cfg, now, func(*acmeProvider) acmeSolver { return solver }))
 }
 
 // newDNSProvider builds the DNS provider for the configured dns mode.
