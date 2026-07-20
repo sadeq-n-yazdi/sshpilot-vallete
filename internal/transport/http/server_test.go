@@ -51,7 +51,7 @@ func TestNewRefusesSelfSignedInProduction(t *testing.T) {
 			cfg.Server.Environment = tc.environment
 			cfg.TLS.AllowSelfSignedInProduction = tc.allow
 
-			srv, err := New(cfg, nil, okPinger{})
+			srv, err := New(cfg, nil, okPinger{}, stubPublisher{})
 			if tc.wantErr != nil {
 				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("err = %v, want %v", err, tc.wantErr)
@@ -77,7 +77,7 @@ func TestNewRefusesSelfSignedInProduction(t *testing.T) {
 func TestNewTLSConfigHardening(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(devConfig(), nil, okPinger{})
+	srv, err := New(devConfig(), nil, okPinger{}, stubPublisher{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestNewRejectsBadTLSConfiguration(t *testing.T) {
 
 			cfg := devConfig()
 			tc.mutate(cfg)
-			if _, err := New(cfg, nil, okPinger{}); !errors.Is(err, tc.wantErr) {
+			if _, err := New(cfg, nil, okPinger{}, stubPublisher{}); !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
 		})
@@ -208,7 +208,7 @@ func TestManualTLSMode(t *testing.T) {
 	cfg.TLS.Manual.CertFile = certFile
 	cfg.TLS.Manual.KeyFile = keyFile
 
-	srv, err := New(cfg, nil, okPinger{})
+	srv, err := New(cfg, nil, okPinger{}, stubPublisher{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestManualTLSMode(t *testing.T) {
 	}
 
 	cfg.TLS.Manual.CertFile = filepath.Join(dir, "missing.pem")
-	if _, err := New(cfg, nil, okPinger{}); err == nil {
+	if _, err := New(cfg, nil, okPinger{}, stubPublisher{}); err == nil {
 		t.Fatal("a missing certificate file must fail startup")
 	}
 }
@@ -283,7 +283,7 @@ func TestCertHostsDefaultsToLoopback(t *testing.T) {
 func TestServeIsHTTPSOnlyAndShutsDownGracefully(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(devConfig(), nil, okPinger{})
+	srv, err := New(devConfig(), nil, okPinger{}, stubPublisher{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestListenAndServeRejectsABadAddress(t *testing.T) {
 
 	cfg := devConfig()
 	cfg.Server.ListenAddr = "127.0.0.1:not-a-port"
-	srv, err := New(cfg, nil, okPinger{})
+	srv, err := New(cfg, nil, okPinger{}, stubPublisher{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

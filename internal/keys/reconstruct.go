@@ -42,9 +42,20 @@ func AuthorizedKeyLineFrom(alg domain.Algorithm, blob []byte, comment string) (s
 		return "", err
 	}
 
+	// The line-break check runs on the UNTRIMMED comment, and must stay that
+	// way. TrimSpace removes leading and trailing whitespace — newlines
+	// included — so trimming first would silently strip the very character
+	// being checked for and let the remainder through: a comment of
+	// "\n<a full key line>" would trim down to a break-free string, pass
+	// validation, and be emitted after the key. Validating first means a
+	// comment that ever contained a line break is refused outright rather than
+	// laundered into an accepted one.
+	if strings.ContainsAny(comment, "\n\r") {
+		return "", ErrBadComment
+	}
+
 	comment = strings.TrimSpace(comment)
-	if domain.ValidateKeyComment(comment) != nil ||
-		strings.ContainsAny(comment, "\n\r") {
+	if domain.ValidateKeyComment(comment) != nil {
 		return "", ErrBadComment
 	}
 
