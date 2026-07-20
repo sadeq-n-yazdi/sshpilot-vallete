@@ -49,6 +49,10 @@ func probeValue(t *testing.T, typ reflect.Type, cur string) string {
 		return strconv.FormatBool(!b)
 	case typ.Kind() == reflect.Int:
 		return "37"
+	case typ.Kind() == reflect.Float64:
+		// A ratio field: differs from every default and stays in [0,1], so the
+		// probed config remains one Validate would accept.
+		return "0.25"
 	case typ.Kind() == reflect.Slice:
 		return "alpha,beta"
 	default: // string and secrets.Ref

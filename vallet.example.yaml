@@ -136,20 +136,30 @@ telemetry:
     format: json
   metrics:
     prometheus:
+      # Collect metrics. This does NOT expose them: the scrape endpoint is
+      # served only on its own listener, never on the public API listener.
       enabled: true
-      # Empty means serve metrics on the main listener.
+      # The dedicated address for the scrape endpoint. EMPTY (the default)
+      # means the endpoint is not served at all -- nothing answers a scrape.
+      # Set it to expose metrics, and bind it somewhere only your monitoring
+      # can reach: 127.0.0.1:9090 for a node-local scraper or a sidecar,
+      # 0.0.0.0:9090 only when the platform scrapes across a private network.
+      # The endpoint is unauthenticated, so this address IS the access control.
       listen_addr: ""
       path: /metrics
     otlp:
       enabled: false
-      # Required when enabled.
+      # Required when enabled. An http:// or https:// URL with no credentials
+      # in it -- put the collector's auth header in headers_ref instead.
       endpoint: ""
       # Optional. e.g. env:VALLET_OTLP_HEADERS
       headers_ref: ""
   traces:
     enabled: false
-    # Required when enabled.
+    # Required when enabled. Same rules as the OTLP metrics endpoint.
     endpoint: ""
+    # Head-sampling probability in [0,1] for traces this process starts.
+    sample_ratio: 1.0
 
 onboarding:
   # invite | open

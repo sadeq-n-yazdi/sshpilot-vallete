@@ -305,11 +305,44 @@ type MetricsConfig struct {
 	OTLP       OTLPMetricsConfig `yaml:"otlp"`
 }
 
-// PrometheusConfig configures the Prometheus exporter.
+// PrometheusConfig configures the Prometheus exporter and its scrape endpoint.
+//
+// # Exposure model: a separate listener, off by default
+//
+// The scrape endpoint is served ONLY on its own listener, at ListenAddr, and it
+// is never registered on the public API mux. An empty ListenAddr -- the default
+// -- means the endpoint is not served at all: metrics are still collected and
+// still exported over OTLP if that is configured, but nothing answers a scrape.
+//
+// This is the fail-closed direction, and it is chosen over the more convenient
+// alternative of mounting /metrics on the main listener for three reasons.
+//
+//  1. The main listener is the public internet-facing one (ADR-0010 assumes
+//     strangers reach it with curl) and it has no authentication in front of
+//     the unauthenticated publish routes. A metrics endpoint mounted there is
+//     an unauthenticated disclosure of request volumes, error rates, route
+//     inventory, Go runtime internals and process uptime to anyone who asks.
+//  2. Sharing the listener makes the endpoint's reachability implicit. Here it
+//     is a single explicit address an operator had to type, which is also the
+//     thing they can bind to 127.0.0.1 or to a private interface. The insecure
+//     configuration -- reachable from the internet -- cannot be arrived at by
+//     leaving a field blank; it takes a deliberate wildcard bind.
+//  3. Scrape traffic and public traffic get different timeouts and different
+//     firewall rules in every real deployment, which needs two sockets anyway.
+//
+// Enabled and ListenAddr are separate switches because they answer different
+// questions: Enabled selects whether metrics are COLLECTED (and thus available
+// to the OTLP push path), ListenAddr selects whether they are SERVED.
 type PrometheusConfig struct {
-	Enabled    bool   `yaml:"enabled"`
+	Enabled bool `yaml:"enabled"`
+
+	// ListenAddr is the dedicated address for the scrape endpoint, e.g.
+	// "127.0.0.1:9090". Empty (default) means the endpoint is not served.
 	ListenAddr string `yaml:"listen_addr"`
-	Path       string `yaml:"path"`
+
+	// Path is the scrape path on that listener. It must be absolute, and it is
+	// the only path that listener answers; everything else there is a 404.
+	Path string `yaml:"path"`
 }
 
 // OTLPMetricsConfig configures the OTLP metrics exporter.
@@ -323,6 +356,13 @@ type OTLPMetricsConfig struct {
 type TracesConfig struct {
 	Enabled  bool   `yaml:"enabled"`
 	Endpoint string `yaml:"endpoint"`
+
+	// SampleRatio is the head-sampling probability in [0,1], applied only to
+	// traces this process roots; a sampling decision arriving from an upstream
+	// caller is respected instead. It defaults to 1 (sample everything)
+	// because spans here carry only the four access-log fields, so the volume
+	// is one span per request and an operator who wants less can say so.
+	SampleRatio float64 `yaml:"sample_ratio"`
 }
 
 // OnboardingConfig configures owner onboarding (ADR-0012).
