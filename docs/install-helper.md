@@ -119,6 +119,10 @@ It refuses to:
 - run without `--version`. There is no floating default and `latest` is
   rejected by name, because an unpinned install cannot be pinned, audited, or
   reproduced.
+- guess an install directory. `--bin-dir` defaults to `~/.local/bin`, but if
+  `HOME` is unset the script stops and asks for `--bin-dir` rather than falling
+  back to a relative path, which would drop an executable into whatever
+  directory you happened to be standing in.
 - continue past any failed step (`set -eu`).
 - download an executable from a URL, disable TLS verification, or pipe anything
   into a shell.
