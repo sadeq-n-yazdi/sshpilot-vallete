@@ -66,6 +66,35 @@ var (
 	// "your path is wrong".
 	ErrTLSCSRPending = errors.New("httpserver: awaiting an externally signed certificate")
 
+	// ErrACMEAccount is returned when the ACME account cannot be established:
+	// the directory is unreachable, or the CA refuses to register the account
+	// key. It is a startup failure, because an unregistered account can issue
+	// nothing and finding that out at first-handshake time is finding out too
+	// late.
+	ErrACMEAccount = errors.New("httpserver: acme account unavailable")
+
+	// ErrACMETermsNotAccepted is returned when acme mode is selected without
+	// tls.acme.accept_tos.
+	//
+	// RFC 8555 has the client assert agreement to the CA's terms. Asserting it
+	// because an operator picked a mode would be making a commitment on their
+	// behalf, so registration is refused instead. Config validation catches
+	// this first; the provider re-checks so there is no second path to
+	// registering under terms nobody accepted.
+	ErrACMETermsNotAccepted = errors.New("httpserver: acme terms of service not accepted")
+
+	// ErrACMEIssuance is returned when no ACME certificate is available for a
+	// handshake — not issued yet, the order failed, or the challenge path was
+	// asked for a name with no pending validation.
+	//
+	// Like ErrTLSCertificateUnavailable this is mostly a per-handshake failure
+	// rather than a startup one, and that is the fail-closed posture, not a
+	// gap: TLS-ALPN-01 cannot produce a certificate before the listener is up,
+	// so the server accepts connections and REFUSES them until it holds a real
+	// certificate. It never substitutes a self-signed one, which would leave
+	// monitoring showing a healthy service that authenticates nothing.
+	ErrACMEIssuance = errors.New("httpserver: acme certificate unavailable")
+
 	// ErrTLSKeyPermissions is returned when a private key file is readable or
 	// writable by group or other.
 	//

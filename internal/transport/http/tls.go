@@ -142,7 +142,7 @@ func startupProbeRequired(provider CertProvider) bool {
 // alternatives to refusing would be serving a self-signed certificate the
 // operator did not ask for, or no TLS at all. Both are the silent downgrade
 // ADR-0015 exists to prevent.
-func newCertProvider(_ context.Context, cfg *config.Config, now func() time.Time) (CertProvider, error) {
+func newCertProvider(ctx context.Context, cfg *config.Config, now func() time.Time) (CertProvider, error) {
 	switch cfg.TLS.Mode {
 	case "self_signed":
 		return newSelfSignedProvider(cfg, now)
@@ -150,8 +150,26 @@ func newCertProvider(_ context.Context, cfg *config.Config, now func() time.Time
 		return newManualProvider(cfg.TLS.Manual.CertFile, cfg.TLS.Manual.KeyFile)
 	case "csr":
 		return newCSRProvider(cfg)
+	case "acme":
+		return newACMEProviderForSolver(ctx, cfg, now)
 	default:
 		return nil, fmt.Errorf("%w: %q", ErrTLSModeUnsupported, cfg.TLS.Mode)
+	}
+}
+
+// newACMEProviderForSolver dispatches on the configured ACME solver.
+//
+// dns_01 is a valid configuration that this track does not implement, so it
+// refuses rather than silently solving with TLS-ALPN-01 instead. Answering a
+// challenge the operator did not select would issue through a path they may
+// have deliberately ruled out — for example a deployment whose port 443 is not
+// reachable from the CA — and would do it silently.
+func newACMEProviderForSolver(ctx context.Context, cfg *config.Config, now func() time.Time) (CertProvider, error) {
+	switch cfg.TLS.ACME.Solver {
+	case "tls_alpn_01":
+		return newACMEProvider(ctx, cfg, now)
+	default:
+		return nil, fmt.Errorf("%w: acme solver %q", ErrTLSModeUnsupported, cfg.TLS.ACME.Solver)
 	}
 }
 
