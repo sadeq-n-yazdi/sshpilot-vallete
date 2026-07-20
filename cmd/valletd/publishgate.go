@@ -41,6 +41,31 @@ func buildServer(
 	if err != nil {
 		return nil, err
 	}
+
+	// SEAM: the authenticated management surface is mounted but not yet wired.
+	//
+	// httpserver.NewHandler registers the device and public key management
+	// routes unconditionally, and with no httpserver.WithAuthorizer below they
+	// are guarded by an authorizer that refuses every credential. That is the
+	// intended interim state: the routes exist, they are documented, and they
+	// answer 401 to everyone, so no request is ever served unauthenticated.
+	//
+	// Completing the wiring needs an *auth.Guard, which needs the token verifier
+	// and the credential denylist, whose storage adapters are still in review
+	// (the auth/pairing adapters). When they land, this call gains
+	//
+	//	httpserver.WithAuthorizer(guard),
+	//	httpserver.WithDeviceService(deviceSvc),
+	//	httpserver.WithPublicKeyService(keySvc),
+	//
+	// and nothing else here changes. (This comment moved here with the call it
+	// annotates when the publish gate was wired; the publish-side SEAM it used
+	// to sit beside is resolved.)
+	//
+	// The behavior described above is pinned by
+	// TestManagementRoutesFailClosedWithoutAnAuthorizer, which builds a handler
+	// with no authorizer -- this function's exact option set -- and asserts every
+	// management route answers 401.
 	return httpserver.New(cfg, logger, db, publisher, httpserver.WithTelemetry(tel))
 }
 
