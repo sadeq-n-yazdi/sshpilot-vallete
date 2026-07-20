@@ -105,6 +105,30 @@ func New(cfg *config.Config, logger *slog.Logger) *Provider {
 	return p
 }
 
+// NewWithTracerProvider builds a Provider around a caller-supplied tracer
+// provider, sharing the same redaction policy as New.
+//
+// It exists so a caller can observe or redirect spans -- a test that asserts
+// what a span actually carries, or an embedder that already runs its own SDK
+// pipeline -- without this package growing a second configuration path. It has
+// no bearing on metrics or on the scrape endpoint: Registry() is nil, so
+// NewMetricsServer builds nothing from it, and no exposure decision can be
+// reached through this constructor.
+func NewWithTracerProvider(tp trace.TracerProvider, logger *slog.Logger) *Provider {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	if tp == nil {
+		tp = tracenoop.NewTracerProvider()
+	}
+	return &Provider{
+		tracer: tp.Tracer(serviceName),
+		meter:  metricnoop.NewMeterProvider().Meter(serviceName),
+		policy: logging.NewPolicy(),
+		logger: logger,
+	}
+}
+
 // initTraces wires the OTLP trace exporter behind a BATCH span processor.
 //
 // Batching is a security and availability property here, not a throughput
