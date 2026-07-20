@@ -236,12 +236,17 @@ func newSetID() string {
 // and changing visibility are separate operations (C4) and deliberately cannot
 // be smuggled in through this call — there is no request field for either.
 //
-// The cap check and the insert run inside ONE transaction. A check-then-insert
-// split across two auto-committing calls is raceable by construction: two
-// concurrent creates can both read 99 and both insert, landing the owner at
-// 101. Inside a single WithTx the pair is serialized against other writers
-// (SQLite takes a BEGIN IMMEDIATE write lock; see the Store contract), so no
-// interleaving observes a stale count.
+// The cap check and the insert run inside ONE transaction, which takes a
+// per-owner lock before it counts. A check-then-insert split across two
+// auto-committing calls is raceable by construction: two concurrent creates can
+// both read 99 and both insert, landing the owner at 101.
+//
+// One transaction alone does not close that race on every engine. SQLite takes
+// a BEGIN IMMEDIATE write lock and serializes writers database-wide, so there
+// the transaction is enough. PostgreSQL runs at READ COMMITTED, where the count
+// takes no lock and the same interleaving is available inside two concurrent
+// transactions. KeySets.LockOwnerForCreate is what makes the pair atomic on
+// both; see createLocked.
 func (s *Service) Create(ctx context.Context, ownerID domain.OwnerID, name, requestID string) (*domain.KeySet, error) {
 	if ownerID == "" {
 		// An empty owner would produce a set belonging to nobody, reachable by
@@ -288,6 +293,20 @@ func (s *Service) Create(ctx context.Context, ownerID domain.OwnerID, name, requ
 // transaction. It is shared by Create and Rename so the cap cannot be enforced
 // on one path and forgotten on the other.
 func (s *Service) createLocked(ctx context.Context, r repository.Repos, ownerID domain.OwnerID, set *domain.KeySet) error {
+	// The lock comes first, before the count and before any write. Sharing one
+	// transaction is not on its own enough to make the cap hold: on PostgreSQL,
+	// READ COMMITTED lets two concurrent creates both count cap-1 and both
+	// insert. This serializes creates per owner so the count below observes
+	// every create that has committed.
+	//
+	// Taking it here rather than in Create and Rename separately is what keeps
+	// the lock ordering consistent. Both callers reach their first key_sets
+	// write through this function, so every transaction that touches an owner's
+	// sets takes the owner lock before it takes any row lock on key_sets, and
+	// there is no pair of paths that can acquire the two in opposite orders.
+	if err := r.KeySets.LockOwnerForCreate(ctx, ownerID); err != nil {
+		return err
+	}
 	n, err := r.KeySets.CountByOwner(ctx, ownerID)
 	if err != nil {
 		return err
