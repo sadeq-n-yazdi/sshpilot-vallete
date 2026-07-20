@@ -61,7 +61,11 @@ type Server struct {
 // the honest answer for a server with no database. The publisher may NOT be
 // nil: serving the publish endpoint is the whole point of the process, and a
 // server that cannot answer it should never bind a port.
-func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publisher) (*Server, error) {
+// opts carry the authenticated management surface through to NewHandler. They
+// are optional here for the same reason they are optional there: an embedder
+// serving only the publish path needs none of them, and their absence has one
+// fail-closed meaning rather than several ambiguous ones.
+func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publisher, opts ...HandlerOption) (*Server, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
@@ -81,7 +85,7 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publi
 		addr:   cfg.Server.ListenAddr,
 		httpSrv: &http.Server{
 			Addr:              cfg.Server.ListenAddr,
-			Handler:           NewHandler(cfg, logger, pinger, publisher),
+			Handler:           NewHandler(cfg, logger, pinger, publisher, opts...),
 			TLSConfig:         tlsCfg,
 			ReadHeaderTimeout: readHeaderTimeout,
 			ReadTimeout:       readTimeout,
