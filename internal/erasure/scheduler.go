@@ -197,6 +197,19 @@ func (s *Scheduler) pass(ctx context.Context) {
 		s.logger.Error("audit retention purge failed",
 			slog.String("error", err.Error()),
 			slog.Int64("records_deleted", deleted))
+		if deleted > 0 {
+			// A failed pass can still have destroyed records: PurgeOnce
+			// deletes in batches and each batch commits its own transaction,
+			// so a fault on batch five does not roll back batches one to four.
+			// Logging the partial count and stopping there would leave those
+			// rows permanently gone with no audit entry -- the one outcome
+			// this record exists to prevent, and inconsistent with the
+			// shutdown branch above, which records its partial count for
+			// exactly this reason. ctx is normally still live on a storage
+			// fault, and recordPass detaches it with WithoutCancel anyway, so
+			// passing it here is safe even if it is not.
+			s.report(ctx, deleted)
+		}
 	}
 
 	if s.onPass != nil {

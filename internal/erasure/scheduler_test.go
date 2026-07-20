@@ -477,6 +477,77 @@ func TestSchedulerSurvivesAuditRecordFailure(t *testing.T) {
 	}
 }
 
+// TestSchedulerAuditsPartialDeletionBeforeFailure is the accountability proof
+// for a pass that fails midway.
+//
+// PurgeOnce deletes in batches and each batch commits on its own, so a pass
+// that dies on a later batch has still permanently destroyed the rows the
+// earlier ones removed. Those deletions must be recorded: a failed pass is
+// exactly when the audit trail is most likely to be the only surviving
+// evidence that the records existed.
+func TestSchedulerAuditsPartialDeletionBeforeFailure(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("storage exploded mid-pass")
+	var calls atomic.Int64
+	repo := &scriptedAudit{hook: func(context.Context, time.Time, int) (int64, error) {
+		switch calls.Add(1) {
+		case 1:
+			return 2, nil // a full batch commits, so the pass continues
+		case 2:
+			return 0, sentinel // and then the storage layer fails
+		default:
+			return 0, nil // later passes are idle and record nothing
+		}
+	}}
+	sink := &recordingSink{}
+
+	p, err := NewPurger(repo, WithBatchSize(2), WithMaxPerRun(100), withClock(staticClock(testNow)))
+	if err != nil {
+		t.Fatalf("NewPurger: %v", err)
+	}
+	passes := make(chan passResult, 8)
+	s, err := NewScheduler(p, time.Millisecond, testLogger(),
+		WithAuditSink(sink),
+		withPassHook(func(d int64, err error) {
+			select {
+			case passes <- passResult{d, err}:
+			default:
+			}
+		}))
+	if err != nil {
+		t.Fatalf("NewScheduler: %v", err)
+	}
+	_, stop := runInBackground(t, s)
+	defer stop()
+
+	first := awaitPass(t, passes)
+	if !errors.Is(first.err, sentinel) {
+		t.Fatalf("first pass err = %v, want the injected storage error", first.err)
+	}
+	if first.deleted != 2 {
+		t.Fatalf("first pass deleted = %d, want 2 committed before the failure", first.deleted)
+	}
+	awaitPass(t, passes) // a later, idle pass: it must add nothing
+	stop()
+
+	recs := sink.snapshot()
+	if len(recs) != 1 {
+		t.Fatalf("appended %d audit records, want exactly 1 for the partially-completed pass", len(recs))
+	}
+	rec := recs[0]
+	if rec.Action != domain.AuditActionAuditPurged {
+		t.Errorf("action = %q, want %q", rec.Action, domain.AuditActionAuditPurged)
+	}
+	if got := rec.Metadata["count"]; got != "2" {
+		t.Errorf("count detail = %q, want \"2\"; the record must account for the rows the failed pass actually destroyed", got)
+	}
+	wantCutoff := testNow.Add(-DefaultRetention).UTC().Format(time.RFC3339)
+	if got := rec.Metadata["to"]; got != wantCutoff {
+		t.Errorf("cutoff detail = %q, want %q", got, wantCutoff)
+	}
+}
+
 // awaitPass waits for the next completed pass, failing the test on timeout.
 func awaitPass(t *testing.T, ch <-chan passResult) passResult {
 	t.Helper()
