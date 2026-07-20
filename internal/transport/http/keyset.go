@@ -25,6 +25,8 @@ type KeySetService interface {
 	List(ctx context.Context, ownerID domain.OwnerID) ([]domain.KeySet, error)
 	Rename(ctx context.Context, ownerID domain.OwnerID, id domain.KeySetID, name, requestID string) (*domain.KeySet, error)
 	Delete(ctx context.Context, ownerID domain.OwnerID, id domain.KeySetID, confirm bool, requestID string) error
+	SetDefault(ctx context.Context, ownerID domain.OwnerID, id domain.KeySetID, requestID string) (*domain.KeySet, error)
+	SetVisibility(ctx context.Context, ownerID domain.OwnerID, id domain.KeySetID, v domain.Visibility, requestID string) (*domain.KeySet, error)
 }
 
 // keySetPathValue is the wildcard segment naming a key set in the route
@@ -66,6 +68,19 @@ type renameKeySetRequest struct {
 // deletes more than a well-formed one would.
 type deleteKeySetRequest struct {
 	Confirm bool `json:"confirm"`
+}
+
+// setVisibilityRequest is the body of a visibility change.
+//
+// Visibility is a required positive assertion, and every way of not making it
+// refuses. An absent body, an absent field, an empty string, and a value
+// outside the closed {public, protected} set all fail domain.Visibility.IsValid
+// in the service and are answered 400; a body that will not decode, or that
+// carries an unrecognized field, is refused here. The zero value is not a
+// visibility, so there is no shape of malformed request that publishes a set —
+// the same fail-closed shape the delete confirmation uses.
+type setVisibilityRequest struct {
+	Visibility string `json:"visibility"`
 }
 
 // keySetResponse is the wire form of a key set.
@@ -285,6 +300,91 @@ func deleteKeySetHandler(svc KeySetService, logger *slog.Logger) ScopedHandler {
 			slog.String("key_set_id", string(id)),
 		)
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// setDefaultKeySetHandler designates one of the token owner's sets as the
+// default that bare GET /{handle} resolves to.
+//
+// The route it is mounted on declares AccountAccess, NOT KeySetAccess, and the
+// divergence from rename and delete is the security decision on this handler.
+// Designating a default writes the PREVIOUS default's row as well — the
+// repository clears is_default on it in the same transaction — so a set-bound
+// token reaching this route would mutate a set it was never scoped to. It also
+// repoints the account's bare handle, which is account-wide state rather than
+// anything belonging to the addressed set. A token confined to one set must be
+// able to do neither, so this route addresses the account and a resource-bound
+// token is refused before the handler runs.
+//
+// There is no request body. The set is named by the path, and the operation has
+// no other input, so there is no field a client could send that this handler
+// would have to decide whether to trust.
+func setDefaultKeySetHandler(svc KeySetService, logger *slog.Logger) ScopedHandler {
+	return func(w http.ResponseWriter, r *http.Request, a *auth.Authorization) {
+		if svc == nil {
+			writeKeySetMisconfigured(w, r, logger)
+			return
+		}
+
+		// Read through the same keySetPathValue constant the access functions
+		// use, so the authorized set and the acted-on set cannot diverge.
+		id := domain.KeySetID(r.PathValue(keySetPathValue))
+		set, err := svc.SetDefault(r.Context(), a.Owner(), id, RequestIDFromContext(r.Context()))
+		if err != nil {
+			writeKeySetError(w, r, logger, err, "key set default designation failed")
+			return
+		}
+
+		logger.LogAttrs(r.Context(), slog.LevelInfo, "key set default changed",
+			slog.String("request_id", RequestIDFromContext(r.Context())),
+			slog.String("key_set_id", string(set.ID)),
+		)
+		writeJSON(w, http.StatusOK, toKeySetResponse(*set))
+	}
+}
+
+// setVisibilityKeySetHandler moves one of the token owner's sets between public
+// and protected.
+//
+// This one DOES declare KeySetAccess, unlike the default designation above. The
+// repository's Update is scoped to the addressed row and touches nothing else,
+// so the blast radius is exactly the set the token names — the same shape
+// rename has, and the reason a set-bound token may perform it.
+//
+// The value is validated by the service against the closed domain.Visibility
+// set, not here. A second place that decides which visibilities exist is a
+// second place that can be made to disagree with the first.
+func setVisibilityKeySetHandler(svc KeySetService, logger *slog.Logger) ScopedHandler {
+	return func(w http.ResponseWriter, r *http.Request, a *auth.Authorization) {
+		if svc == nil {
+			writeKeySetMisconfigured(w, r, logger)
+			return
+		}
+
+		// The body is required, and an absent one is an error rather than a
+		// tolerated empty request: unlike the delete confirmation, there is no
+		// safe default visibility this handler could fall back to — protected
+		// would silently narrow and public would silently publish.
+		var body setVisibilityRequest
+		if err := decodeKeySetJSON(w, r, &body); err != nil {
+			writeKeySetStatus(w, http.StatusBadRequest)
+			return
+		}
+
+		id := domain.KeySetID(r.PathValue(keySetPathValue))
+		set, err := svc.SetVisibility(r.Context(), a.Owner(), id,
+			domain.Visibility(body.Visibility), RequestIDFromContext(r.Context()))
+		if err != nil {
+			writeKeySetError(w, r, logger, err, "key set visibility change failed")
+			return
+		}
+
+		logger.LogAttrs(r.Context(), slog.LevelInfo, "key set visibility changed",
+			slog.String("request_id", RequestIDFromContext(r.Context())),
+			slog.String("key_set_id", string(set.ID)),
+			slog.String("visibility", string(set.Visibility)),
+		)
+		writeJSON(w, http.StatusOK, toKeySetResponse(*set))
 	}
 }
 
