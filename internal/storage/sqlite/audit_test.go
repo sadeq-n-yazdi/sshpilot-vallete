@@ -851,6 +851,12 @@ func TestAuditPseudonymizeRewritesOnlyIdentity(t *testing.T) {
 	if got.TargetID != "key-1" {
 		t.Errorf("TargetID = %q, want key-1: a bystander identity was erased", got.TargetID)
 	}
+	// Metadata survives verbatim. That cuts both ways, and the seeded record
+	// says so deliberately: the surviving "fingerprint" names a specific key,
+	// and therefore its owner, after the actor id has been tombstoned. Erasure
+	// covers the identifier columns only. See the limits section in the
+	// internal/erasure package doc; this assertion is the pin on the current
+	// behavior, not an endorsement of it.
 	if !reflect.DeepEqual(got.Metadata, rec.Metadata) {
 		t.Errorf("Metadata = %v, want %v", got.Metadata, rec.Metadata)
 	}
