@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/safetext"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
@@ -439,15 +440,19 @@ func (p *digitalOceanProvider) do(ctx context.Context, method, path string, body
 // The message is truncated because it is remote input, treated as a bounded
 // diagnostic rather than as trusted text. DigitalOcean never echoes the bearer
 // token in an error, and nothing here would put it there if it did.
+//
+// The bound goes through [safetext.Bound] rather than a slice expression. A
+// fixed BYTE cut can land in the middle of a multi-byte UTF-8 sequence and
+// leave a fragment that is not valid UTF-8, which the JSON log encoder
+// downstream then mangles. No credential is spliced into this message before
+// the cut, so there is no scrub whose ordering against the truncation matters
+// here.
 func digitalOceanError(status int, raw []byte) error {
 	var env digitalOceanErrorResponse
 	if err := json.Unmarshal(raw, &env); err != nil || env.ID == "" {
 		return fmt.Errorf("request rejected (http %d)", status)
 	}
-	msg := env.Message
-	if len(msg) > 200 {
-		msg = msg[:200]
-	}
+	msg := safetext.Bound(env.Message, maxAPIMessageBytes)
 	return fmt.Errorf("request rejected (http %d, id %s): %s", status, env.ID, msg)
 }
 
