@@ -17,6 +17,7 @@ type handlerOptions struct {
 	authorizer Authorizer
 	devices    DeviceService
 	keys       PublicKeyService
+	keySets    KeySetService
 	telemetry  *telemetry.Provider
 }
 
@@ -54,6 +55,11 @@ func WithTelemetry(p *telemetry.Provider) HandlerOption {
 // WithPublicKeyService supplies the public key management service.
 func WithPublicKeyService(s PublicKeyService) HandlerOption {
 	return func(o *handlerOptions) { o.keys = s }
+}
+
+// WithKeySetService supplies the key set management service.
+func WithKeySetService(s KeySetService) HandlerOption {
+	return func(o *handlerOptions) { o.keySets = s }
 }
 
 // managementGuardian builds the Guardian for the management routes.

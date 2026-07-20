@@ -183,6 +183,7 @@ func Seed(ctx context.Context, store repository.Store, p Params) (Result, error)
 			DeviceName: deviceName,
 			Key:        *parsed,
 			Now:        p.Now,
+			Guard:      p.Guard,
 		})
 		if err != nil {
 			return err
@@ -205,6 +206,12 @@ type AddKeyParams struct {
 	DeviceName string
 	Key        keys.ParsedKey
 	Now        time.Time
+
+	// Guard checks DeviceName before the device row is written. It is
+	// required: a nil Guard refuses every name rather than passing them
+	// through, so a caller that forgets to supply one gets a failed AddKey
+	// instead of an unchecked device name.
+	Guard *nameguard.Guard
 }
 
 // AddKey creates a device, stores the parsed public key on it, and makes the
@@ -224,18 +231,23 @@ func AddKey(ctx context.Context, r repository.Repos, p AddKeyParams) (Result, er
 		Fingerprint: p.Key.Fingerprint,
 	}
 
-	// SEAM FOR C1 (device management API): device names are in ADR-0017's
-	// scope but are NOT guarded here. Fb4 deliberately stops at handles and
-	// set names because the device management surface is C1's, and two agents
-	// editing the same create path would collide. The name below is
-	// DefaultDeviceName or an operator-supplied bring-up label, not a
-	// user-chosen public identifier.
+	// The seam this comment used to describe is closed. Device names are in
+	// ADR-0017's scope ("applied to handles, key-set names, and device
+	// names"), and the check lives here, at the write, rather than in Seed:
+	// AddKey is exported and callable on its own, so a guard placed only in
+	// Seed would be a control the other caller walks past.
 	//
-	// To close this seam, add to AddKeyParams a Guard (as Params has) and call
-	// guard.Check(nameguard.KindDeviceName, nameguard.OpCreate, p.DeviceName)
-	// here, plus OpRename wherever DeviceRepository.Rename is invoked.
-	// KindDeviceName is already implemented and tested in nameguard; nothing
-	// else is needed.
+	// Unlike DefaultSetName, DefaultDeviceName needs no carve-out. "default"
+	// is itself a curated routing term, so checking the system's own set-name
+	// fallback would fail every bootstrap; "bootstrap" is not on any curated
+	// list, so the fallback passes the same check an operator-supplied name
+	// does and there is no branch here that skips it. That is verified by
+	// test rather than asserted: TestDefaultDeviceNameIsNotBlocked fails if a
+	// future list edit makes the fallback unusable, which is the failure this
+	// paragraph would otherwise be hiding.
+	if err := p.Guard.Check(nameguard.KindDeviceName, nameguard.OpCreate, p.DeviceName); err != nil {
+		return Result{}, fmt.Errorf("bootstrap: device name: %w", err)
+	}
 	if err := r.Devices.Create(ctx, &domain.Device{
 		ID:        res.DeviceID,
 		OwnerID:   p.OwnerID,

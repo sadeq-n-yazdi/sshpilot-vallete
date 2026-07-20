@@ -108,6 +108,7 @@ func (f *fixture) addKey(ownerID domain.OwnerID, setID domain.KeySetID, comment 
 			DeviceName: "test-device",
 			Key:        parsed,
 			Now:        testNow,
+			Guard:      mustGuard(f.t),
 		})
 		return addErr
 	})
