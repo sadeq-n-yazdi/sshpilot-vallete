@@ -3,9 +3,13 @@ package httpserver
 import (
 	"bytes"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/api/openapi"
@@ -316,6 +320,56 @@ func TestDocsExposeNoParameterizedFetch(t *testing.T) {
 			if bytes.Contains(rr.Body.Bytes(), []byte("root:")) {
 				t.Error("response body looks like /etc/passwd")
 			}
+		})
+	}
+}
+
+// TestDocsServingPathNeverTouchesTheFilesystem is a mechanism check, and it
+// exists because the byte-identity test above is not one.
+//
+// That test compares the served bytes with the file on disk, which a handler
+// that read the file at request time would also satisfy — passing while doing
+// precisely the thing the design forbids. So this reads the source instead and
+// asserts the serving path cannot reach the filesystem at all: no os or
+// path/filepath import, and no call to a file-opening function. Replacing the
+// embed with a disk read then fails here rather than sailing through green.
+func TestDocsServingPathNeverTouchesTheFilesystem(t *testing.T) {
+	t.Parallel()
+
+	forbiddenPackages := map[string]bool{
+		`"os"`: true, `"io/ioutil"`: true, `"path/filepath"`: true, `"embed"`: true,
+	}
+	forbiddenCalls := map[string]bool{
+		"ReadFile": true, "Open": true, "OpenFile": true, "ReadDir": true,
+		"Stat": true, "Sub": true, "ServeFile": true, "FileServer": true, "Dir": true,
+	}
+
+	for _, name := range []string{"docs.go", "docsui.go"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, filepath.Join(sourceDir(t), name), nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", name, err)
+			}
+			for _, imp := range file.Imports {
+				if forbiddenPackages[imp.Path.Value] {
+					t.Errorf("%s imports %s; the contract is embedded, never read at request time",
+						name, imp.Path.Value)
+				}
+			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && forbiddenCalls[sel.Sel.Name] {
+					t.Errorf("%s calls %s at %s; the serving path must not open anything",
+						name, sel.Sel.Name, fset.Position(call.Pos()))
+				}
+				return true
+			})
 		})
 	}
 }
