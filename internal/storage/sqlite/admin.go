@@ -15,7 +15,7 @@ import (
 // principals authorized to curate the reserved-identifier lists (ADR-0017).
 //
 // Every method is unscoped, because an administrator belongs to no owner; see
-// repository.AdministratorRepository and migration0006Administrators.
+// repository.AdministratorRepository and migration0009Administrators.
 //
 // # Reads validate what they decode
 //
