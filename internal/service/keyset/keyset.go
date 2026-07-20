@@ -1,5 +1,6 @@
 // Package keyset is the owner-facing key set management service: create, list,
-// rename, and delete named key sets (ADR-0016).
+// rename, and delete named key sets, designate which one is the default, and
+// move a set between public and protected (ADR-0016).
 //
 // # The owner is a parameter, never a lookup
 //
@@ -36,9 +37,14 @@
 //
 // # Audit is not optional
 //
-// Create, Rename, and Delete all change what a published set resolves to, so
-// each emits an audit record (ADR-0007). A failure to record is returned to the
-// caller rather than swallowed.
+// Every exported mutation changes what a published set resolves to, or who may
+// resolve it, so each emits an audit record (ADR-0007). A failure to record is
+// returned to the caller rather than swallowed.
+//
+// SetVisibility records BOTH directions. protected→public exposes the
+// handle→keys association the owner had chosen to restrict, and public→protected
+// breaks consumers still polling the URL; neither is the harmless one, so there
+// is no direction this package records more quietly than the other.
 package keyset
 
 import (
@@ -527,6 +533,170 @@ func (s *Service) Delete(ctx context.Context, ownerID domain.OwnerID, id domain.
 	return s.emit(ctx, domain.AuditActionKeySetDeleted, ownerID, id, details)
 }
 
+// SetDefault designates one of the owner's sets as the default — the set bare
+// GET /{handle} resolves to (ADR-0016).
+//
+// # Exactly one default, enforced by the schema
+//
+// The service does NOT clear the previous default itself. The repository's
+// SetDefault clears and sets inside one transaction, in that order, because the
+// schema carries a partial unique index on (owner_id) WHERE is_default = 1: a
+// set-before-clear would trip the index, and a clear that committed without its
+// set would leave the owner with no default at all. Two defaults make bare
+// GET /{handle} non-deterministic and zero make it dangle, so both failures are
+// removed at the storage layer rather than re-implemented here — a second place
+// that moves the designation is a second place that can be made to disagree
+// with the index.
+//
+// # Why the live read still has to happen here
+//
+// The repository's SetDefault is scoped by id AND owner_id but carries no state
+// predicate, so on its own it would happily designate a quarantined tombstone.
+// A tombstone is a reserved name, not an addressable set; making one the
+// default would point bare GET /{handle} at a row that no longer publishes
+// anything. The live() read below is the only thing that refuses it, and it
+// runs inside the same transaction as the write so a rename cannot quarantine
+// the row in between.
+//
+// Designating a new default is also what frees the previous one for deletion:
+// Delete refuses the default set, and the refusal follows the designation.
+func (s *Service) SetDefault(ctx context.Context, ownerID domain.OwnerID, id domain.KeySetID, requestID string) (*domain.KeySet, error) {
+	if ownerID == "" {
+		return nil, fmt.Errorf("keyset: missing owner: %w", domain.ErrInvalidInput)
+	}
+	if id == "" {
+		// An empty id names no set, and collapses into the verdict a wrong one
+		// gets so a caller cannot learn which shapes are well formed.
+		return nil, ErrNotFound
+	}
+
+	var (
+		set     *domain.KeySet
+		details audit.Details
+	)
+	now := s.now().UTC()
+	if err := s.store.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
+		// The owner-scoped read establishes that this caller may act on this set
+		// at all. Everything below is reached only after it matched a row of the
+		// caller's own.
+		target, err := live(r.KeySets.Get(ctx, ownerID, id))
+		if err != nil {
+			return err
+		}
+
+		// The outgoing default is read for the audit record, not for a decision:
+		// nothing below branches on it, and an owner with no default yet is not
+		// an error. It is read inside the transaction so the recorded "from" is
+		// the designation this call actually replaced.
+		previous, err := r.KeySets.GetDefault(ctx, ownerID)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return err
+		}
+		from := ""
+		if previous != nil {
+			from = previous.Name
+		}
+		// The details are built before the write, so a value the audit screen
+		// refuses aborts the transaction rather than leaving a committed
+		// designation with no record of what it moved.
+		if details, err = defaultDetails(from, target.Name, requestID); err != nil {
+			return err
+		}
+
+		if err := r.KeySets.SetDefault(ctx, ownerID, id); err != nil {
+			return err
+		}
+		// The struct is corrected to match what was persisted, so the value
+		// returned is the row that now exists rather than the one just read.
+		target.IsDefault = true
+		target.UpdatedAt = now
+		set = target
+		return nil
+	}); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	if err := s.emit(ctx, domain.AuditActionKeySetDefaultChanged, ownerID, id, details); err != nil {
+		return nil, err
+	}
+	return set, nil
+}
+
+// SetVisibility moves one of the owner's sets between public and protected
+// (ADR-0010, refined per key set by ADR-0016; publish semantics in ADR-0019).
+//
+// Both directions are access-affecting and both are audited. protected→public
+// exposes the handle→keys association the owner had chosen to restrict;
+// public→protected breaks consumers still polling the URL. Neither is the
+// harmless direction, so neither is recorded more quietly than the other.
+//
+// An unknown visibility is refused rather than persisted. The check fails
+// closed in the same shape Delete's confirmation does: the caller must
+// positively supply one of the two known values, and the zero value — what an
+// absent or malformed field decodes to — is not one of them, so a request that
+// failed to say what it wanted changes nothing.
+//
+// As in SetDefault, the live() read is what keeps a quarantined tombstone
+// unaddressable: the repository's Update is owner-scoped but has no state
+// predicate, so it would rewrite a tombstone's visibility. A reserved name has
+// no visibility worth changing — nothing resolves through it.
+func (s *Service) SetVisibility(ctx context.Context, ownerID domain.OwnerID, id domain.KeySetID, v domain.Visibility, requestID string) (*domain.KeySet, error) {
+	if ownerID == "" {
+		return nil, fmt.Errorf("keyset: missing owner: %w", domain.ErrInvalidInput)
+	}
+	if id == "" {
+		return nil, ErrNotFound
+	}
+	// Validated before the transaction opens, so a refused value costs no write
+	// lock and never reaches storage.
+	if !v.IsValid() {
+		// The rejected value is not quoted back; this error is destined for a
+		// log and carries no content it does not need.
+		return nil, fmt.Errorf("keyset: unknown visibility: %w", domain.ErrInvalidInput)
+	}
+
+	var (
+		set     *domain.KeySet
+		details audit.Details
+	)
+	now := s.now().UTC()
+	if err := s.store.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
+		target, err := live(r.KeySets.Get(ctx, ownerID, id))
+		if err != nil {
+			return err
+		}
+		if details, err = visibilityDetails(target.Visibility, v, target.Name, requestID); err != nil {
+			return err
+		}
+
+		// A no-op change is written and recorded like any other. Refusing it
+		// would answer "you already had that value", which is a fact about the
+		// set's state reported through a path whose only other answer is the
+		// collapsed 404 — and an owner re-asserting a visibility is entitled to
+		// see it recorded as asserted.
+		target.Visibility = v
+		target.UpdatedAt = now
+		if err := r.KeySets.Update(ctx, target); err != nil {
+			return err
+		}
+		set = target
+		return nil
+	}); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+
+	if err := s.emit(ctx, domain.AuditActionKeySetVisibilityChanged, ownerID, id, details); err != nil {
+		return nil, err
+	}
+	return set, nil
+}
+
 // live folds a quarantined tombstone into the same ErrNotFound a missing row
 // gets. A tombstone is a reserved name, not an addressable set: answering
 // distinctly would make an owner's rename history observable as a third answer,
@@ -587,6 +757,50 @@ func renameDetails(from, to, requestID string) (audit.Details, error) {
 	d = d.Set(audit.DetailFrom, from).Set(audit.DetailTo, to)
 	if err := d.Err(); err != nil {
 		return audit.Details{}, fmt.Errorf("keyset: name cannot be recorded: %w", domain.ErrInvalidInput)
+	}
+	return d, nil
+}
+
+// defaultDetails builds the audit details for a change of designated default,
+// recording which set took the designation and, when there was one, which set
+// gave it up. Both are set names — the public second segment of a /{handle}/{set}
+// URL — so neither is a secret, and a record naming only the new default would
+// leave an incident review unable to tell what bare GET /{handle} used to serve.
+//
+// An owner designating a first default has no predecessor to name, and the
+// audit screen refuses an empty value, so the from key is omitted rather than
+// set to a placeholder that a reader could mistake for a set called "".
+func defaultDetails(from, to, requestID string) (audit.Details, error) {
+	d, err := setDetails(to, requestID)
+	if err != nil {
+		return audit.Details{}, err
+	}
+	if from != "" {
+		d = d.Set(audit.DetailFrom, from)
+	}
+	d = d.Set(audit.DetailTo, to)
+	if err := d.Err(); err != nil {
+		return audit.Details{}, fmt.Errorf("keyset: name cannot be recorded: %w", domain.ErrInvalidInput)
+	}
+	return d, nil
+}
+
+// visibilityDetails builds the audit details for a visibility change, recording
+// the before/after pair alongside the set it applied to. The pair is what makes
+// the record answer the question an incident review actually asks — which
+// direction the set moved — rather than only its resting state.
+//
+// Both values come from the closed Visibility set, never from caller text.
+func visibilityDetails(from, to domain.Visibility, name, requestID string) (audit.Details, error) {
+	d, err := setDetails(name, requestID)
+	if err != nil {
+		return audit.Details{}, err
+	}
+	d = d.Set(audit.DetailVisibility, string(to)).
+		Set(audit.DetailFrom, string(from)).
+		Set(audit.DetailTo, string(to))
+	if err := d.Err(); err != nil {
+		return audit.Details{}, fmt.Errorf("keyset: visibility cannot be recorded: %w", domain.ErrInvalidInput)
 	}
 	return d, nil
 }

@@ -237,6 +237,23 @@ func writeDeviceError(w http.ResponseWriter, r *http.Request, logger *slog.Logge
 	switch {
 	case errors.Is(err, device.ErrNotFound):
 		writeDeviceStatus(w, http.StatusNotFound)
+	case errors.Is(err, domain.ErrBlockedName):
+		// A blocked name is a client error, not a server fault: without this
+		// arm it would fall to the default and answer 500 while logging the
+		// error text. 400 is the honest answer and it is also the quiet one —
+		// the body is the same bare {"status":"error"} every other refusal
+		// sends, so the response says a name was refused and nothing about
+		// which curated term refused it.
+		//
+		// nameguard records a BOUNDARY OBLIGATION that ErrBlockedName render
+		// identically to ErrConflict, so that "reserved" and "already taken"
+		// are indistinguishable. That obligation is about the GLOBAL handle
+		// namespace, where telling the two apart is an oracle over names being
+		// held back. A device name is a private per-owner label: it has no
+		// uniqueness constraint, so there is no ErrConflict here to be
+		// confused with and no cross-owner namespace to enumerate. When a
+		// handle-creation route is exposed, that route owes the obligation.
+		writeDeviceStatus(w, http.StatusBadRequest)
 	case errors.Is(err, domain.ErrInvalidInput):
 		writeDeviceStatus(w, http.StatusBadRequest)
 	default:

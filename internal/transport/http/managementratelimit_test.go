@@ -79,7 +79,7 @@ func newMgmtEnv(t *testing.T, limit int) *mgmtEnv {
 	if err != nil {
 		t.Fatalf("audit.NewEmitter: %v", err)
 	}
-	devSvc, err := device.New(env.devices, emitter, device.WithClock(func() time.Time { return env.now }))
+	devSvc, err := device.New(env.devices, emitter, mustGuard(t), device.WithClock(func() time.Time { return env.now }))
 	if err != nil {
 		t.Fatalf("device.New: %v", err)
 	}

@@ -8,21 +8,28 @@ import (
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/device"
 )
 
 func TestNewRequiresCollaborators(t *testing.T) {
 	t.Parallel()
 
-	if _, err := device.New(nil, &fakeAuditor{}); !errors.Is(err, device.ErrMissingDependency) {
+	if _, err := device.New(nil, &fakeAuditor{}, mustGuard(t)); !errors.Is(err, device.ErrMissingDependency) {
 		t.Errorf("nil repository: err = %v, want ErrMissingDependency", err)
 	}
 	// A Service with no auditor would register and revoke devices leaving no
 	// trace, which is the one failure the audit log exists to prevent.
-	if _, err := device.New(newFakeRepo(), nil); !errors.Is(err, device.ErrMissingDependency) {
+	if _, err := device.New(newFakeRepo(), nil, mustGuard(t)); !errors.Is(err, device.ErrMissingDependency) {
 		t.Errorf("nil auditor: err = %v, want ErrMissingDependency", err)
 	}
+	// A Service with no guard would accept every name the charset rule allows,
+	// leaving the blocklist enforced nowhere. It must fail to build rather than
+	// serve unchecked registrations.
 	if _, err := device.New(newFakeRepo(), &fakeAuditor{}, nil); !errors.Is(err, device.ErrMissingDependency) {
+		t.Errorf("nil guard: err = %v, want ErrMissingDependency", err)
+	}
+	if _, err := device.New(newFakeRepo(), &fakeAuditor{}, mustGuard(t), nil); !errors.Is(err, device.ErrMissingDependency) {
 		t.Errorf("nil option: err = %v, want ErrMissingDependency", err)
 	}
 }
@@ -368,13 +375,31 @@ func newService(t *testing.T) (*fakeRepo, *fakeAuditor, *device.Service) {
 func mustService(t *testing.T, repo *fakeRepo, auditor device.Auditor) *device.Service {
 	t.Helper()
 
-	svc, err := device.New(repo, auditor, device.WithClock(func() time.Time {
+	svc, err := device.New(repo, auditor, mustGuard(t), device.WithClock(func() time.Time {
 		return time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
 	}))
 	if err != nil {
 		t.Fatalf("device.New: %v", err)
 	}
 	return svc
+}
+
+// mustGuard builds a guard over the REAL curated lists, not a stub.
+//
+// A fake matcher seeded with one made-up term would prove the call is wired and
+// nothing about what it enforces: the folding tables, the per-category match
+// modes and the allowlist precedence are the substance of this control, and a
+// stub replaces exactly those. Using the production lists means these tests
+// fail if the wiring breaks OR if the normalization stops catching an evasion
+// it used to catch.
+func mustGuard(t *testing.T) *nameguard.Guard {
+	t.Helper()
+
+	g, err := nameguard.Default()
+	if err != nil {
+		t.Fatalf("nameguard.Default: %v", err)
+	}
+	return g
 }
 
 func assertEvent(t *testing.T, a *fakeAuditor, action domain.AuditAction, actor, target string) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -70,6 +71,14 @@ func (a *recordingAuditor) fail(err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.err = err
+}
+
+// captured returns a copy of the events emitted so far, for a test that needs
+// to assert on what a record carries and not only on which actions were taken.
+func (a *recordingAuditor) captured() []audit.Event {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.events)
 }
 
 func (a *recordingAuditor) actions() []domain.AuditAction {
