@@ -269,8 +269,13 @@ func newOriginCAProviderWithClient(
 	// That keeps the startup probe meaningful: an operator with a bad
 	// credential, an unreachable API or a hostname outside their zone finds out
 	// at startup instead of from a client's failed handshake.
+	//
+	// It runs on the STARTUP context, not the detached one, so it is bounded by
+	// the caller's startup deadline. Using the detached context here would leave
+	// the first issuance bounded only by the HTTP client timeout, letting an
+	// unresponsive API hold process start open past the deadline New set.
 	if p.current == nil {
-		if err := p.obtain(runCtx); err != nil {
+		if err := p.obtain(ctx); err != nil {
 			cancel()
 			return nil, err
 		}

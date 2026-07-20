@@ -457,3 +457,30 @@ func TestConfigRefusesOriginModeWithoutTrustedProxies(t *testing.T) {
 		t.Errorf("error must name the field an operator has to fix: %v", err)
 	}
 }
+
+// TestOriginCAWiringResolvesCredentialsThroughTheRealPath exercises
+// newCertProvider — the dispatch case and builtinSecretResolver — rather than
+// the constructor the other tests inject into.
+//
+// Every other test in this file reaches newOriginCAProviderWithClient directly
+// with a stub resolver, so a regression in the mode dispatch or in the way the
+// secret resolver is built would pass all of them silently. This one drives an
+// unset reference through the production path and requires the credential
+// failure to surface as ErrOriginCACredential.
+func TestOriginCAWiringResolvesCredentialsThroughTheRealPath(t *testing.T) {
+	t.Parallel()
+
+	cfg := originTestConfig(t)
+	// Deliberately unset: resolving it must fail, not fall back to a default.
+	cfg.TLS.CloudflareOrigin.APITokenRef = "env:VALLET_TEST_UNSET_ORIGIN_CA_KEY"
+
+	// Only the error is asserted. newCertProvider returns the concrete provider
+	// types of its cases, so on failure the interface holds a typed nil and is
+	// itself non-nil — a property shared with the self_signed, manual and csr
+	// cases, all of which callers handle by checking the error first. Asserting
+	// interface nil-ness here would encode a claim the package does not make.
+	_, err := newCertProvider(context.Background(), cfg, time.Now)
+	if !errors.Is(err, ErrOriginCACredential) {
+		t.Fatalf("err = %v, want ErrOriginCACredential", err)
+	}
+}

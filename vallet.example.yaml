@@ -54,6 +54,12 @@ tls:
     # that list. Do not use this mode for a directly-reachable origin -- use
     # acme (Let's Encrypt) instead, which issues publicly-trusted certificates.
     #
+    # HEALTH CHECKS: that withholding applies to every direct peer, loopback
+    # included. A Kubernetes httpGet probe or a load-balancer health check that
+    # dials the pod/instance IP will fail its TLS handshake and the pod will
+    # never become ready. Either add the probe source to server.trusted_proxies
+    # or use a tcpSocket/exec probe, which performs no handshake.
+    #
     # Required for cloudflare_origin mode. This is Cloudflare's dedicated
     # "Origin CA Key" (its value starts "v1.0-"), not an ordinary API token; a
     # scoped API token also works. e.g. env:VALLET_CF_ORIGIN_CA_KEY

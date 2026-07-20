@@ -72,6 +72,14 @@ publish path while remaining strong; the policy is config-tunable upward.
     defaults to **365 days**, deliberately not Cloudflare's 5475-day maximum,
     so the §4 renew-ahead machinery actually re-keys rather than leaving a
     private key on disk for fifteen years.
+  - **Operational consequence — health checks.** Withholding on every handshake
+    applies to *all* direct peers, including a Kubernetes `httpGet` probe or a
+    load-balancer health check that dials the pod/instance IP rather than
+    passing through Cloudflare. Loopback is refused too; the gate has no
+    exemptions. Operators must either add the probe source to
+    `server.trusted_proxies` or use a `tcpSocket`/`exec` probe, which completes
+    no TLS handshake. This is stated here because the failure mode (a pod that
+    never becomes ready) reads as a bug rather than as the policy working.
 - **Operator-provided cert + key** — load a supplied certificate and private
   key; the operator owns renewal.
 - **Generate CSR for external signing** — the app generates a private key and a
