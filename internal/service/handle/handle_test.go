@@ -235,6 +235,111 @@ func TestRenameCyclingCannotSquatNames(t *testing.T) {
 	}
 }
 
+// TestReclaimIsAllowedAtTheCap covers the one rename the cap must not refuse.
+//
+// The cap bounds how many name-claims an owner holds. Taking back their own
+// quarantined hold does not add one — the row is already held and already
+// counted, and it is reactivated in place — so refusing it would strand an
+// owner at the limit: unable to return to a name they still hold, and unable to
+// free a slot, since only the elapsed-quarantine sweep releases one.
+func TestReclaimIsAllowedAtTheCap(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t, handle.WithMaxHeldNames(3))
+	f.seed(ownerA, "n0")
+
+	// Two renames put the owner exactly at the cap: n0 and n1 held, n2 active.
+	for i := 1; i <= 2; i++ {
+		if _, err := f.svc.Rename(ctx, ownerA, fmt.Sprintf("n%d", i), "req"); err != nil {
+			t.Fatalf("Rename %d: %v", i, err)
+		}
+	}
+	held, err := f.store.Repos().Handles.ListByOwner(ctx, ownerA)
+	if err != nil {
+		t.Fatalf("ListByOwner: %v", err)
+	}
+	if len(held) != 3 {
+		t.Fatalf("setup left %d claims, want 3 (the cap)", len(held))
+	}
+
+	// A fresh name is refused, which is what "at the cap" means here. Without
+	// this the reclaim below could pass simply because the cap was not reached.
+	if _, err := f.svc.Rename(ctx, ownerA, "n9", "req"); !errors.Is(err, handle.ErrTooManyNames) {
+		t.Fatalf("fresh name at the cap = %v, want ErrTooManyNames", err)
+	}
+
+	got, err := f.svc.Rename(ctx, ownerA, "n0", "req-reclaim")
+	if err != nil {
+		t.Fatalf("reclaiming an own hold at the cap = %v, want success", err)
+	}
+	if got.Name != "n0" || got.State != domain.NameStateActive {
+		t.Fatalf("reclaimed handle = %+v, want active n0", got)
+	}
+	if got.QuarantineUntil != nil {
+		t.Errorf("reclaimed handle still carries a deadline: %v", got.QuarantineUntil)
+	}
+	if want := domain.AuditActionHandleReclaimed; !hasAction(f.auditor.actions(), want) {
+		t.Errorf("actions = %v, want one %q", f.auditor.actions(), want)
+	}
+
+	// The premise of the exemption, asserted rather than assumed: the reclaim
+	// reused the held row instead of adding one, so the owner is still at the
+	// cap and not over it.
+	after, err := f.store.Repos().Handles.ListByOwner(ctx, ownerA)
+	if err != nil {
+		t.Fatalf("ListByOwner: %v", err)
+	}
+	if len(after) != len(held) {
+		t.Fatalf("reclaim changed the claim count: %d -> %d", len(held), len(after))
+	}
+	// And the exemption did not become a way through the cap: a fresh name is
+	// still refused afterwards.
+	if _, err := f.svc.Rename(ctx, ownerA, "n9", "req"); !errors.Is(err, handle.ErrTooManyNames) {
+		t.Fatalf("fresh name after a reclaim = %v, want ErrTooManyNames", err)
+	}
+}
+
+// TestAnotherOwnersHoldIsRefusedAtTheCap is the direction the cap exemption
+// could have opened. The exemption keys off the caller's OWN held claims, so a
+// quarantined name belonging to someone else must not qualify for it.
+//
+// The refusal surfaces as ErrTooManyNames rather than ErrNameTaken, because at
+// the cap the exemption does not apply and the cap refuses first. That is the
+// safe ordering and it leaks less: a caller at their limit cannot use this path
+// to probe whether a name is held by another owner.
+func TestAnotherOwnersHoldIsRefusedAtTheCap(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t, handle.WithMaxHeldNames(3))
+	f.seed(ownerA, "n0")
+	// B's hold, belonging to nobody in A's list.
+	bHold := f.seedHold(ownerB, "bees", fixedNow.Add(handle.DefaultQuarantineWindow))
+
+	for i := 1; i <= 2; i++ {
+		if _, err := f.svc.Rename(ctx, ownerA, fmt.Sprintf("n%d", i), "req"); err != nil {
+			t.Fatalf("Rename %d: %v", i, err)
+		}
+	}
+
+	if _, err := f.svc.Rename(ctx, ownerA, "bees", "req"); err == nil {
+		t.Fatal("A took B's quarantined name at the cap, want a refusal")
+	} else if !errors.Is(err, handle.ErrTooManyNames) {
+		t.Fatalf("A renaming onto B's hold at the cap = %v, want ErrTooManyNames", err)
+	}
+
+	// B's hold must be untouched: same owner, same state, same deadline.
+	still, err := f.byName("bees")
+	if err != nil {
+		t.Fatalf("B's hold vanished: %v", err)
+	}
+	if still.OwnerID != ownerB || still.State != domain.NameStateQuarantined {
+		t.Errorf("B's hold = %+v, want quarantined and owned by B", still)
+	}
+	if still.QuarantineUntil == nil || !still.QuarantineUntil.Equal(*bHold.QuarantineUntil) {
+		t.Errorf("B's deadline moved: %v, want %v", still.QuarantineUntil, bHold.QuarantineUntil)
+	}
+}
+
 // TestRenameToOwnCurrentNameRefused keeps a no-op from being recorded as a
 // move, and keeps the model free of a claim quarantined onto itself.
 func TestRenameToOwnCurrentNameRefused(t *testing.T) {
