@@ -20,6 +20,11 @@ info:
     HTTPS only (ADR-0015). Plaintext HTTP is not a supported transport for any
     endpoint described here.
 
+    Responses served over a connection known to be HTTPS additionally carry a
+    `Strict-Transport-Security` header. It is a transport-wide policy applied to
+    every response, including error responses, rather than a property of any one
+    operation, so it is not repeated under each response below.
+
     ## Methods
 
     `HEAD` is supported wherever `GET` is, and returns the identical status and

@@ -53,6 +53,7 @@ const minRegisteredRoutes = 4
 
 // specDoc is the sliver of OpenAPI this test needs: which methods each path
 // declares, and which status codes each of those declares.
+//
 // A path item's children are decoded lazily, because they are not homogeneous:
 // alongside the operations sits a "parameters" sequence, which does not fit an
 // operation's shape.
@@ -201,7 +202,7 @@ func TestSpecCoversEveryRegisteredRoute(t *testing.T) {
 func TestEverySpecOperationIsRoutable(t *testing.T) {
 	t.Parallel()
 
-	handler := NewHandler(nil, okPinger{}, stubPublisher{body: []byte("ssh-ed25519 AAAA x\n")})
+	handler := NewHandler(nil, nil, okPinger{}, stubPublisher{body: []byte("ssh-ed25519 AAAA x\n")})
 	for _, op := range loadSpec(t) {
 		t.Run(op.method+" "+op.path, func(t *testing.T) {
 			t.Parallel()
@@ -332,7 +333,7 @@ func contractDo(t *testing.T, p Publisher, method, target, ifNoneMatch string) *
 		req.Header.Set("If-None-Match", ifNoneMatch)
 	}
 	rr := httptest.NewRecorder()
-	NewHandler(nil, okPinger{}, p).ServeHTTP(rr, req)
+	NewHandler(nil, nil, okPinger{}, p).ServeHTTP(rr, req)
 	return rr
 }
 
