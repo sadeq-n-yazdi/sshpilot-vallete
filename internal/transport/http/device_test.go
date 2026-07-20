@@ -114,6 +114,70 @@ func TestOwnerComesFromTokenNotRequest(t *testing.T) {
 	}
 }
 
+// TestRevokeOwnerComesFromTokenNotRequest is the revoke route's version of the
+// owner-boundary test, and it exists because a mutation survived without it:
+// making the handler prefer an owner from a request header went undetected,
+// since the cross-owner test below attacks with a token alone and never tries
+// to ASSERT an owner. A 404 for a caller who did not claim to be someone else
+// does not prove the handler would refuse one who did.
+func TestRevokeOwnerComesFromTokenNotRequest(t *testing.T) {
+	t.Parallel()
+
+	env := newDeviceEnv(t)
+	tokenA := env.token(t, "owner-a", domain.Scope{Kind: domain.ScopeFullOwner})
+	tokenB := env.token(t, "owner-b", domain.Scope{Kind: domain.ScopeFullOwner})
+	victim := env.mustRegister(t, tokenA, "owner a laptop")
+
+	// Owner B, holding a valid token, addresses owner A's device and asserts
+	// owner A through every channel a handler might be tempted to read.
+	target := devicesPath + "/" + victim.ID + "?owner_id=owner-a&owner=owner-a"
+	req := httptest.NewRequest(http.MethodDelete, target, nil)
+	req.Header.Set("Authorization", "Bearer "+tokenB)
+	req.Header.Set("X-Owner-ID", "owner-a")
+	req.Header.Set("X-Owner", "owner-a")
+	rec := httptest.NewRecorder()
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("revoke asserting another owner = %d, want 404", rec.Code)
+	}
+	stored, err := env.repo.Get(t.Context(), "owner-a", domain.DeviceID(victim.ID))
+	if err != nil {
+		t.Fatalf("owner A's device disappeared: %v", err)
+	}
+	if stored.Status != domain.DeviceStatusActive {
+		t.Fatalf("owner A's device was revoked by owner B asserting an owner; status = %q", stored.Status)
+	}
+}
+
+// TestRegisterOwnerAssertionIsIgnoredOnEveryChannel is the register route's
+// equivalent, kept separate so a failure names which route leaked.
+func TestRegisterOwnerAssertionIsIgnoredOnEveryChannel(t *testing.T) {
+	t.Parallel()
+
+	env := newDeviceEnv(t)
+	tokenB := env.token(t, "owner-b", domain.Scope{Kind: domain.ScopeFullOwner})
+
+	req := httptest.NewRequest(http.MethodPost, devicesPath+"?owner_id=owner-a",
+		strings.NewReader(`{"name":"laptop"}`))
+	req.Header.Set("Authorization", "Bearer "+tokenB)
+	req.Header.Set("X-Owner-ID", "owner-a")
+	rec := httptest.NewRecorder()
+	env.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("register = %d, want 201", rec.Code)
+	}
+
+	var got deviceJSON
+	decodeInto(t, rec, &got)
+	if _, err := env.repo.Get(t.Context(), "owner-a", domain.DeviceID(got.ID)); err == nil {
+		t.Fatal("the device was created under the owner named by the request, not the token")
+	}
+	if _, err := env.repo.Get(t.Context(), "owner-b", domain.DeviceID(got.ID)); err != nil {
+		t.Fatalf("the device is not owned by the token's owner: %v", err)
+	}
+}
+
 // TestCrossOwnerIsIndistinguishableFromAbsent is the enumeration test required
 // per endpoint. For every management route that names a device, owner B using
 // owner A's id must get byte-for-byte what it gets for an id nobody owns.
@@ -165,6 +229,27 @@ func TestListNeverLeaksAnotherOwnersDevices(t *testing.T) {
 	}
 	if strings.Contains(rr.Body.String(), "owner a laptop") {
 		t.Fatal("owner B's list disclosed owner A's device")
+	}
+
+	// Now owner B asks again while asserting that it is owner A. A 200 with an
+	// empty list above does not prove the handler ignores an asserted owner,
+	// because owner B never asserted one -- a mutation that preferred a header
+	// survived precisely through that gap.
+	req := httptest.NewRequest(http.MethodGet, devicesPath+"?owner_id=owner-a&owner=owner-a", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenB)
+	req.Header.Set("X-Owner-ID", "owner-a")
+	req.Header.Set("X-Owner", "owner-a")
+	rec := httptest.NewRecorder()
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list asserting another owner = %d, want 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "owner a laptop") {
+		t.Fatalf("asserting an owner disclosed that owner's devices: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"devices":[]`) {
+		t.Fatalf("list asserting another owner = %s, want owner B's own empty list", rec.Body.String())
 	}
 }
 
@@ -298,6 +383,59 @@ func TestSingleDeviceTokenIsConfinedToItsDevice(t *testing.T) {
 			t.Fatalf("registering with a device-bound token = %d, want 403", rr.Code)
 		}
 	})
+}
+
+// TestRevokeActsOnExactlyTheDeviceItAuthorized closes the confused-deputy gap:
+// the scope check reads the device id out of the path (DeviceAccess), so if the
+// handler could be steered to a DIFFERENT device by any other part of the
+// request, a token would authorize one resource while the server mutated
+// another. The scope check would pass, honestly, on a device the caller never
+// touched.
+//
+// This test exists because a mutation survived without it. The confinement test
+// above only ever names one device per request, so it cannot tell "the handler
+// used the path" from "the handler used something that happened to agree with
+// the path".
+func TestRevokeActsOnExactlyTheDeviceItAuthorized(t *testing.T) {
+	t.Parallel()
+
+	env := newDeviceEnv(t)
+	full := env.token(t, "owner-a", domain.Scope{Kind: domain.ScopeFullOwner})
+	authorized := env.mustRegister(t, full, "the authorized device")
+	bystander := env.mustRegister(t, full, "the bystander")
+	bound := env.token(t, "owner-a", domain.Scope{Kind: domain.ScopeSingleDevice, ResourceID: authorized.ID})
+
+	// The path names the device the token is bound to, so authorization
+	// legitimately succeeds. Every other channel names the bystander.
+	target := devicesPath + "/" + authorized.ID + "?device=" + bystander.ID + "&id=" + bystander.ID
+	req := httptest.NewRequest(http.MethodDelete, target, nil)
+	req.Header.Set("Authorization", "Bearer "+bound)
+	req.Header.Set("X-Device-ID", bystander.ID)
+	req.Header.Set("X-Device", bystander.ID)
+	rec := httptest.NewRecorder()
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("revoke of the authorized device = %d, want 204", rec.Code)
+	}
+
+	// The bystander must be untouched: it was never authorized, and nothing
+	// outside the path may select what gets revoked.
+	stored, err := env.repo.Get(t.Context(), "owner-a", domain.DeviceID(bystander.ID))
+	if err != nil {
+		t.Fatalf("Get bystander: %v", err)
+	}
+	if stored.Status != domain.DeviceStatusActive {
+		t.Fatalf("the bystander was revoked; the handler acted on a device the scope check never authorized")
+	}
+	// And the device that WAS authorized is the one that changed.
+	target2, err := env.repo.Get(t.Context(), "owner-a", domain.DeviceID(authorized.ID))
+	if err != nil {
+		t.Fatalf("Get authorized: %v", err)
+	}
+	if target2.Status != domain.DeviceStatusRevoked {
+		t.Fatalf("the authorized device was not revoked; status = %q", target2.Status)
+	}
 }
 
 // TestManagementRoutesRefuseWithoutACredential proves the routes are mounted
