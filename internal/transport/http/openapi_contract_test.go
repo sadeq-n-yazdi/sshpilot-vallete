@@ -103,7 +103,11 @@ func loadSpec(t *testing.T) []operation {
 		t.Fatalf("parse spec: %v", err)
 	}
 
-	if !strings.HasPrefix(doc.Version, specVersionPrefix) {
+	// The separator is part of the comparison on purpose: a bare prefix test
+	// would also accept "3.10.0", a different minor version that happens to
+	// share the leading characters. Accepting a version this check was written
+	// to reject is the one way it can fail silently.
+	if doc.Version != specVersionPrefix && !strings.HasPrefix(doc.Version, specVersionPrefix+".") {
 		t.Errorf("spec declares openapi %q, want %s.x: the embedded document is served under a %s doc comment",
 			doc.Version, specVersionPrefix, specVersionPrefix)
 	}
