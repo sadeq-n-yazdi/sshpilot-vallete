@@ -19,6 +19,7 @@ var domainTables = []string{
 	"public_keys",
 	"key_sets",
 	"key_set_members",
+	"audit_records",
 }
 
 // namedIndexes are the explicitly named indexes the migrations create. SQLite
@@ -35,10 +36,13 @@ var namedIndexes = []string{
 	"ux_key_sets_owner_default",
 	"ix_key_sets_owner_id",
 	"ix_key_set_members_public_key_id",
+	"ix_audit_records_occurred_at",
+	"ix_audit_records_actor",
+	"ix_audit_records_target",
 }
 
 // migrationIDs are the IDs the registry is expected to apply, in order.
-var migrationIDs = []string{"0001", "0002", "0003"}
+var migrationIDs = []string{"0001", "0002", "0003", "0004"}
 
 // newRunner opens a fresh in-memory SQLite database, wraps it for the migrate
 // runner, and returns both the raw handle (for assertions) and the runner.
@@ -522,4 +526,80 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestAuditRecordEnumCheckConstraintsReject confirms the audit_records CHECK
+// constraints reject actor and target types outside the domain value sets, as
+// defense-in-depth behind the repository.
+func TestAuditRecordEnumCheckConstraintsReject(t *testing.T) {
+	t.Parallel()
+	raw, runner := newRunner(t)
+	ctx := context.Background()
+
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	ts := "2026-01-01T00:00:00.000000000Z"
+	insert := func(actorType, targetType string) error {
+		_, err := raw.ExecContext(ctx,
+			`INSERT INTO audit_records
+			 (id, actor_type, actor_id, action, target_type, target_id, occurred_at, metadata, pseudonymized)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"aud-"+actorType+"-"+targetType, actorType, "act-1", "key.added",
+			targetType, "tgt-1", ts, "{}", 0)
+		return err
+	}
+
+	if err := insert("intruder", "device"); err == nil {
+		t.Error("audit record with out-of-range actor_type accepted, want CHECK violation")
+	}
+	if err := insert("owner", "shadow_table"); err == nil {
+		t.Error("audit record with out-of-range target_type accepted, want CHECK violation")
+	}
+	if err := insert("owner", "device"); err != nil {
+		t.Errorf("audit record with in-range enums rejected: %v", err)
+	}
+}
+
+// TestAuditRecordSurvivesOwnerDeletion is the ADR-0024 property: audit rows
+// carry no foreign key to owners, so deleting the owner they name must neither
+// be blocked by the audit row nor cascade it away. If a well-meaning change ever
+// adds a REFERENCES owners(id) to audit_records, this test fails — which is the
+// point, because that FK would make owner erasure destroy the audit trail.
+func TestAuditRecordSurvivesOwnerDeletion(t *testing.T) {
+	t.Parallel()
+	raw, runner := newRunner(t)
+	ctx := context.Background()
+
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+
+	ts := "2026-01-01T00:00:00.000000000Z"
+	if _, err := raw.ExecContext(ctx,
+		`INSERT INTO owners (id, status, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		"own-gone", "active", ts, ts); err != nil {
+		t.Fatalf("seed owner: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx,
+		`INSERT INTO audit_records
+		 (id, actor_type, actor_id, action, target_type, target_id, occurred_at, metadata, pseudonymized)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"aud-1", "owner", "own-gone", "owner.deleted", "owner", "own-gone", ts, "{}", 0); err != nil {
+		t.Fatalf("seed audit record: %v", err)
+	}
+
+	if _, err := raw.ExecContext(ctx, `DELETE FROM owners WHERE id = ?`, "own-gone"); err != nil {
+		t.Fatalf("delete owner: %v", err)
+	}
+
+	var n int
+	if err := raw.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM audit_records WHERE actor_id = ?`, "own-gone").Scan(&n); err != nil {
+		t.Fatalf("count audit records: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("audit records naming the deleted owner = %d, want 1 (record must outlive the owner)", n)
+	}
 }
