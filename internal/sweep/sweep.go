@@ -42,6 +42,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -262,10 +263,30 @@ func (r *Runner) pass(ctx context.Context, j Job) {
 // panicking sweep that killed its goroutine would leave the process running
 // with that maintenance silently switched off -- indistinguishable from a
 // healthy service, which is the worst outcome available.
+//
+// The stack is captured because that outcome is exactly when it is needed. The
+// recovered value alone names what went wrong ("nil pointer dereference") but
+// not where, and the frames are gone the moment this function returns: the job
+// runs on its own goroutine, on a timer, with no request to correlate against,
+// so an operator reading the log later has no other route back to the fault.
+//
+// It goes into the error rather than a separate log field deliberately. The
+// logging package is a default-deny allowlist and "stack" is not on it, so a
+// slog.String("stack", ...) would render "[REDACTED]" -- the stack would be
+// captured and then thrown away. Allowlisting it is a change to that package,
+// which this branch does not own, and the runner is handed the single
+// process-wide logger, so the widening would apply everywhere rather than to
+// sweeps. Folding it into the error reaches the already-allowlisted "error"
+// key, and every secret this codebase puts in an error string redacts itself
+// from the inside, so nothing is smuggled past the policy by doing so.
+//
+// The cost is a multi-line error string, paid only on a pass that panicked.
 func (r *Runner) runGuarded(ctx context.Context, j Job) (err error) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			err = fmt.Errorf("sweep: job %q panicked: %v", j.Name, rec)
+			// Taken inside the deferred call, while the panicking frames are
+			// still on the stack.
+			err = fmt.Errorf("sweep: job %q panicked: %v\n%s", j.Name, rec, debug.Stack())
 		}
 	}()
 	return j.Run(ctx)
