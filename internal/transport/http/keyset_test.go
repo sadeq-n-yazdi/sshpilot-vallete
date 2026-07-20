@@ -1,12 +1,19 @@
 package httpserver_test
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/keyset"
+	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
 )
 
 const (
@@ -367,5 +374,115 @@ func TestKeySetRoutesFailClosedWithoutAService(t *testing.T) {
 		if rr := env.do(t, c.method, c.target, token, c.body); rr.Code != http.StatusInternalServerError {
 			t.Errorf("%s %s with no service = %d, want 500", c.method, c.target, rr.Code)
 		}
+	}
+}
+
+// cancelingKeySetService is a key set service whose every method reports that
+// the request's context went away, wrapped the way the storage adapters wrap it
+// (they pass the cause through with %w rather than translating it, so the
+// context error survives to the transport).
+//
+// A stub is used here for a specific reason. In production the cancellation
+// lands mid-request: the client hangs up while the service is doing its
+// database work, long after the Guardian has verified the token. A request that
+// arrives already canceled cannot reproduce that -- it is refused 401 by the
+// auth check, which needs the context too, and never reaches the handler at
+// all. Reproducing the real timing would mean canceling from another goroutine
+// and racing the handler, which is a flaky test rather than a stronger one.
+//
+// That the real store genuinely yields an error satisfying
+// errors.Is(err, context.Canceled) was verified separately against the SQLite
+// adapter; what this stub pins is the transport's response to it.
+type cancelingKeySetService struct{ err error }
+
+func (s cancelingKeySetService) Create(context.Context, domain.OwnerID, string, string) (*domain.KeySet, error) {
+	return nil, s.err
+}
+
+func (s cancelingKeySetService) List(context.Context, domain.OwnerID) ([]domain.KeySet, error) {
+	return nil, s.err
+}
+
+func (s cancelingKeySetService) Rename(context.Context, domain.OwnerID, domain.KeySetID, string, string) (*domain.KeySet, error) {
+	return nil, s.err
+}
+
+func (s cancelingKeySetService) Delete(context.Context, domain.OwnerID, domain.KeySetID, bool, string) error {
+	return s.err
+}
+
+// TestCanceledRequestIsNotLoggedAsAnError pins the severity of a client hanging
+// up, for both context.Canceled and context.DeadlineExceeded.
+//
+// A canceled request reaches the same arm of writeKeySetError that a genuine
+// storage fault does, because the store wraps the context error rather than
+// translating it. Recording it at Error makes ordinary client behavior
+// indistinguishable from a system fault in the log, and lets any authenticated
+// caller flood the error log at will by canceling requests -- degrading the
+// signal operators depend on during an incident.
+//
+// The status is deliberately still 500 and is asserted as such, so that a later
+// change to 499 or 504 is a decision someone makes on purpose rather than one
+// that slips in with a logging tweak.
+func TestCanceledRequestIsNotLoggedAsAnError(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"canceled", fmt.Errorf("sqlite: %w", context.Canceled)},
+		{"deadline exceeded", fmt.Errorf("sqlite: %w", context.DeadlineExceeded)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logged bytes.Buffer
+			env := newSetEnv(t)
+			handler := httpserver.NewHandler(nil,
+				slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})),
+				devicePinger{}, devicePublisher{},
+				httpserver.WithAuthorizer(env.authorizer),
+				httpserver.WithKeySetService(cancelingKeySetService{err: tc.err}))
+
+			owner := env.seedOwner(t, setOwnerA)
+			req := httptest.NewRequest(http.MethodPost, keySetsPath, strings.NewReader(nameBody(t, "prod")))
+			req.Header.Set("Authorization", "Bearer "+env.fullToken(t, owner))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+			}
+
+			// The record must exist -- silence would be its own problem -- and
+			// it must not be an error.
+			var sawInfo bool
+			for line := range strings.SplitSeq(strings.TrimSpace(logged.String()), "\n") {
+				if line == "" {
+					continue
+				}
+				var entry struct {
+					Level string `json:"level"`
+					Msg   string `json:"msg"`
+				}
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatalf("log line %q: %v", line, err)
+				}
+				if entry.Msg != "key set creation failed" {
+					continue
+				}
+				if entry.Level == slog.LevelError.String() {
+					t.Errorf("a canceled request was logged at %s, want a non-error level", entry.Level)
+				}
+				if entry.Level == slog.LevelInfo.String() {
+					sawInfo = true
+				}
+			}
+			if !sawInfo {
+				t.Errorf("no info-level record of the canceled request; logs:\n%s", logged.String())
+			}
+		})
 	}
 }
