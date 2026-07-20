@@ -501,3 +501,45 @@ func TestAccessKeyListExpiredGraceRejectsNonPositiveLimit(t *testing.T) {
 		}
 	}
 }
+
+// TestRevokeKeepsTheFirstRevocationTime pins revoked_at against being walked
+// forward by a repeated revoke.
+//
+// Revocation is deliberately idempotent -- it converges rather than objecting,
+// so incident response never fails at the moment an operator is shutting a
+// credential down. That property is what makes the timestamp attackable: anyone
+// still holding the token can call revoke again, and a plain assignment would
+// move the recorded time away from the compromise, with every call returning
+// success. The forensic question is "from when was this credential dead", so
+// the first answer is the correct one to keep.
+func TestRevokeKeepsTheFirstRevocationTime(t *testing.T) {
+	t.Parallel()
+
+	s := newStore(t)
+	ctx := context.Background()
+
+	mustCreateAccessKey(t, s, newAccessKey("ak-1", "owner-a", "ks-1", "ci"))
+
+	first := testClock.Add(time.Hour)
+	if err := s.Repos().AccessKeys.Revoke(ctx, "owner-a", "ak-1", first); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+
+	// A day later, and long after the fact. The repeat still succeeds -- that is
+	// the idempotence -- but it must not rewrite history.
+	later := first.Add(24 * time.Hour)
+	if err := s.Repos().AccessKeys.Revoke(ctx, "owner-a", "ak-1", later); err != nil {
+		t.Fatalf("Revoke (repeat) = %v, want nil: revocation must stay idempotent", err)
+	}
+
+	got, err := s.Repos().AccessKeys.Get(ctx, "owner-a", "ak-1")
+	if err != nil {
+		t.Fatalf("Get after repeated Revoke: %v", err)
+	}
+	if got.RevokedAt == nil || !got.RevokedAt.Equal(first) {
+		t.Errorf("RevokedAt = %v, want the first revocation time %v", got.RevokedAt, first)
+	}
+	if got.Status != domain.AccessKeyStatusRevoked {
+		t.Errorf("Status = %q, want revoked", got.Status)
+	}
+}

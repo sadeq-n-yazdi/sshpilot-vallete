@@ -163,7 +163,15 @@ WHERE id = ? AND owner_id = ? AND status <> ?`
 // else's key is not distinguishable from revocation of a key that was never
 // there.
 func (r *accessKeyRepo) Revoke(ctx context.Context, ownerID domain.OwnerID, id domain.AccessKeyID, now time.Time) error {
-	const q = `UPDATE access_keys SET status = ?, revoked_at = ?, grace_until = NULL,
+	// revoked_at is written with COALESCE so it records the FIRST revocation,
+	// not the most recent call. A plain assignment would let a repeated revoke
+	// walk the timestamp forward, which is the wrong direction for a forensic
+	// field: the question it answers is "from when was this credential dead",
+	// and anyone holding the token can call revoke again. Overwriting would
+	// hand them a way to move the recorded time away from the compromise
+	// without ever failing a request. Converging on the first value makes that
+	// unavailable rather than merely discouraged.
+	const q = `UPDATE access_keys SET status = ?, revoked_at = COALESCE(revoked_at, ?), grace_until = NULL,
 replaced_by_id = NULL WHERE id = ? AND owner_id = ?`
 	res, err := r.e.ExecContext(ctx, q,
 		string(domain.AccessKeyStatusRevoked),
