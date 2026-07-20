@@ -13,7 +13,9 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/device"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
 )
 
@@ -287,6 +289,6 @@ func (devicePinger) PingContext(context.Context) error { return nil }
 
 type devicePublisher struct{}
 
-func (devicePublisher) Resolve(context.Context, string, string) ([]byte, error) {
-	return []byte("ssh-ed25519 AAAA x\n"), nil
+func (devicePublisher) Resolve(context.Context, string, string, secrets.Redacted) (publish.Result, error) {
+	return publish.Result{Body: []byte("ssh-ed25519 AAAA x\n")}, nil
 }

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 )
 
@@ -18,9 +19,16 @@ import (
 // *publish.Service satisfies it.
 type Publisher interface {
 	// Resolve returns the authorized_keys body for a handle and set name. An
-	// empty setName selects the owner's default set. It reports
-	// publish.ErrNotFound for every negative verdict.
-	Resolve(ctx context.Context, handle, setName string) ([]byte, error)
+	// empty setName selects the owner's default set. presented is the bearer
+	// token the caller supplied, empty when it supplied none; it is consulted
+	// only for an access-gated set.
+	//
+	// It reports publish.ErrNotFound for every negative verdict, INCLUDING
+	// every refused credential. There is deliberately no second error value
+	// for "protected but not authorized": this signature is what makes it
+	// impossible for this package to answer a protected miss with anything
+	// other than the response it gives an absent set (ADR-0019).
+	Resolve(ctx context.Context, handle, setName string, presented secrets.Redacted) (publish.Result, error)
 }
 
 // publishMaxAge is how long a client or shared cache may reuse a published
@@ -38,14 +46,34 @@ const publishMaxAge = 60
 // plain text file consumed by sshd, not a structured document.
 const publishContentType = "text/plain; charset=utf-8"
 
-// publishHandler serves the unauthenticated publish endpoint for both
-// /{handle} and /{handle}/{set}.
+// publishHandler serves the publish endpoint for both /{handle} and
+// /{handle}/{set}.
 //
 // The two routes share one handler; the set name is simply absent from the
 // first, which the service reads as "the owner's default set". Keeping them in
 // one function is what guarantees their success, 404, and error responses are
 // produced by identical code rather than by two implementations that could
 // drift apart into a distinguishable pair.
+//
+// # Access-gated sets
+//
+// The endpoint is unauthenticated in the sense that it never REQUIRES a
+// credential to be reached: a missing Authorization header is not an error
+// here, it is simply an empty token that no protected set accepts. The handler
+// does not decide that, and does not know which sets are protected — it hands
+// whatever bearer token arrived to the service and acts on the same two
+// verdicts it has always acted on.
+//
+// That is the point. A refused credential and a nonexistent set are one value
+// by the time they reach this function, so both leave through
+// writePublishNotFound and are byte-identical on the wire; there is no branch
+// here that could be written to tell them apart, because there is nothing here
+// to branch on (ADR-0019).
+//
+// The token is taken from the Authorization header ONLY. A query parameter or
+// cookie is never consulted: those are logged by proxies, kept in browser
+// history, and sent cross-site by the client without the caller's intent, and a
+// credential that unlocks a key set must not travel that way.
 func publishHandler(p Publisher, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// A nil publisher is a wiring fault, not a client error. It must not
@@ -60,7 +88,15 @@ func publishHandler(p Publisher, logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 
-		body, err := p.Resolve(r.Context(), r.PathValue("handle"), r.PathValue("set"))
+		// A malformed or absent Authorization header yields the empty token
+		// rather than an early refusal. Rejecting it here would answer before
+		// the service had looked anything up, and the response would then
+		// depend on the header alone — harmless for a protected set, but a
+		// public set would start refusing callers that sent a stray header,
+		// and the two refusals would not be the same one.
+		token, _ := bearerToken(r)
+
+		res, err := p.Resolve(r.Context(), r.PathValue("handle"), r.PathValue("set"), token)
 		if err != nil {
 			if errors.Is(err, publish.ErrNotFound) {
 				writePublishNotFound(w, r)
@@ -77,7 +113,7 @@ func publishHandler(p Publisher, logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 
-		writePublishBody(w, r, body)
+		writePublishBody(w, r, res)
 	}
 }
 
@@ -95,11 +131,38 @@ func publishHandler(p Publisher, logger *slog.Logger) http.HandlerFunc {
 // and the body write is skipped by an explicit method check rather than left to
 // net/http's own HEAD handling, so the parity holds under any writer this
 // handler is composed with, not only under the standard server.
-func writePublishBody(w http.ResponseWriter, r *http.Request, body []byte) {
-	etag := entityTag(body)
+//
+// # Caching, and why a protected body may not be shared
+//
+// A public body is shared-cacheable: any cache may hold it and hand it to any
+// client, because any client could have fetched it directly.
+//
+// An access-gated body may not. It gets "private", which forbids a shared cache
+// from storing it at all, plus "Vary: Authorization" so that a cache which
+// stores it anyway — a client's own, or an intermediary that ignores the
+// directive — is at least keyed by the credential rather than by the URL, and
+// cannot serve one consumer's copy to a request bearing a different token or
+// none. ADR-0019 requires both. They are set BEFORE the If-None-Match branch,
+// alongside the ETag and for the same reason: a 304 that dropped them would
+// answer "your copy is current" with no restriction on who may reuse that copy.
+//
+// The ETag stays a content hash on both paths. It is not a shared-cache key
+// here — "private" and the Vary have already removed sharing — and two owners
+// whose sets happen to hold identical keys getting identical tags leaks
+// nothing, since a matching tag can only be produced by a caller that already
+// holds the body. Making it credential-derived instead would break the
+// cross-replica stability the tag exists for and would put a value derived from
+// a secret on the wire.
+func writePublishBody(w http.ResponseWriter, r *http.Request, res publish.Result) {
+	etag := entityTag(res.Body)
 	h := w.Header()
 	h.Set("ETag", etag)
-	h.Set("Cache-Control", "public, max-age="+strconv.Itoa(publishMaxAge))
+	if res.Protected {
+		h.Set("Cache-Control", "private, max-age="+strconv.Itoa(publishMaxAge))
+		h.Set("Vary", "Authorization")
+	} else {
+		h.Set("Cache-Control", "public, max-age="+strconv.Itoa(publishMaxAge))
+	}
 
 	if matchesETag(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
@@ -111,12 +174,12 @@ func writePublishBody(w http.ResponseWriter, r *http.Request, body []byte) {
 	// nosniff is set anyway: it costs nothing and removes any chance of a
 	// browser deciding this text is something more interesting.
 	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Content-Length", strconv.Itoa(len(body)))
+	h.Set("Content-Length", strconv.Itoa(len(res.Body)))
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(body)
+	_, _ = w.Write(res.Body)
 }
 
 // entityTag returns a strong entity tag derived from the body.
@@ -161,11 +224,20 @@ func matchesETag(header, etag string) bool {
 // writePublishNotFound writes THE 404 of the publish path.
 //
 // Every negative verdict — unknown handle, unknown set, a set belonging to
-// another owner, an inactive or non-public set, a malformed name — reaches this
-// one function, so all of them produce a byte-identical status, body, and
-// header set. Any divergence would be an existence oracle: a stranger could
-// otherwise tell "no such handle" from "that handle exists but the set is
-// private", and enumerate another owner's namespace from the outside.
+// another owner, an inactive set, a malformed name, and every refused access
+// key: absent, malformed, revoked, or minted for one of the owner's OTHER sets
+// — reaches this one function, so all of them produce a byte-identical status,
+// body, and header set. Any divergence would be an existence oracle: a stranger
+// could otherwise tell "no such handle" from "that handle exists but the set is
+// protected", and enumerate another owner's namespace from the outside. A
+// consumer holding one set's token is not the owner, and must not be able to
+// read the owner's other protected set names off a 403.
+//
+// It takes no argument describing the request, and that is deliberate: there is
+// nothing here it could condition on. In particular NO Vary header is set. Vary
+// belongs to the protected success path only; emitting it here for a protected
+// miss and not for an absent set would be precisely the distinguishable pair
+// this function exists to prevent, restated in a header nobody reads.
 //
 // The body is a fixed string that reflects nothing about the request. It
 // deliberately carries no ETag and no cacheability: a cached negative would
