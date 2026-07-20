@@ -89,5 +89,11 @@ func Default() Config {
 			AuditRetention:   Duration(365 * day),
 			MaxSetsPerOwner:  100,
 		},
+		Docs: DocsConfig{
+			// Enabled and public by default, per ADR-0021: the contract is
+			// not secret. See DocsConfig for the reasoning and for how to
+			// turn it off.
+			Enabled: true,
+		},
 	}
 }

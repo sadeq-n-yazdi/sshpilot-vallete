@@ -191,5 +191,8 @@ func bindings() []binding {
 		{"VALLET_RETENTION_HANDLE_QUARANTINE", setDuration(func(c *Config) *Duration { return &c.Retention.HandleQuarantine })},
 		{"VALLET_RETENTION_AUDIT_RETENTION", setDuration(func(c *Config) *Duration { return &c.Retention.AuditRetention })},
 		{"VALLET_RETENTION_MAX_SETS_PER_OWNER", setInt(func(c *Config) *int { return &c.Retention.MaxSetsPerOwner })},
+
+		// docs
+		{"VALLET_DOCS_ENABLED", setBool(func(c *Config) *bool { return &c.Docs.Enabled })},
 	}
 }

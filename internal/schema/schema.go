@@ -27,7 +27,9 @@
 // but has no FK either, because its row must be destroyable on a schedule the
 // erasure flow controls rather than one the owner row's lifetime dictates. See
 // migration0004AuditRecords and migration0005OwnerErasureSalts for the full
-// rationale.
+// rationale. administrators is a third: it is a system-axis principal table
+// with no owner at all, so there is nothing for an owner_id to reference; see
+// migration0009Administrators.
 package schema
 
 import "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
@@ -44,6 +46,9 @@ func Registry() (*migrate.Registry, error) {
 		migration0004AuditRecords(),
 		migration0005OwnerErasureSalts(),
 		migration0006RefreshCredentials(),
+		migration0007LinkedIdentities(),
+		migration0008DevicePairings(),
+		migration0009Administrators(),
 	)
 }
 
@@ -446,6 +451,155 @@ func migration0005OwnerErasureSalts() migrate.Migration {
 	}
 }
 
+// migration0008DevicePairings creates the device_pairings table: the short-lived
+// enrollment records a device code and a user code are verified against.
+//
+// Only digests are stored. device_code_hash and user_code_hash hold the hash of
+// each secret, never the secret, so a store dump yields nothing presentable;
+// the lookup path hashes first and matches on the digest.
+//
+// user_code_hash is nullable because a manually minted pairing is approved at
+// creation and never needs a user code. The index on it is therefore a plain
+// index and not UNIQUE: a UNIQUE index would still permit multiple NULLs on
+// both engines, so it would not constrain the manual case, while it would make
+// a hash collision between two live pairings an insert failure rather than a
+// lookup that the caller resolves. Uniqueness of a user code is a property the
+// minting code enforces by drawing fresh codes, not something this table can
+// assert about a digest column that is mostly NULL.
+//
+// status is CHECK-constrained to the PairingStatus set. It is the interlock the
+// conditional transitions turn on: approval applies only to a pending row and
+// redemption only to an approved one, so a second approval cannot rebind the
+// owner and a second redemption cannot spend the same device code twice.
+//
+// owner_id is nullable and carries no FOREIGN KEY. A pending pairing has no
+// owner yet — the owner is established BY the approval — so the column cannot
+// be NOT NULL, and a pairing must remain deletable by the expiry sweep on its
+// own schedule rather than one an owner row's lifetime dictates.
+//
+// expires_at is indexed for the expiry sweep, and next_poll_at is stored so a
+// client that ignores the polling interval is throttled rather than served.
+func migration0008DevicePairings() migrate.Migration {
+	const (
+		createSQLite = `CREATE TABLE device_pairings (
+	id TEXT PRIMARY KEY,
+	owner_id TEXT,
+	device_code_hash BLOB NOT NULL,
+	user_code_hash BLOB,
+	client_label TEXT NOT NULL DEFAULT '',
+	scopes TEXT NOT NULL DEFAULT '[]',
+	status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'redeemed', 'revoked')),
+	lineage_id TEXT NOT NULL DEFAULT '',
+	next_poll_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	approved_at TEXT,
+	redeemed_at TEXT,
+	revoked_at TEXT
+)`
+		createPostgres = `CREATE TABLE device_pairings (
+	id TEXT PRIMARY KEY,
+	owner_id TEXT,
+	device_code_hash BYTEA NOT NULL,
+	user_code_hash BYTEA,
+	client_label TEXT NOT NULL DEFAULT '',
+	scopes TEXT NOT NULL DEFAULT '[]',
+	status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'redeemed', 'revoked')),
+	lineage_id TEXT NOT NULL DEFAULT '',
+	next_poll_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	approved_at TEXT,
+	redeemed_at TEXT,
+	revoked_at TEXT
+)`
+		indexUserCode  = `CREATE INDEX ix_device_pairings_user_code_hash ON device_pairings (user_code_hash)`
+		indexOwner     = `CREATE INDEX ix_device_pairings_owner_id ON device_pairings (owner_id)`
+		indexExpiresAt = `CREATE INDEX ix_device_pairings_expires_at ON device_pairings (expires_at)`
+	)
+
+	return migrate.Migration{
+		ID:       "0008",
+		Name:     "device_pairings",
+		Requires: []string{"0001"},
+		Preconditions: []migrate.Precondition{
+			migrate.TableAbsent("device_pairings"),
+		},
+		Up: migrate.Steps{
+			SQLite:   []string{createSQLite, indexUserCode, indexOwner, indexExpiresAt},
+			Postgres: []string{createPostgres, indexUserCode, indexOwner, indexExpiresAt},
+		},
+		Down: migrate.Steps{
+			SQLite:   []string{`DROP TABLE device_pairings`},
+			Postgres: []string{`DROP TABLE device_pairings`},
+		},
+	}
+}
+
+// migration0007LinkedIdentities creates the linked_identities table, which binds
+// an external identity-provider subject to a local owner and carries the
+// personal data (email) obtained from that provider.
+//
+// The (provider, subject) pair is UNIQUE. That index is not merely an
+// optimisation for the login-bootstrap lookup: it is the control that prevents
+// one external subject from being bound to two owners. Without it a race
+// between two concurrent link requests could attach the same provider identity
+// to a second owner, and a subsequent login would resolve to whichever row was
+// read first — an account-takeover primitive. The uniqueness is enforced by the
+// database so it holds regardless of what any adapter or service does.
+//
+// email is nullable. It is personal data held here, separate from the owner
+// row, so it can be crypto-erased independently; NULL is the post-erasure state
+// as well as the state for providers that release no address.
+//
+// The table has an owner_id FOREIGN KEY to owners(id) and is indexed by
+// owner_id for the owner-scoped list and the account-deletion sweep.
+//
+// This migration is numbered 0007 rather than 0006 because 0006
+// (refresh_credentials) is developed on a sibling branch; see the pull request
+// for the required merge order.
+func migration0007LinkedIdentities() migrate.Migration {
+	const (
+		createSQLite = `CREATE TABLE linked_identities (
+	id TEXT PRIMARY KEY,
+	owner_id TEXT NOT NULL REFERENCES owners(id),
+	provider TEXT NOT NULL,
+	subject TEXT NOT NULL,
+	email TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`
+		createPostgres = `CREATE TABLE linked_identities (
+	id TEXT PRIMARY KEY,
+	owner_id TEXT NOT NULL REFERENCES owners(id),
+	provider TEXT NOT NULL,
+	subject TEXT NOT NULL,
+	email TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`
+		uniqueProviderSubject = `CREATE UNIQUE INDEX ux_linked_identities_provider_subject ON linked_identities (provider, subject)`
+		indexOwner            = `CREATE INDEX ix_linked_identities_owner_id ON linked_identities (owner_id)`
+	)
+
+	return migrate.Migration{
+		ID:       "0007",
+		Name:     "linked_identities",
+		Requires: []string{"0001"},
+		Preconditions: []migrate.Precondition{
+			migrate.TableAbsent("linked_identities"),
+		},
+		Up: migrate.Steps{
+			SQLite:   []string{createSQLite, uniqueProviderSubject, indexOwner},
+			Postgres: []string{createPostgres, uniqueProviderSubject, indexOwner},
+		},
+		Down: migrate.Steps{
+			SQLite:   []string{`DROP TABLE linked_identities`},
+			Postgres: []string{`DROP TABLE linked_identities`},
+		},
+	}
+}
+
 // migration0006RefreshCredentials creates the refresh_credentials table: the
 // rotatable, single-use credentials from which access tokens are minted
 // (ADR-0018).
@@ -547,6 +701,53 @@ func migration0006RefreshCredentials() migrate.Migration {
 		Down: migrate.Steps{
 			SQLite:   []string{`DROP TABLE refresh_credentials`},
 			Postgres: []string{`DROP TABLE refresh_credentials`},
+		},
+	}
+}
+
+// migration0009Administrators creates the administrators table: the system-axis
+// principals authorized to curate the reserved-identifier lists (ADR-0017).
+//
+// # Why this table has no owner_id and no foreign key
+//
+// Every other principal in the schema hangs off owners(id), because every other
+// principal acts on one owner's data. An administrator does not: the blocklist
+// and its allowlist are global (handles are a single global namespace), so the
+// authority to edit them cannot be scoped to an owner without making it the
+// wrong authority. Giving this table an owner_id would invite exactly the
+// confusion the role exists to prevent — an "administrator of one owner" who
+// nonetheless edits a list that binds every owner.
+//
+// # Why status is a CHECK-constrained enum rather than a boolean
+//
+// The authorization decision reads "is this administrator active?", and a
+// disabled administrator must be distinguishable from an absent one. A deleted
+// row loses the fact that the principal ever existed, which an incident review
+// needs; a boolean invites a future third state to be encoded as NULL. The
+// CHECK mirrors domain.AdminStatus so the database refuses a value the domain
+// would not recognize, as defense-in-depth behind the adapter's own validation:
+// an unrecognized status must never be readable back as authorization.
+func migration0009Administrators() migrate.Migration {
+	const ddl = `CREATE TABLE administrators (
+	id TEXT PRIMARY KEY,
+	label TEXT NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`
+	return migrate.Migration{
+		ID:   "0009",
+		Name: "administrators",
+		Preconditions: []migrate.Precondition{
+			migrate.TableAbsent("administrators"),
+		},
+		Up: migrate.Steps{
+			SQLite:   []string{ddl},
+			Postgres: []string{ddl},
+		},
+		Down: migrate.Steps{
+			SQLite:   []string{`DROP TABLE administrators`},
+			Postgres: []string{`DROP TABLE administrators`},
 		},
 	}
 }
