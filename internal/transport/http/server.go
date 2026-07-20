@@ -69,7 +69,7 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publi
 		return nil, ErrNilPublisher
 	}
 
-	tlsCfg, err := buildTLSConfig(cfg)
+	tlsCfg, err := buildTLSConfig(cfg, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +79,7 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publi
 		addr:   cfg.Server.ListenAddr,
 		httpSrv: &http.Server{
 			Addr:              cfg.Server.ListenAddr,
-			Handler:           NewHandler(logger, pinger, publisher),
+			Handler:           NewHandler(cfg, logger, pinger, publisher),
 			TLSConfig:         tlsCfg,
 			ReadHeaderTimeout: readHeaderTimeout,
 			ReadTimeout:       readTimeout,

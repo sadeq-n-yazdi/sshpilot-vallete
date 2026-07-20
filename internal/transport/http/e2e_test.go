@@ -71,7 +71,7 @@ func newE2E(t *testing.T) *e2e {
 		t.Fatalf("publish.New: %v", err)
 	}
 
-	srv := httptest.NewServer(NewHandler(slog.New(slog.DiscardHandler), okPinger{}, svc))
+	srv := httptest.NewServer(NewHandler(nil, slog.New(slog.DiscardHandler), okPinger{}, svc))
 	t.Cleanup(srv.Close)
 
 	return &e2e{
