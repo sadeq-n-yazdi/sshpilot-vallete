@@ -36,7 +36,7 @@ tls:
     dns:
       # manual | api
       mode: ""
-      # Required for dns_01 + api: cloudflare | route53
+      # Required for dns_01 + api: cloudflare | route53 | digitalocean
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -44,6 +44,9 @@ tls:
       #   cloudflare -> the API token
       #   route53    -> "ACCESS_KEY_ID:SECRET_ACCESS_KEY" (no region; Route 53
       #                 is global and always signed for us-east-1)
+      #   digitalocean -> a personal access token with write scope. NOTE: this
+      #                 token is account-wide -- DigitalOcean has no per-domain
+      #                 or per-record scoping. See the doc below.
       #
       # See docs/dns01-provider-credentials.md for the least-privilege policy
       # each provider needs. These credentials can rewrite your zone, so scope
