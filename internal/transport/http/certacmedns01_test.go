@@ -446,6 +446,11 @@ type recordingSolver struct {
 	challenge  string
 	presentErr error
 
+	// onPresent runs inside present, so a test can make something happen
+	// mid-order -- notably cancel the order's context, which is what a
+	// shutdown does.
+	onPresent func()
+
 	presents int
 	cleanups int
 	accepts  int
@@ -466,6 +471,9 @@ func (r *recordingSolver) challengeType() string {
 
 func (r *recordingSolver) present(context.Context, *acme.Client, *acme.Challenge, string) error {
 	r.presents++
+	if r.onPresent != nil {
+		r.onPresent()
+	}
 	return r.presentErr
 }
 
@@ -562,4 +570,37 @@ func acmeProviderAgainstFakeCA(t *testing.T, solver acmeSolver) (*acmeProvider, 
 		done:      make(chan struct{}),
 	}
 	return p, srv.URL + "/authz/1"
+}
+
+// TestCleanupSurvivesAShutdownMidOrder is the case releaseChallenge's detached
+// context exists for, and the only one that can tell it apart from passing the
+// order's context straight through.
+//
+// The other cleanup tests hand solveAuthorization a context that is never
+// canceled, so they cannot distinguish a detached context from the order's own
+// -- they would pass either way. Here the order's context is canceled while the
+// order is still in flight, which is exactly what Close does to the renewal
+// loop during a shutdown. If releaseChallenge forwarded that context, the DNS
+// provider's DELETE would fail instantly without being sent and the challenge
+// TXT record would stay published on the operator's zone.
+func TestCleanupSurvivesAShutdownMidOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancel from inside present, so the order context is dead by the time the
+	// deferred cleanup runs -- a shutdown landing mid-order.
+	recorder := &recordingSolver{onPresent: cancel}
+	p, authzURL := acmeProviderAgainstFakeCA(t, recorder)
+
+	_ = p.solveAuthorization(ctx, authzURL)
+
+	if recorder.cleanups != 1 {
+		t.Fatalf("cleanup ran %d times after a shutdown mid-order, want 1", recorder.cleanups)
+	}
+	if recorder.cleanupSawDeadContext {
+		t.Error("cleanup was handed the canceled order context: a real provider's DELETE " +
+			"would fail without being sent, leaving the challenge record published")
+	}
 }

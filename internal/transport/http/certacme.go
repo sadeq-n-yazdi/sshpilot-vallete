@@ -415,8 +415,15 @@ func (p *acmeProvider) clearChallenge(name string) {
 // solver's error is not logged here for the reason renewalLoop gives — this
 // layer has no redaction-aware log path — so a solver that can report a failed
 // withdrawal does so itself.
-func (p *acmeProvider) releaseChallenge(identifier string) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), acmeCleanupTimeout)
+// The order's context is taken rather than started from Background so the
+// cleanup keeps the caller's context VALUES -- request id, logger, trace span.
+// WithoutCancel strips only cancellation and the deadline, which is the whole
+// of what makes the order's context unsafe here; discarding the values as well
+// was collateral. It matters concretely: a DELETE that fails during shutdown is
+// exactly the event an operator has to correlate with the order that leaked the
+// record, and an uncorrelated log line is the one that goes unread.
+func (p *acmeProvider) releaseChallenge(ctx context.Context, identifier string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), acmeCleanupTimeout)
 	defer cancel()
 	_ = p.solver.cleanup(ctx, identifier)
 }
@@ -606,7 +613,7 @@ func (p *acmeProvider) solveAuthorization(ctx context.Context, authzURL string) 
 	// a durable authorization for anyone who can still answer it. For
 	// TLS-ALPN-01 it is a certificate that authenticates nothing left reachable
 	// on the acme-tls/1 path.
-	defer p.releaseChallenge(authz.Identifier.Value)
+	defer p.releaseChallenge(ctx, authz.Identifier.Value)
 
 	if err := p.solver.present(ctx, p.client, chal, authz.Identifier.Value); err != nil {
 		// Wrapped without re-wording. A solver's error names the record and the
