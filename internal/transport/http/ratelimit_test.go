@@ -1,18 +1,24 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/counter"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/ratelimit"
 )
 
@@ -617,5 +623,288 @@ func TestMiddlewareConcurrentSameKey(t *testing.T) {
 
 	if ok != limit {
 		t.Fatalf("%d of %d concurrent requests admitted, want exactly %d", ok, callers, limit)
+	}
+}
+
+// --- management tier (per-credential) ---
+
+// mgmtScoped wraps an always-200 ScopedHandler in the management decorator
+// under test, keyed by a limiter over a hand-wound clock.
+func mgmtScoped(t *testing.T, store counter.Store, tier ratelimit.Tier) ScopedHandler {
+	t.Helper()
+
+	lim, err := ratelimit.NewLimiter(store, ratelimit.TierManagement, tier)
+	if err != nil {
+		t.Fatalf("NewLimiter: %v", err)
+	}
+	ok := func(w http.ResponseWriter, _ *http.Request, _ *auth.Authorization) { w.WriteHeader(http.StatusOK) }
+	return managementRateLimit(lim, slog.New(slog.DiscardHandler))(ok)
+}
+
+// mgmtAuthorization builds a verified Authorization carrying cred, the way
+// Guard.Authorize would. It goes through a real signer and a real Guard rather
+// than fabricating the struct, so the credential the decorator keys on is the
+// one a real token actually produces.
+func mgmtAuthorization(t *testing.T, cred string) *auth.Authorization {
+	t.Helper()
+
+	signer, err := auth.NewAccessTokenSigner([]byte(strings.Repeat("k", auth.MinSigningKeyLen)))
+	if err != nil {
+		t.Fatalf("NewAccessTokenSigner: %v", err)
+	}
+	store, err := counter.NewMemoryStore(time.Now)
+	if err != nil {
+		t.Fatalf("NewMemoryStore: %v", err)
+	}
+	denylist, err := auth.NewDenylist(store)
+	if err != nil {
+		t.Fatalf("NewDenylist: %v", err)
+	}
+	guard, err := auth.NewGuard(signer, denylist)
+	if err != nil {
+		t.Fatalf("NewGuard: %v", err)
+	}
+
+	now := time.Now().UTC()
+	tok, err := signer.Issue(domain.AccessToken{
+		ID:                  "jti-" + cred,
+		OwnerID:             "owner-a",
+		RefreshCredentialID: domain.RefreshCredentialID(cred),
+		Scopes:              []domain.Scope{{Kind: domain.ScopeFullOwner}},
+		IssuedAt:            now,
+		ExpiresAt:           now.Add(auth.AccessTokenLifetime),
+	})
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	a, err := guard.Authorize(context.Background(), tok, auth.Access{}, now)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	return a
+}
+
+// mgmtServe drives one request through a ScopedHandler.
+func mgmtServe(h ScopedHandler, a *auth.Authorization) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/devices", nil)
+	h(rec, req, a)
+	return rec
+}
+
+// TestManagementBoundaryAndRetryAfterValue asserts the exact Retry-After the
+// management tier reports, at an instant chosen by the test. The entry-point
+// tests can only bound this value, because the handler they drive owns its own
+// clock; here the store's clock is wound by hand, so a constant Retry-After --
+// the bug that looks right in a header dump and is wrong for every request
+// after the first in a window -- cannot hide.
+func TestManagementBoundaryAndRetryAfterValue(t *testing.T) {
+	t.Parallel()
+
+	clk := newRLClock()
+	store, err := counter.NewMemoryStore(clk.now)
+	if err != nil {
+		t.Fatalf("NewMemoryStore: %v", err)
+	}
+	h := mgmtScoped(t, store, ratelimit.Tier{Limit: 3, Window: time.Minute})
+	a := mgmtAuthorization(t, "cred-a")
+
+	for i := 1; i <= 3; i++ {
+		if rec := mgmtServe(h, a); rec.Code != http.StatusOK {
+			t.Fatalf("request #%d: status %d, want 200", i, rec.Code)
+		}
+	}
+
+	// 25s into the window: the caller is owed the remaining 35s, not a
+	// constant 60.
+	clk.advance(25 * time.Second)
+	rec := mgmtServe(h, a)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("request #4: status %d, want 429", rec.Code)
+	}
+	if got, want := rec.Header().Get(RetryAfterHeader), "35"; got != want {
+		t.Fatalf("Retry-After = %q, want %q (remaining window, not the full window)", got, want)
+	}
+
+	// Rollover restores the budget.
+	clk.advance(35 * time.Second)
+	if rec := mgmtServe(h, a); rec.Code != http.StatusOK {
+		t.Fatalf("after rollover: status %d, want 200", rec.Code)
+	}
+}
+
+// TestManagementTierFailsClosed pins the outage decision. ADR-0023's management
+// tier is authenticated and mutating, so a counter-store outage refuses rather
+// than waves through: the caller is a known account holder who receives a 429
+// with a Retry-After, and read-available/write-refused is the degradation an
+// operator can reason about.
+func TestManagementTierFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	if got := ratelimit.DefaultTiers().Management.FailOpen; got {
+		t.Fatalf("management tier FailOpen = %v, want false: this tier must fail closed", got)
+	}
+
+	h := mgmtScoped(t, rlFailingStore{}, ratelimit.DefaultTiers().Management)
+	rec := mgmtServe(h, mgmtAuthorization(t, "cred-a"))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status during a store outage = %d, want 429", rec.Code)
+	}
+	if got := rec.Header().Get(RetryAfterHeader); got != "60" {
+		t.Fatalf("Retry-After = %q, want the full window \"60\"", got)
+	}
+}
+
+// TestManagementNilLimiterIsPassThrough: rate limiting is disableable per
+// ADR-0023, and the disabled path must not cost a wrapper per request.
+func TestManagementNilLimiterIsPassThrough(t *testing.T) {
+	t.Parallel()
+
+	ok := func(w http.ResponseWriter, _ *http.Request, _ *auth.Authorization) { w.WriteHeader(http.StatusTeapot) }
+	h := managementRateLimit(nil, slog.New(slog.DiscardHandler))(ok)
+	for range 50 {
+		if rec := mgmtServe(h, mgmtAuthorization(t, "cred-a")); rec.Code != http.StatusTeapot {
+			t.Fatalf("status = %d, want the wrapped handler's 418", rec.Code)
+		}
+	}
+}
+
+// TestManagementCredentiallessAuthorizationIsRefused: a nil Authorization
+// carries no credential, so it cannot be attributed to anyone. It is refused
+// rather than passed through -- an unattributable caller must never be the one
+// caller exempt from the limit. This is unreachable through Protect, which
+// refuses a nil Authorization first; the decorator holds the line on its own so
+// it stays correct if it is ever mounted elsewhere.
+func TestManagementCredentiallessAuthorizationIsRefused(t *testing.T) {
+	t.Parallel()
+
+	store, err := counter.NewMemoryStore(time.Now)
+	if err != nil {
+		t.Fatalf("NewMemoryStore: %v", err)
+	}
+	h := mgmtScoped(t, store, ratelimit.Tier{Limit: 100, Window: time.Minute})
+	rec := mgmtServe(h, nil)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429 for an Authorization with no credential", rec.Code)
+	}
+	if rec.Header().Get(RetryAfterHeader) == "" {
+		t.Error("refusal carried no Retry-After")
+	}
+}
+
+// TestManagementAndPublishTiersDoNotShareBudget: both tiers run on one counter
+// store, so a key collision between them would let publish traffic exhaust a
+// management budget (or the reverse) while both route tables still read as
+// correctly limited. The Limiter namespaces by tier name; this asserts it end
+// to end rather than trusting the prefix.
+func TestManagementAndPublishTiersDoNotShareBudget(t *testing.T) {
+	t.Parallel()
+
+	clk := newRLClock()
+	store, err := counter.NewMemoryStore(clk.now)
+	if err != nil {
+		t.Fatalf("NewMemoryStore: %v", err)
+	}
+
+	pubLim, err := ratelimit.NewLimiter(store, ratelimit.TierPublish, ratelimit.Tier{Limit: 1, Window: time.Minute})
+	if err != nil {
+		t.Fatalf("NewLimiter: %v", err)
+	}
+	okHTTP := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	pub := rateLimitMiddleware(pubLim, newTrustedPeers(nil), slog.New(slog.DiscardHandler))(okHTTP)
+
+	// Spend the publish budget for an IP that is also the credential string,
+	// which is the collision a shared key space would produce.
+	const shared = "203.0.113.5"
+	for range 2 {
+		pub.ServeHTTP(httptest.NewRecorder(), rlRequest(shared+":1"))
+	}
+
+	mgmtH := mgmtScoped(t, store, ratelimit.Tier{Limit: 1, Window: time.Minute})
+	if rec := mgmtServe(mgmtH, mgmtAuthorization(t, shared)); rec.Code != http.StatusOK {
+		t.Fatalf("management request = %d, want 200: the publish tier spent its budget", rec.Code)
+	}
+}
+
+// errCounterStore fails every Increment with a fixed error, so a test can
+// choose exactly which failure the limiter reports.
+type errCounterStore struct {
+	counter.Store
+	err error
+}
+
+func (s errCounterStore) Increment(context.Context, string, int64, time.Duration) (counter.Count, error) {
+	return counter.Count{}, s.err
+}
+
+// mgmtLogged runs one management-tier request against a store that fails with
+// err and returns the decoded log entry the decorator emitted.
+func mgmtLogged(t *testing.T, err error, cancelRequest bool) (level, msg string) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	lim, lerr := ratelimit.NewLimiter(
+		errCounterStore{err: err},
+		ratelimit.TierManagement,
+		ratelimit.DefaultTiers().Management,
+	)
+	if lerr != nil {
+		t.Fatalf("NewLimiter: %v", lerr)
+	}
+	ok := func(w http.ResponseWriter, _ *http.Request, _ *auth.Authorization) { w.WriteHeader(http.StatusOK) }
+	h := managementRateLimit(lim, logger)(ok)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/keys", nil)
+	if cancelRequest {
+		ctx, cancel := context.WithCancel(req.Context())
+		cancel()
+		req = req.WithContext(ctx)
+	}
+	h(httptest.NewRecorder(), req, mgmtAuthorization(t, "cred-log"))
+
+	var entry struct {
+		Level string `json:"level"`
+		Msg   string `json:"msg"`
+	}
+	if uerr := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry); uerr != nil {
+		t.Fatalf("decode log entry %q: %v", buf.String(), uerr)
+	}
+	return entry.Level, entry.Msg
+}
+
+// TestManagementLogsClientCancellationBelowError keeps a caller that hung up
+// from alerting operators. A tight client timeout would otherwise emit a steady
+// stream of Error lines and train readers to ignore the one that means the
+// limiter has stopped limiting.
+func TestManagementLogsClientCancellationBelowError(t *testing.T) {
+	t.Parallel()
+
+	level, _ := mgmtLogged(t, context.Canceled, true)
+	if level == slog.LevelError.String() || level == slog.LevelWarn.String() {
+		t.Fatalf("client cancellation logged at %s; must not alert operators", level)
+	}
+}
+
+// TestManagementStillErrorsOnRealStoreOutageDuringCancellation guards the other
+// direction, and it is the reason this carve-out tests the ERROR rather than
+// r.Context().Err().
+//
+// This tier fails closed, so an outage produces refusals, and refusals make
+// clients hang up. The disconnect is therefore correlated with the outage
+// rather than independent of it, and a carve-out keyed on "did the client go
+// away" would file the outage at Debug exactly when it is happening most --
+// leaving anyone able to cause disconnects a way to mute the signal that the
+// limiter stopped working.
+func TestManagementStillErrorsOnRealStoreOutageDuringCancellation(t *testing.T) {
+	t.Parallel()
+
+	level, msg := mgmtLogged(t, errors.New("connection refused"), true)
+	if level != slog.LevelError.String() {
+		t.Fatalf("store outage logged at %s during a canceled request, want ERROR", level)
+	}
+	if msg != "rate limit: counter store unavailable" {
+		t.Fatalf("msg = %q, want the genuine-failure message", msg)
 	}
 }

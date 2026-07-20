@@ -23,6 +23,7 @@ var (
 	_ repository.AuditAppender               = nil
 	_ repository.AuditRepository             = nil
 	_ repository.AdministratorRepository     = nil
+	_ repository.ListOverrideRepository      = nil
 	_ repository.Store                       = nil
 )
 

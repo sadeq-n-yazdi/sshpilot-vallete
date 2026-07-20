@@ -77,6 +77,10 @@ func TestEnumWireValues(t *testing.T) {
 		{string(TargetTypeAllowlistEntry), "allowlist_entry"},
 		{string(AdminStatusActive), "active"},
 		{string(AdminStatusDisabled), "disabled"},
+		{string(ListKindAllowlist), "allowlist"},
+		{string(ListKindBlocklistTerm), "blocklist_term"},
+		{string(ListOverridePresent), "present"},
+		{string(ListOverrideRemoved), "removed"},
 		{string(AuditActionKeySetVisibilityChanged), "key_set.visibility_changed"},
 		{string(AuditActionCredentialReuseDetected), "credential.reuse_detected"},
 		{string(AuditActionAuditPseudonymized), "audit.pseudonymized"},
@@ -227,5 +231,23 @@ func TestAdminStatusIsValid(t *testing.T) {
 		{"disabled", true, AdminStatusDisabled.IsValid()},
 		{"empty", false, AdminStatus("").IsValid()},
 		{"unknown", false, AdminStatus("locked").IsValid()},
+	})
+}
+
+func TestListKindIsValid(t *testing.T) {
+	checkEnum(t, []enumCase{
+		{"allowlist", true, ListKindAllowlist.IsValid()},
+		{"blocklist_term", true, ListKindBlocklistTerm.IsValid()},
+		{"empty", false, ListKind("").IsValid()},
+		{"unknown", false, ListKind("denylist").IsValid()},
+	})
+}
+
+func TestListOverrideStateIsValid(t *testing.T) {
+	checkEnum(t, []enumCase{
+		{"present", true, ListOverridePresent.IsValid()},
+		{"removed", true, ListOverrideRemoved.IsValid()},
+		{"empty", false, ListOverrideState("").IsValid()},
+		{"unknown", false, ListOverrideState("pending").IsValid()},
 	})
 }
