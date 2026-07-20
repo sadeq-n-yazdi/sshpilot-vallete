@@ -19,6 +19,7 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/keys"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/schema"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/bootstrap"
@@ -130,6 +131,7 @@ func (e *e2e) seed(handle string, comment string) bootstrap.Result {
 		Handle:  handle,
 		KeyLine: e2eKeyLine(e.t, comment),
 		Now:     e2eNow,
+		Guard:   mustGuard(e.t),
 	})
 	if err != nil {
 		e.t.Fatalf("bootstrap.Seed(%q): %v", handle, err)
@@ -431,4 +433,16 @@ func TestEndToEndCommentInjectionOverHTTP(t *testing.T) {
 	if resp.status != http.StatusInternalServerError {
 		t.Errorf("status = %d, want 500", resp.status)
 	}
+}
+
+// mustGuard builds the real blocklist guard. Tests seed through the same
+// enforcement an operator gets, so a name these fixtures use is a name the
+// product actually permits.
+func mustGuard(t *testing.T) *nameguard.Guard {
+	t.Helper()
+	g, err := nameguard.Default()
+	if err != nil {
+		t.Fatalf("nameguard.Default(): %v", err)
+	}
+	return g
 }

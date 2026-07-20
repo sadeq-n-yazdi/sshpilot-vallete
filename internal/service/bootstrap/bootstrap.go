@@ -21,6 +21,7 @@ import (
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/keys"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
 )
 
@@ -50,14 +51,26 @@ type Params struct {
 	// Now is the timestamp stamped on every seeded row. The caller supplies it
 	// because repositories hold no clock.
 	Now time.Time
+
+	// Guard enforces the reserved-identifier blocklist (ADR-0017) on the
+	// handle and, when one is supplied, the set name. It is REQUIRED: a nil
+	// Guard refuses every name rather than skipping the check, so a caller
+	// that forgets to set this field gets a loud failure instead of a silent
+	// bypass. See nameguard for why the direction is refuse-on-doubt.
+	Guard *nameguard.Guard
 }
 
 // Result reports the identifiers of the seeded rows so an operator (or a test)
 // can refer to them afterwards.
 type Result struct {
-	OwnerID     domain.OwnerID
-	HandleID    domain.HandleID
-	KeySetID    domain.KeySetID
+	OwnerID  domain.OwnerID
+	HandleID domain.HandleID
+	KeySetID domain.KeySetID
+	// SetName is the name the default key set was actually created with:
+	// Params.SetName, or DefaultSetName when the caller supplied none. It is
+	// reported so a caller can print or route to the real name without
+	// re-deriving the fallback and drifting from it.
+	SetName     string
 	DeviceID    domain.DeviceID
 	PublicKeyID domain.PublicKeyID
 	// Fingerprint is the seeded key's SHA256 fingerprint, or "" when no key was
@@ -76,14 +89,25 @@ func Seed(ctx context.Context, store repository.Store, p Params) (Result, error)
 	if store == nil {
 		return Result{}, fmt.Errorf("bootstrap: nil store: %w", domain.ErrInvalidInput)
 	}
-	if err := domain.ValidateHandle(p.Handle); err != nil {
+	// The guard subsumes the syntax validators: it runs ValidateHandle /
+	// ValidateSetName itself and then consults the blocklist, so calling it
+	// here replaces the previous validation rather than adding to it. Routing
+	// every name through the one Check is the point -- a second, guard-free
+	// validation path next to it is exactly the drift this closes.
+	if err := p.Guard.Check(nameguard.KindHandle, nameguard.OpCreate, p.Handle); err != nil {
 		return Result{}, fmt.Errorf("bootstrap: handle: %w", err)
 	}
+
 	setName := p.SetName
 	if setName == "" {
+		// The system, not the caller, chose this name. ADR-0017 scopes the
+		// blocklist to USER-CHOSEN identifiers, and DefaultSetName ("default")
+		// is itself a routing term on the curated list -- checking our own
+		// constant against our own list would make every bootstrap fail on a
+		// name no user picked. A caller who supplies a set name explicitly is
+		// choosing it, and is checked below.
 		setName = DefaultSetName
-	}
-	if err := domain.ValidateSetName(setName); err != nil {
+	} else if err := p.Guard.Check(nameguard.KindKeySetName, nameguard.OpCreate, setName); err != nil {
 		return Result{}, fmt.Errorf("bootstrap: set name: %w", err)
 	}
 
@@ -105,6 +129,7 @@ func Seed(ctx context.Context, store repository.Store, p Params) (Result, error)
 		OwnerID:  domain.OwnerID(newID()),
 		HandleID: domain.HandleID(newID()),
 		KeySetID: domain.KeySetID(newID()),
+		SetName:  setName,
 	}
 
 	err := store.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
@@ -199,6 +224,18 @@ func AddKey(ctx context.Context, r repository.Repos, p AddKeyParams) (Result, er
 		Fingerprint: p.Key.Fingerprint,
 	}
 
+	// SEAM FOR C1 (device management API): device names are in ADR-0017's
+	// scope but are NOT guarded here. Fb4 deliberately stops at handles and
+	// set names because the device management surface is C1's, and two agents
+	// editing the same create path would collide. The name below is
+	// DefaultDeviceName or an operator-supplied bring-up label, not a
+	// user-chosen public identifier.
+	//
+	// To close this seam, add to AddKeyParams a Guard (as Params has) and call
+	// guard.Check(nameguard.KindDeviceName, nameguard.OpCreate, p.DeviceName)
+	// here, plus OpRename wherever DeviceRepository.Rename is invoked.
+	// KindDeviceName is already implemented and tested in nameguard; nothing
+	// else is needed.
 	if err := r.Devices.Create(ctx, &domain.Device{
 		ID:        res.DeviceID,
 		OwnerID:   p.OwnerID,

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/logging"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
@@ -143,6 +144,18 @@ func (c *Config) validateTLS(v *validator, prod bool) {
 	case "csr":
 		if t.Domain == "" {
 			v.add("tls.domain", "required for csr mode")
+		}
+		// All three paths are required. Defaulting any of them would have the
+		// server create or read key material at a location the operator never
+		// chose, and a key nobody knows exists is a key nobody protects.
+		if t.CSR.KeyFile == "" {
+			v.add("tls.csr.key_file", "required for csr mode")
+		}
+		if t.CSR.CSRFile == "" {
+			v.add("tls.csr.csr_file", "required for csr mode")
+		}
+		if t.CSR.CertFile == "" {
+			v.add("tls.csr.cert_file", "required for csr mode")
 		}
 	case "upstream":
 		if len(c.Server.TrustedProxies) == 0 {
@@ -288,6 +301,16 @@ func (c *Config) validateRateLimit(v *validator) {
 }
 
 func (c *Config) validateTelemetry(v *validator) {
+	// The level and format names are checked against internal/logging's own
+	// tables rather than a switch repeated here. A copy would drift, and the
+	// direction it drifts in is "validation accepts a name the logger then
+	// cannot parse", which is exactly the silent fallback this rejects.
+	if _, err := logging.ParseLevel(c.Telemetry.Log.Level); err != nil {
+		v.add("telemetry.log.level", "%v", err)
+	}
+	if err := logging.ValidateFormat(c.Telemetry.Log.Format); err != nil {
+		v.add("telemetry.log.format", "%v", err)
+	}
 	if c.Telemetry.Metrics.OTLP.Enabled && c.Telemetry.Metrics.OTLP.Endpoint == "" {
 		v.add("telemetry.metrics.otlp.endpoint", "required when otlp metrics are enabled")
 	}

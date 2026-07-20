@@ -52,6 +52,7 @@ type TLSConfig struct {
 	ACME                        ACMEConfig             `yaml:"acme"`
 	CloudflareOrigin            CloudflareOriginConfig `yaml:"cloudflare_origin"`
 	Manual                      ManualTLSConfig        `yaml:"manual"`
+	CSR                         CSRTLSConfig           `yaml:"csr"`
 	Upstream                    UpstreamTLSConfig      `yaml:"upstream"`
 	AllowSelfSignedInProduction bool                   `yaml:"allow_self_signed_in_production"`
 	Domain                      string                 `yaml:"domain"`
@@ -81,6 +82,29 @@ type CloudflareOriginConfig struct {
 type ManualTLSConfig struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+}
+
+// CSRTLSConfig configures the generate-a-CSR-for-external-signing mode.
+//
+// The app owns the private key and never emits it; the operator receives only
+// the CSR, has it signed by any CA, and drops the returned chain at CertFile.
+// All three paths are operator-chosen with no defaults, because a default key
+// path is a file an operator can be unaware their server created.
+type CSRTLSConfig struct {
+	// KeyFile is where the generated private key lives, written 0600. It is
+	// created once and reused: regenerating it would invalidate a certificate
+	// the operator already had signed.
+	KeyFile string `yaml:"key_file"`
+
+	// CSRFile is where the certificate signing request is written for the
+	// operator to collect. It contains only the public key and subject, both
+	// of which appear in the issued certificate, so it is not a secret.
+	CSRFile string `yaml:"csr_file"`
+
+	// CertFile is where the operator installs the signed chain. Until it
+	// exists the server refuses to start — there is no certificate to serve
+	// and ADR-0015 forbids falling back to plaintext or self-signed.
+	CertFile string `yaml:"cert_file"`
 }
 
 // UpstreamTLSConfig configures TLS termination by an upstream proxy.
