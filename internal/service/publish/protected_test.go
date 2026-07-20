@@ -216,6 +216,47 @@ func TestProtectedSetRefusesTheCorrectKeyOnANonActiveSet(t *testing.T) {
 	}
 }
 
+// TestNonActiveSetIsRefusedWithoutTouchingTheCredentialStore pins the ORDERING
+// that the test above depends on but cannot see.
+//
+// A quarantined set is refused either way — before the credential is checked,
+// or after — so a test that only compares verdicts cannot tell the two orderings
+// apart, and the ordering would be held by a comment alone. This one can, and
+// it does it two ways.
+//
+// The verifier here faults rather than denies. With the state checked FIRST the
+// credential store is never touched: the answer is the ordinary 404, and the
+// spy records no call. With the state checked after, the fault is reached first
+// and propagates as a 500 — so a tombstoned set would start returning a
+// different answer during a credential-store outage than it returns normally,
+// and that difference is readable from outside.
+//
+// The stronger of the two assertions is spy.calls == 0. A set that is dead is
+// dead regardless of any credential, and no verification work should run
+// against it at all.
+func TestNonActiveSetIsRefusedWithoutTouchingTheCredentialStore(t *testing.T) {
+	t.Parallel()
+
+	f := newProtectedFixture(t)
+	alice := f.seedOwner("alice")
+	setID := f.seedSet(alice.OwnerID, "prod", domain.VisibilityProtected, domain.NameStateActive)
+	f.addKey(alice.OwnerID, setID, "prod-key")
+	f.exec(`UPDATE key_sets SET state = ? WHERE id = ?`, string(domain.NameStateQuarantined), string(setID))
+
+	spy := &countingVerifier{err: errors.New("access key store unreachable")}
+	svc, err := New(f.store.Repos(), WithVerifier(spy))
+	if err != nil {
+		t.Fatalf("publish.New: %v", err)
+	}
+
+	res, err := svc.Resolve(context.Background(), "alice", "prod", secrets.NewRedacted("anything"))
+	denied(t, "a quarantined set with a faulting verifier", res, err)
+	if spy.calls != 0 {
+		t.Errorf("the credential store was consulted %d time(s) for a non-active set; "+
+			"the state check must run before the credential, not after", spy.calls)
+	}
+}
+
 // TestPublicSetIgnoresTheCredentialEntirely pins that the token is consulted
 // only where it means something. A public set that started refusing callers who
 // sent a stray or stale Authorization header would be an outage; one that
