@@ -9,7 +9,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
@@ -38,6 +40,11 @@ type dsRecord struct {
 // package contacts DNSimple.
 type dnsimpleAPI struct {
 	t *testing.T
+
+	// mu guards every mutable field below. The concurrency test drives this
+	// handler from several goroutines at once, and an unguarded fake would race
+	// on its own bookkeeping and report the provider as the culprit.
+	mu sync.Mutex
 
 	// requests records every method+path the provider issued, which is how the
 	// tests assert what the provider did NOT do -- no delete on the failed
@@ -121,6 +128,8 @@ func (r dsRewriteHost) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func (a *dnsimpleAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.requests = append(a.requests, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
 
 	if got := r.Header.Get("Authorization"); got != "Bearer "+dsTestToken {
@@ -274,6 +283,8 @@ func (a *dnsimpleAPI) write(w http.ResponseWriter, status int, body string) {
 
 // deletes returns the DELETE requests the provider issued.
 func (a *dnsimpleAPI) deletes() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	var out []string
 	for _, req := range a.requests {
 		if strings.HasPrefix(req, http.MethodDelete+" ") {
@@ -281,6 +292,19 @@ func (a *dnsimpleAPI) deletes() []string {
 		}
 	}
 	return out
+}
+
+// whoamiCount returns how many account lookups the provider issued.
+func (a *dnsimpleAPI) whoamiCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var n int
+	for _, req := range a.requests {
+		if strings.HasPrefix(req, http.MethodGet+" /whoami") {
+			n++
+		}
+	}
+	return n
 }
 
 func TestDNSimplePresentPublishesRelativeNameAndCleansUp(t *testing.T) {
@@ -606,6 +630,136 @@ func TestDNSimpleResolvesTheAccountOnlyOnce(t *testing.T) {
 	}
 	if whoamis != 1 {
 		t.Errorf("whoami calls = %d, want 1: the resolved account must be cached", whoamis)
+	}
+}
+
+// TestDNSimpleAccountResolutionIsConcurrencySafe drives the account resolution
+// from several goroutines at once, which is the shape a multi-name order takes:
+// one provider, several challenges in flight.
+//
+// Run under -race, it covers the reason the whoami call is NOT made under the
+// mutex. Racers may each issue their own lookup -- that is the accepted cost of
+// not holding a lock across a network call -- but every one of them must leave
+// with the SAME non-zero id, because the first write wins and the losers return
+// the cached value rather than their own.
+func TestDNSimpleAccountResolutionIsConcurrencySafe(t *testing.T) {
+	api, provider := newDNSimpleAPI(t)
+
+	const goroutines = 8
+	// Each round races a FRESH provider, because the cache is written exactly
+	// once per provider. Reusing one provider would put every caller's read
+	// before that single early write, so no read would ever overlap it: the race
+	// detector would see nothing and the test would pass whether or not the
+	// cache is guarded at all. Measured -- with a single shared provider,
+	// removing the mutex from cachedAccount survives every run. Many rounds give
+	// many first-writes, and a goroutine still arriving at its read while a
+	// faster sibling has already published is the interleaving that trips the
+	// detector.
+	const rounds = 40
+
+	for range rounds {
+		// A fresh provider over the SAME fake, so the cache starts empty while
+		// the request-counting stays cumulative.
+		p := &dnsimpleProvider{
+			token:  secrets.NewRedacted(dsTestToken),
+			client: provider.(*dnsimpleProvider).client,
+		}
+
+		var start sync.WaitGroup
+		var done sync.WaitGroup
+		start.Add(1)
+		ids := make([]int64, goroutines)
+		errs := make([]error, goroutines)
+
+		for i := range goroutines {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				// Released together, so the callers genuinely contend for the
+				// first resolution instead of arriving one after another.
+				start.Wait()
+				ids[i], errs[i] = p.account(t.Context())
+			}()
+		}
+		start.Done()
+		done.Wait()
+
+		for i := range goroutines {
+			if errs[i] != nil {
+				t.Fatalf("goroutine %d: account: %v", i, errs[i])
+			}
+			if ids[i] == 0 {
+				t.Fatalf("goroutine %d observed account 0: a racer read the cache "+
+					"before it was published", i)
+			}
+			if ids[i] != dsAccountID {
+				t.Fatalf("goroutine %d got account %d, want %d", i, ids[i], dsAccountID)
+			}
+		}
+		// Once resolved, the cache serves every later caller on this provider.
+		before := api.whoamiCount()
+		if id, err := p.account(t.Context()); err != nil || id != dsAccountID {
+			t.Fatalf("account after the race = %d, %v; want the cached id", id, err)
+		}
+		if got := api.whoamiCount(); got != before {
+			t.Fatalf("a call after the race issued another whoami (%d -> %d)", before, got)
+		}
+	}
+}
+
+// TestDNSimpleUserTokenRefusalIsNotCached pins that the refusal stays reachable.
+// It is returned before the cache is written, so it must fire on EVERY call --
+// a one-shot error that a later call skipped past would let a user token through
+// on a retry.
+func TestDNSimpleUserTokenRefusalIsNotCached(t *testing.T) {
+	api, provider := newDNSimpleAPI(t)
+	api.nullAccount = true
+	p := provider.(*dnsimpleProvider)
+
+	for i := range 3 {
+		id, err := p.account(t.Context())
+		if err == nil {
+			t.Fatalf("call %d: account succeeded for a user token", i)
+		}
+		if id != 0 {
+			t.Errorf("call %d: account = %d alongside an error, want 0", i, id)
+		}
+		if !strings.Contains(err.Error(), "account token") {
+			t.Errorf("call %d: error %q is not the user-token refusal", i, err)
+		}
+	}
+	if got := api.whoamiCount(); got != 3 {
+		t.Errorf("whoami calls = %d, want 3: a failed resolution must not be cached", got)
+	}
+}
+
+// TestDNSimpleErrorMessageTruncationKeepsValidUTF8 pins that bounding the API's
+// own message cannot leave a partial rune. A fixed byte cut can land inside a
+// multi-byte sequence, and the invalid UTF-8 that results is mangled by whatever
+// encodes the log record downstream.
+func TestDNSimpleErrorMessageTruncationKeepsValidUTF8(t *testing.T) {
+	// One byte of "世" sits before the bound and two after it.
+	msg := strings.Repeat("a", maxAPIMessageBytes-1) + "世" + strings.Repeat("b", 50)
+	if utf8.ValidString(msg[:maxAPIMessageBytes]) {
+		t.Fatalf("fixture no longer splits a rune at the %d-byte cut", maxAPIMessageBytes)
+	}
+
+	raw, err := json.Marshal(map[string]any{"message": msg})
+	if err != nil {
+		t.Fatalf("marshal error body: %v", err)
+	}
+
+	got := dnsimpleError(http.StatusBadRequest, raw)
+	if got == nil {
+		t.Fatal("dnsimpleError returned nil")
+	}
+	if !utf8.ValidString(got.Error()) {
+		t.Errorf("error text is not valid UTF-8: %q", got.Error())
+	}
+	// The repair must cost at most the bytes a partial rune can be, so the
+	// diagnostic is not silently gutted.
+	if len(got.Error()) < maxAPIMessageBytes-utf8.UTFMax {
+		t.Errorf("truncation discarded more than a partial rune: %d bytes", len(got.Error()))
 	}
 }
 

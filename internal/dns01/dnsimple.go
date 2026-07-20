@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/safetext"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
@@ -335,11 +336,36 @@ func dnsimpleTXTContent(content string) string {
 // the first Present, using that call's context. Only a SUCCESSFUL lookup is
 // cached: caching a failure — as a sync.Once would — would turn one transient
 // network fault at the first renewal into a provider that never works again.
+//
+// # Why the lock is not held across the request
+//
+// The whoami call runs with NO lock held, and the mutex is taken only to read
+// the cache and to publish the result. Holding it across the request would let
+// one slow or hung whoami block every other issuance on this provider — a
+// network call inside a critical section is an availability fault on a seam
+// whose whole job is renewing certificates before they expire.
+//
+// The cost is that callers racing the first resolution can each issue their own
+// whoami. That is deliberate rather than overlooked:
+//
+//   - It is correctness-neutral. whoami is an idempotent GET, every racer
+//     computes the same account for the same token, and the first write wins
+//     while the losers return the winner's value, so the cache cannot disagree
+//     with itself.
+//   - The herd is bounded and tiny. DNS-01 runs a handful of concurrent
+//     challenges per order, and only until the first result is published.
+//   - singleflight would collapse the herd, but golang.org/x/sync is an INDIRECT
+//     dependency here; importing it would promote it to a direct one and change
+//     go.mod to save a few idempotent GETs. Hand-rolling the same thing would add
+//     a second concurrency primitive to a path taken once per provider lifetime.
+//
+// Both refusals below return BEFORE the lock is retaken, so neither is ever
+// cached as a success and both stay reachable on every call. That matters most
+// for the user-token case: it must not become a one-shot error that a later call
+// silently skips past.
 func (p *dnsimpleProvider) account(ctx context.Context) (int64, error) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.accountID > 0 {
-		return p.accountID, nil
+	if id := p.cachedAccount(); id > 0 {
+		return id, nil
 	}
 
 	var out dnsimpleWhoamiResponse
@@ -355,8 +381,22 @@ func (p *dnsimpleProvider) account(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("%w: token resolves to no account; DNS-01 needs an "+
 			"account token, not a user token", ErrDNSimpleAPI)
 	}
-	p.accountID = out.Data.Account.ID
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.accountID == 0 {
+		p.accountID = out.Data.Account.ID
+	}
+	// The winner's value is returned rather than this call's, so every racer
+	// leaves with the id that is actually cached.
 	return p.accountID, nil
+}
+
+// cachedAccount reads the resolved account, or zero if it is not resolved yet.
+func (p *dnsimpleProvider) cachedAccount() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.accountID
 }
 
 // dnsimpleZonePath builds the account-scoped path for one zone. The account is a
@@ -510,21 +550,24 @@ func (p *dnsimpleProvider) do(ctx context.Context, method, path string, body []b
 
 // dnsimpleError renders the API's own error, using only its message.
 //
-// The message is truncated because it is remote input, treated as a bounded
+// The message is bounded because it is remote input, treated as a bounded
 // diagnostic rather than as trusted text. DNSimple never echoes the bearer token
 // in an error, and nothing here would put it there if it did. The per-field
 // "errors" object is deliberately not rendered: it echoes submitted values, and
 // this provider submits a record name and a challenge digest whose shape is not
 // worth reflecting into a log.
+//
+// The bound goes through [safetext.Bound] rather than a slice expression: a
+// fixed byte cut can land inside a multi-byte rune and leave invalid UTF-8 for
+// the log encoder downstream to mangle. No credential is spliced into this
+// message before the cut, so there is no scrub whose ordering against the
+// truncation matters here.
 func dnsimpleError(status int, raw []byte) error {
 	var env dnsimpleErrorResponse
 	if err := json.Unmarshal(raw, &env); err != nil || env.Message == "" {
 		return fmt.Errorf("request rejected (http %d)", status)
 	}
-	msg := env.Message
-	if len(msg) > 200 {
-		msg = msg[:200]
-	}
+	msg := safetext.Bound(env.Message, maxAPIMessageBytes)
 	return fmt.Errorf("request rejected (http %d): %s", status, msg)
 }
 
