@@ -32,6 +32,11 @@ type fakeStore struct {
 	mu     sync.Mutex
 	creds  map[domain.RefreshCredentialID]*domain.RefreshCredential
 	owners *fakeOwners
+	// pairings and links are set by the enrollment tests, which need a store
+	// that hands out more than credentials. They are nil for the token tests,
+	// which never reach for them.
+	pairings *fakePairings
+	links    *fakeLinkStore
 
 	// Fault injection. Each is returned by the correspondingly named method.
 	createErr        error
@@ -66,6 +71,8 @@ func (f *fakeStore) Repos() repository.Repos {
 	return repository.Repos{
 		RefreshCredentials: &fakeCreds{store: f, lock: true},
 		Owners:             f.owners,
+		DevicePairings:     f.pairings,
+		LinkedIdentities:   f.links,
 	}
 }
 
@@ -84,6 +91,8 @@ func (f *fakeStore) WithTx(ctx context.Context, fn func(context.Context, reposit
 	err := fn(ctx, repository.Repos{
 		RefreshCredentials: &fakeCreds{store: f},
 		Owners:             f.owners,
+		DevicePairings:     f.pairings,
+		LinkedIdentities:   f.links,
 	})
 	f.rolledBack = err != nil
 	if err != nil {
