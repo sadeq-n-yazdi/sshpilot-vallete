@@ -182,22 +182,18 @@ func certHosts(cfg *config.Config) []string {
 // The key exists for the lifetime of the process only and is never written
 // anywhere.
 //
-// Note on error handling: ed25519.GenerateKey and rand.Int draw from
-// crypto/rand, whose Read cannot fail as of Go 1.24 — it terminates the process
-// instead of returning an error. The error returns are still checked because the
-// functions declare them and ignoring a declared error is worse practice than a
-// branch that does not fire; but no attempt is made to build recovery logic
-// around a condition that cannot be reached.
+// Note on error handling: the errors from ed25519.GenerateKey and rand.Int are
+// deliberately discarded. Both can only fail on a crypto/rand read, which as of
+// Go 1.24 does not return an error — it terminates the process. (rand.Int's
+// other failure mode, a non-positive max, is impossible here: the max is a
+// constant 2^128.) Writing error branches around them would add code no test
+// can reach and no operator can trigger. Errors from x509.CreateCertificate and
+// ParseCertificate below ARE checked, because those can fail for reasons that
+// have nothing to do with randomness.
 func newSelfSignedCert(hosts []string, now time.Time) (tls.Certificate, error) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("httpserver: generate key: %w", err)
-	}
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("httpserver: generate serial: %w", err)
-	}
+	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 
 	tmpl := &x509.Certificate{
 		SerialNumber: serial,

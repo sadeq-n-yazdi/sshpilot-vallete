@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/x509"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -271,4 +272,67 @@ func TestSelfSignedIsNotACertificateAuthority(t *testing.T) {
 	if leaf.KeyUsage&x509.KeyUsageCertSign != 0 {
 		t.Error("the ephemeral certificate must not be allowed to sign certificates")
 	}
+}
+
+// TestSelfSignedEmitsLoudWarning covers ADR-0015's guardrail that the ephemeral
+// mode warns whenever it is active.
+//
+// An operator who cannot authenticate their own server must learn it from the
+// startup log, not from a client failure weeks later. The production-override
+// case is called out separately because that is the configuration most likely to
+// be an accident nobody notices.
+func TestSelfSignedEmitsLoudWarning(t *testing.T) {
+	t.Parallel()
+
+	newLogger := func(buf *bytes.Buffer) *slog.Logger {
+		return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	}
+
+	t.Run("development warns", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		cfg := devConfig()
+		cfg.TLS.Mode = "self_signed"
+		if _, err := New(cfg, newLogger(&buf), okPinger{}, stubPublisher{}); err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if !strings.Contains(buf.String(), "self-signed") {
+			t.Errorf("startup must warn about the self-signed certificate, got %q", buf.String())
+		}
+	})
+
+	t.Run("production override is flagged", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		cfg := devConfig()
+		cfg.Server.Environment = "production"
+		cfg.TLS.Mode = "self_signed"
+		cfg.TLS.AllowSelfSignedInProduction = true
+		if _, err := New(cfg, newLogger(&buf), okPinger{}, stubPublisher{}); err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if !strings.Contains(buf.String(), "production_override=true") {
+			t.Errorf("the production override must be visible in the warning, got %q", buf.String())
+		}
+	})
+
+	t.Run("other modes stay quiet", func(t *testing.T) {
+		t.Parallel()
+
+		var buf bytes.Buffer
+		dir := t.TempDir()
+		certFile, keyFile := writeCertPair(t, dir, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+		cfg := devConfig()
+		cfg.TLS.Mode = "manual"
+		cfg.TLS.Manual.CertFile = certFile
+		cfg.TLS.Manual.KeyFile = keyFile
+		if _, err := New(cfg, newLogger(&buf), okPinger{}, stubPublisher{}); err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if strings.Contains(buf.String(), "self-signed") {
+			t.Errorf("manual mode must not warn about self-signed, got %q", buf.String())
+		}
+	})
 }
