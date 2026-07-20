@@ -163,19 +163,26 @@ func Skeleton(s string) string {
 // sanitize is stage 0. It does the two things that MUST happen before NFKD
 // runs, because NFKD destroys the information each of them needs.
 //
-// # Dropping invalid UTF-8 first is what makes Skeleton idempotent
+// # Handing NFKD well-formed UTF-8 is what makes Skeleton idempotent
 //
-// A decoding error over invalid UTF-8 yields utf8.RuneError; so does a literal
-// U+FFFD in the input. Both are dropped here, which is what keeps the output
-// valid UTF-8 unconditionally -- but the ORDER is the security-relevant part.
 // norm.NFKD does not decompose reliably across an invalid byte: it treats the
-// undecodable region as a boundary and passes the neighboring segment through
-// untouched. Dropping the invalid bytes afterwards therefore left a
-// compatibility character behind that a second call, no longer seeing an
-// invalid byte, would go on to decompose -- Skeleton("\xf7ʰ") was "ʰ" while
-// Skeleton("ʰ") was "h". Handing NFKD only well-formed UTF-8 removes the
-// boundary, so every compatibility form decomposes on the first pass and a
-// second pass is a no-op.
+// undecodable region as a segment boundary and passes the neighboring segment
+// through untouched. When NFKD ran on the raw input, a compatibility character
+// beside an invalid byte therefore survived the first pass and was decomposed
+// only by the second, once the invalid byte was gone -- Skeleton("\xf7ʰ") was
+// "ʰ" while Skeleton("ʰ") was "h".
+//
+// The property that fixes it is that NFKD is only ever handed well-formed
+// UTF-8, and this loop guarantees it structurally: it decodes and re-encodes,
+// so whatever it emits is well-formed regardless of what it was given. Note
+// that this is what carries the idempotence guarantee -- NOT the fact that
+// invalid input is specifically DISCARDED here. Replacing each invalid byte
+// with U+FFFD instead would remove the segment boundary just as well.
+// Discarding is a separate, older contract: the skeleton must not contain
+// U+FFFD, because a run of them would otherwise be a way to pad an identifier
+// past a substring compare. A decoding error yields utf8.RuneError and so does
+// a literal U+FFFD in the input, and dropping both is what keeps that contract
+// and the well-formedness one in a single pass.
 //
 // Idempotence is restored by this reordering rather than by iterating Skeleton
 // to a fixed point. The input is attacker-supplied and unauthenticated, so a
