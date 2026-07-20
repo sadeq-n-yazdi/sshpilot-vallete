@@ -217,12 +217,12 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// field it changes, and a PUT would imply the body replaces the resource --
 	// inviting a later edit to accept visibility and is_default in it, which are
 	// C4's decisions with their own authorization story.
-	mux.Handle("POST /api/v1/keysets", guardian.Protect(AccountAccess, createKeySetHandler(o.keySets, logger)))
-	mux.Handle("GET /api/v1/keysets", guardian.Protect(AccountAccess, listKeySetsHandler(o.keySets, logger)))
+	mux.Handle("POST /api/v1/keysets", guardian.Protect(AccountAccess, mgmt(createKeySetHandler(o.keySets, logger))))
+	mux.Handle("GET /api/v1/keysets", guardian.Protect(AccountAccess, mgmt(listKeySetsHandler(o.keySets, logger))))
 	mux.Handle("PATCH /api/v1/keysets/{keySetID}",
-		guardian.Protect(KeySetAccess, renameKeySetHandler(o.keySets, logger)))
+		guardian.Protect(KeySetAccess, mgmt(renameKeySetHandler(o.keySets, logger))))
 	mux.Handle("DELETE /api/v1/keysets/{keySetID}",
-		guardian.Protect(KeySetAccess, deleteKeySetHandler(o.keySets, logger)))
+		guardian.Protect(KeySetAccess, mgmt(deleteKeySetHandler(o.keySets, logger))))
 
 	// The two C4 sub-resources split their access declarations for the same
 	// reason, and the split is the security decision on this pair.
