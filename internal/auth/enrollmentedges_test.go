@@ -369,3 +369,74 @@ func TestRevokeTreatsAPortViolationAsAbsent(t *testing.T) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
 	}
 }
+
+// TestRedeemRefusesARowFromAnotherOwner exercises the owner comparison Redeem
+// makes for itself, by handing it a store that ignored the owner filter. A
+// LIKE that reached production, a cache keyed on the id alone, or a query
+// missing its WHERE clause each look exactly like this, and each would
+// otherwise pair a device into an account that never approved it.
+func TestRedeemRefusesARowFromAnotherOwner(t *testing.T) {
+	h := newEnrollHarness(t)
+	ctx := context.Background()
+	grant, err := h.svc.Mint(ctx, "owner-1", "laptop", fullOwner())
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	stolen := h.pairings.snapshotOf(grant.PairingID)
+	stolen.OwnerID = "owner-2"
+	h.pairings.overrideOwned = stolen
+
+	issued, err := h.svc.Redeem(ctx, grant.DeviceCode)
+	requireBareAuthFailed(t, err, "redemption against a row the store returned for the wrong owner")
+	if issued != nil {
+		t.Fatalf("credentials were issued for %q from owner-1's pairing", issued.OwnerID)
+	}
+}
+
+// TestRedeemRefusesARowWithTheWrongID is the other half of the same check: a
+// store that returned a neighboring pairing rather than the one asked for.
+func TestRedeemRefusesARowWithTheWrongID(t *testing.T) {
+	h := newEnrollHarness(t)
+	ctx := context.Background()
+	grant, err := h.svc.Mint(ctx, "owner-1", "laptop", fullOwner())
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	neighbor := h.pairings.snapshotOf(grant.PairingID)
+	neighbor.ID = "c29tZS1vdGhlci1pZA"
+	h.pairings.overrideOwned = neighbor
+
+	issued, err := h.svc.Redeem(ctx, grant.DeviceCode)
+	requireBareAuthFailed(t, err, "redemption against a neighboring row")
+	if issued != nil {
+		t.Fatal("credentials were issued from a pairing nobody asked for")
+	}
+}
+
+// TestRevokeRefusesARowFromAnotherOwner is the same defense on the revocation
+// path. Without the caller's own comparison, a store that ignored the owner
+// filter would let one owner revoke another's device.
+func TestRevokeRefusesARowFromAnotherOwner(t *testing.T) {
+	h := newEnrollHarness(t)
+	ctx := context.Background()
+	grant, err := h.svc.Mint(ctx, "owner-1", "laptop", fullOwner())
+	if err != nil {
+		t.Fatalf("minting: %v", err)
+	}
+	stolen := h.pairings.snapshotOf(grant.PairingID)
+	stolen.OwnerID = "owner-1"
+	h.pairings.overrideOwned = stolen
+
+	// owner-2 asks to revoke, and the store hands back owner-1's row.
+	if err := h.svc.Revoke(ctx, "owner-2", grant.PairingID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("error = %v, want ErrNotFound: one owner revoked another's device", err)
+	}
+	// The refusal must happen on the read, before any write is attempted. A
+	// caller that relied on the write to re-check the owner would still be
+	// wrong: it would have committed to revoking a row it had not verified,
+	// and any store whose filter is weaker than the fake's would go through.
+	if got := h.pairings.revokeCalls.Load(); got != 0 {
+		t.Fatalf("a revocation write was attempted %d times against another owner's row; "+
+			"the owner check must short-circuit before it", got)
+	}
+}

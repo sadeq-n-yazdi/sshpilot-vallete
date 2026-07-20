@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
@@ -41,6 +42,17 @@ type fakePairings struct {
 	// nilOwnedRow makes the owner-scoped Get return (nil, nil), the port
 	// violation an owner-scoped caller must survive without dereferencing.
 	nilOwnedRow bool
+	// overrideOwned replaces the row the OWNER-SCOPED Get returns, modeling a
+	// store that ignored the owner filter -- a LIKE that reached production, a
+	// cache keyed on the id alone, a hand-written query missing its WHERE
+	// clause. It is what makes the caller's own owner comparison testable;
+	// without it the fake's filter answers first and the caller's check is
+	// never reached.
+	overrideOwned *domain.DevicePairing
+	// revokeCalls counts attempted revocations, so a test can assert that a
+	// refusal happened on the read and never reached a write. Atomic because
+	// the service is exercised concurrently elsewhere in this package.
+	revokeCalls atomic.Int64
 }
 
 var _ repository.DevicePairingRepository = (*fakePairings)(nil)
@@ -125,6 +137,9 @@ func (f *fakePairings) Get(_ context.Context, ownerID domain.OwnerID, id domain.
 	if f.nilOwnedRow {
 		return nil, nil //nolint:nilnil // deliberately models a port violation
 	}
+	if f.overrideOwned != nil {
+		return copyPairing(f.overrideOwned), nil
+	}
 	p := f.rows[id]
 	// A row belonging to another owner is reported exactly as a missing one.
 	if p == nil || p.OwnerID != ownerID {
@@ -193,6 +208,7 @@ func (f *fakePairings) MarkRedeemed(_ context.Context, ownerID domain.OwnerID, i
 }
 
 func (f *fakePairings) Revoke(_ context.Context, ownerID domain.OwnerID, id domain.PairingID, now time.Time) error {
+	f.revokeCalls.Add(1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.revokeErr != nil {
