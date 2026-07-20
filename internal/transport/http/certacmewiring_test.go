@@ -149,3 +149,34 @@ func TestServerShutdownToleratesNoCertProvider(t *testing.T) {
 		t.Errorf("Shutdown with no provider: %v", err)
 	}
 }
+
+// TestACMEProviderDeclaresChallengeALPN pins the real provider to the protocol
+// RFC 8737 defines. A provider that declared the wrong name would advertise an
+// ALPN the CA never asks for, so validation would fail with no local symptom.
+func TestACMEProviderDeclaresChallengeALPN(t *testing.T) {
+	t.Parallel()
+
+	p := acmeTestProvider(t, time.Now())
+	if got := p.challengeALPNProtos(); !slices.Equal(got, []string{"acme-tls/1"}) {
+		t.Errorf("challengeALPNProtos() = %v, want [acme-tls/1]", got)
+	}
+}
+
+// TestDNS01SolverIsRefusedRatherThanSubstituted proves a configured but
+// unimplemented solver fails closed.
+//
+// Falling back to TLS-ALPN-01 would issue through a challenge the operator did
+// not select — for a deployment whose port 443 is unreachable from the CA, that
+// is a silent, permanent issuance failure instead of an immediate, legible one.
+func TestDNS01SolverIsRefusedRatherThanSubstituted(t *testing.T) {
+	t.Parallel()
+
+	cfg := acmeTestConfig(t)
+	cfg.TLS.ACME.Solver = "dns_01"
+	cfg.TLS.ACME.DNS.Mode = "manual"
+
+	_, err := newACMEProviderForSolver(t.Context(), cfg, time.Now)
+	if !errors.Is(err, ErrTLSModeUnsupported) {
+		t.Errorf("error = %v, want ErrTLSModeUnsupported", err)
+	}
+}
