@@ -32,7 +32,7 @@ const (
 	PairingStatusRedeemed PairingStatus = "redeemed"
 	// PairingStatusRevoked is a pairing the owner withdrew. It is terminal and
 	// is distinct from redeemed so that a listing can tell "this device paired"
-	// from "this pairing was cancelled before use".
+	// from "this pairing was canceled before use".
 	PairingStatusRevoked PairingStatus = "revoked"
 )
 
