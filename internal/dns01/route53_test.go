@@ -442,14 +442,22 @@ func TestRoute53RefusesAmbiguousHostedZones(t *testing.T) {
 //
 // A private zone is visible only inside its associated VPCs, while the CA
 // queries the public internet, so a challenge written there is accepted and
-// never seen. Accounts that hold a private zone alongside the public zone for
-// the same name are common, which is exactly when this matters. The private
-// zone here is listed FIRST, so an implementation that takes the first match
-// fails.
+// never seen.
+//
+// The arrangement is split-horizon DNS, which is where this actually bites: a
+// private zone for the internal subdomain "vallet.example.com" alongside the
+// public zone for the parent "example.com". It is chosen over the simpler
+// two-zones-with-one-name case for a testing reason. With both zones named
+// "example.com", dropping the private-zone filter makes the selection AMBIGUOUS
+// and the ambiguity guard rejects it — so the test passes for the wrong reason
+// and would keep passing if the private-zone filter were deleted outright.
+// Here the private zone is the more specific one, so without the filter it wins
+// the most-specific-match walk outright and the record is written into it, with
+// no other check in a position to object.
 func TestRoute53IgnoresPrivateHostedZones(t *testing.T) {
 	api, provider := newRoute53API(t,
-		route53Zone{id: "ZPRIVATE", name: "example.com", private: true},
 		route53Zone{id: "ZPUBLIC", name: "example.com"},
+		route53Zone{id: "ZPRIVATE", name: "vallet.example.com", private: true},
 	)
 
 	if _, err := provider.Present(t.Context(), route53Record()); err != nil {
