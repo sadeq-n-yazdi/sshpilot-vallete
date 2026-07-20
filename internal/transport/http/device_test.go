@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -407,11 +408,23 @@ func TestRevokeActsOnExactlyTheDeviceItAuthorized(t *testing.T) {
 
 	// The path names the device the token is bound to, so authorization
 	// legitimately succeeds. Every other channel names the bystander.
-	target := devicesPath + "/" + authorized.ID + "?device=" + bystander.ID + "&id=" + bystander.ID
+	//
+	// The channel names below are illustrative, not the guarantee. An earlier
+	// version of this test listed a handful of names and a mutation that read a
+	// name NOT on the list survived it -- a blocklist cannot enumerate the
+	// channel someone thinks of next. What actually establishes the property is
+	// that revokeDeviceHandler takes its id from DeviceAccess, the same
+	// derivation the Guardian authorized, so there is no second answer to
+	// "which device?" for anything to steer. These channels are populated so
+	// the obvious steerings are also covered concretely.
+	q := url.Values{"device": {bystander.ID}, "id": {bystander.ID}, "target": {bystander.ID}, "deviceID": {bystander.ID}}
+	target := devicesPath + "/" + authorized.ID + "?" + q.Encode()
 	req := httptest.NewRequest(http.MethodDelete, target, nil)
 	req.Header.Set("Authorization", "Bearer "+bound)
-	req.Header.Set("X-Device-ID", bystander.ID)
-	req.Header.Set("X-Device", bystander.ID)
+	for _, h := range []string{"X-Device-ID", "X-Device", "X-Target", "X-Resource-ID"} {
+		req.Header.Set(h, bystander.ID)
+	}
+	req.SetPathValue("device", bystander.ID)
 	rec := httptest.NewRecorder()
 	env.handler.ServeHTTP(rec, req)
 
