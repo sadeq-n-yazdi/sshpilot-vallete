@@ -367,7 +367,7 @@ func scanAuditRecord(s rowScanner) (*domain.AuditRecord, error) {
 // limit of 65535 bound parameters per statement. The value is held identical to
 // the SQLite adapter's rather than raised to suit the larger limit: the batch
 // size is observable through the number of statements a large erasure issues,
-// and the two engines are kept behaviourally identical on purpose.
+// and the two engines are kept behaviorally identical on purpose.
 const maxPseudonymizeBatch = 400
 
 // PurgeOlderThan deletes up to limit records whose occurred_at is at or before

@@ -239,7 +239,7 @@ func TestAuditPseudonymizeRewritesOnlyIdentity(t *testing.T) {
 }
 
 // TestAuditPseudonymizeLeavesMetadataUntouched pins the known erasure gap, on
-// this engine, to the SAME behaviour the SQLite adapter has.
+// this engine, to the SAME behavior the SQLite adapter has.
 //
 // This is not an endorsement of the gap: the seeded record deliberately carries
 // a fingerprint that names a specific key, and therefore its owner, and that
@@ -281,7 +281,7 @@ func TestAuditPseudonymizeLeavesMetadataUntouched(t *testing.T) {
 	if got.ActorID != "tomb-xyz" || got.TargetID != "tomb-xyz" {
 		t.Fatalf("identity columns = %q/%q, want both tombstoned", got.ActorID, got.TargetID)
 	}
-	// ...and metadata was not, which is the current agreed behaviour on both
+	// ...and metadata was not, which is the current agreed behavior on both
 	// engines. If this assertion is ever changed, change the SQLite one too.
 	if !reflect.DeepEqual(got.Metadata, meta) {
 		t.Errorf("Metadata = %v, want %v unchanged: the metadata erasure gap is a known, "+
