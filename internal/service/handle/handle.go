@@ -358,8 +358,15 @@ func (s *Service) claim(
 //
 // Each release is a separate call rather than one bulk delete because each one
 // is separately audited: the moment a name becomes claimable by a stranger is
-// the moment an incident review needs to be able to place in time. A release
-// that cannot be recorded is not performed.
+// the moment an incident review needs to be able to place in time.
+//
+// The record is written after the delete, not with it, so an emitter failure
+// leaves a name already released and no audit line saying so. That ordering is
+// deliberate and matches the rest of the services here: emitting first would
+// risk the opposite failure, a record asserting a release that never happened,
+// and a missing record is the safer of the two to reconcile against the row
+// that is demonstrably gone. The sweep stops on that failure rather than
+// continuing, so the gap is bounded to a single name.
 //
 // The repository re-checks the state and the deadline inside the DELETE, so a
 // hold the owner reclaimed between this sweep's read and its write is not

@@ -3,11 +3,14 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/blocklist"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/schema"
 )
 
 // newHandle returns a fully populated active handle owned by ownerID.
@@ -589,5 +592,70 @@ func TestHandleReleaseRefusesEarlyAndReclaimed(t *testing.T) {
 				t.Fatalf("claim was deleted despite Release refusing: %v", err)
 			}
 		})
+	}
+}
+
+// TestHandleLifecycleMigrationReverses exercises Up, Down, and Up again on
+// PostgreSQL. The schema package's Down coverage runs on SQLite only, and the
+// two engines fail differently here: migration 0012 adds two indexes over
+// name_fold plus a partial index over state, and a Down that dropped the
+// columns before the indexes depending on them would be rejected. Reverting to
+// empty and reapplying proves the ordering holds and that nothing 0012 creates
+// survives to collide with the second Up.
+func TestHandleLifecycleMigrationReverses(t *testing.T) {
+	t.Parallel()
+
+	dsn := requireDSN(t)
+	schemaName := randomSchemaName(t)
+
+	admin, err := Open(Options{DSN: dsn, MaxOpenConns: 2})
+	if err != nil {
+		t.Fatalf("Open admin handle: %v", err)
+	}
+	t.Cleanup(func() { _ = admin.Close() })
+
+	ctx := context.Background()
+	if _, err := admin.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s", schemaName)); err != nil {
+		t.Skipf("cannot create test schema (is %s reachable?): %v", dsnEnv, err)
+	}
+	t.Cleanup(func() {
+		if _, err := admin.ExecContext(context.Background(),
+			fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schemaName)); err != nil {
+			t.Errorf("drop test schema %s: %v", schemaName, err)
+		}
+	})
+
+	db := openTestDB(t, dsn, schemaName)
+	reg, err := schema.Registry()
+	if err != nil {
+		t.Fatalf("schema.Registry: %v", err)
+	}
+	runner, err := migrate.NewRunner(NewMigrateDB(db), migrate.EnginePostgres, reg)
+	if err != nil {
+		t.Fatalf("migrate.NewRunner: %v", err)
+	}
+
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatalf("first Up: %v", err)
+	}
+	if _, err := runner.Down(ctx, ""); err != nil {
+		t.Fatalf("Down to empty: %v", err)
+	}
+	if _, err := runner.Up(ctx); err != nil {
+		t.Fatalf("second Up: %v", err)
+	}
+
+	// The reapplied schema must still refuse a look-alike, which is the point
+	// of the migration: a Down that left the index behind, or a second Up that
+	// silently skipped recreating it, would both pass a bare Up/Down check.
+	s := NewStore(db)
+	mustCreateOwner(t, s, "owner-a")
+	mustCreateOwner(t, s, "owner-b")
+	if err := s.Repos().Handles.Register(ctx, newHandle("h-1", "owner-a", "stripe")); err != nil {
+		t.Fatalf("register stripe: %v", err)
+	}
+	err = s.Repos().Handles.Register(ctx, newHandle("h-2", "owner-b", "str1pe"))
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("register look-alike after Down/Up = %v, want domain.ErrConflict", err)
 	}
 }
