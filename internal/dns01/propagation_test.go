@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"testing"
+	"time"
 )
 
 // TestChallengeRecordName pins the record name, including the wildcard case.
@@ -183,5 +184,42 @@ func TestEveryNameserverMustServeTheValue(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("commonTXT = %v, want empty: a nameserver without the record was counted as propagated", got)
+	}
+}
+
+// TestAuthoritativeServersFailsFastOnACanceledContext pins that a canceled wait
+// reports the cancellation rather than walking the whole domain tree issuing
+// lookups that cannot succeed.
+//
+// The two assertions are independent and both matter. The ERROR assertion is
+// the user-visible half: without the check the walk exhausts and reports "no
+// authoritative nameserver found", a DNS-shaped error for what is really a
+// shutdown or a deadline. The TIMING half is what proves it stopped early
+// rather than merely relabeling the failure at the end.
+func TestAuthoritativeServersFailsFastOnACanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	// A deep name: with no early exit the walk would issue one lookup per label
+	// up to maxZoneLabels before giving up.
+	const deep = "_acme-challenge.a.b.c.d.e.f.g.h.example.invalid"
+
+	start := time.Now()
+	got, err := authoritativeServers(ctx, deep)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("authoritativeServers succeeded on a canceled context, returning %v", got)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want it to report context.Canceled rather than a DNS fault", err)
+	}
+	if got != nil {
+		t.Errorf("servers = %v, want nil alongside the error", got)
+	}
+	// A canceled resolver returns immediately, so a fast-failing walk finishes
+	// far inside this bound while a full walk of the labels above would not.
+	if elapsed > 2*time.Second {
+		t.Errorf("walk took %v; it did not stop at the first canceled lookup", elapsed)
 	}
 }

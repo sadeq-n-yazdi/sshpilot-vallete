@@ -280,7 +280,18 @@ func newACMEProviderForSolver(
 		// passthrough above without fixing it here would leave the hazard.
 		return asCertProvider(newACMEProvider(ctx, cfg, now, newTLSALPNSolver))
 	case "dns_01":
-		return newDNS01ACMEProvider(ctx, cfg, now, logger)
+		// newDNS01ACMEProvider already declares CertProvider, so this call is
+		// not itself a conversion site — but it is routed through the same
+		// guard so that every branch of this switch reads identically and a
+		// later solver cannot be added as the one case that skips it.
+		//
+		// This guard and the one inside newDNS01ACMEProvider are therefore
+		// REDUNDANT, and they mask each other under mutation: removing either
+		// one alone still passes, because the other catches it. Only removing
+		// both is caught. That is a known and accepted survivor, not an
+		// oversight — deleting either because "mutation says it is covered"
+		// removes a guard while the matrix stays green.
+		return asCertProvider(newDNS01ACMEProvider(ctx, cfg, now, logger))
 	default:
 		return nil, fmt.Errorf("%w: acme solver %q", ErrTLSModeUnsupported, cfg.TLS.ACME.Solver)
 	}
@@ -302,12 +313,11 @@ func newDNS01ACMEProvider(
 	}
 
 	solver := newDNS01Solver(dnsProvider, dns01.NewAuthoritativeTXTLookup(), logger)
-	// asCertProvider for the same reason as the tls_alpn_01 case above.
-	// newACMEProvider returns a CONCRETE *acmeProvider, so returning it directly
-	// into this function's CertProvider result would convert a nil pointer into
-	// a non-nil interface holding a typed nil on every error path. This case and
-	// the ALPN one arrived on separate branches, so the guard has to be restated
-	// here rather than inherited.
+	// asCertProvider is load-bearing HERE, not merely at the call site. This is
+	// where a concrete *acmeProvider becomes a CertProvider, so returning it
+	// directly would convert a nil pointer into a non-nil interface holding a
+	// typed nil, and a caller checking `provider != nil` rather than the error
+	// would proceed with a provider that is nil underneath.
 	return asCertProvider(newACMEProvider(ctx, cfg, now, func(*acmeProvider) acmeSolver { return solver }))
 }
 
