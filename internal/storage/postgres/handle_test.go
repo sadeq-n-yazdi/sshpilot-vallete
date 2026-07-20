@@ -1,4 +1,4 @@
-package sqlite
+package postgres
 
 import (
 	"context"
@@ -50,6 +50,36 @@ func TestHandleRegisterAndGet(t *testing.T) {
 	}
 }
 
+// TestHandleBooleanRoundTrip pins the native BOOLEAN encoding: both flags must
+// survive a write/read cycle in both states.
+func TestHandleBooleanRoundTrip(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	set := newHandle("h-set", "owner-a", "flagged")
+	set.FlaggedForReview = true
+	set.QuarantineOnRelease = true
+	mustRegisterHandle(t, s, set)
+	cleared := newHandle("h-clear", "owner-a", "unflagged")
+	mustRegisterHandle(t, s, cleared)
+
+	got, err := s.Repos().Handles.Get(ctx, "owner-a", "h-set")
+	if err != nil {
+		t.Fatalf("Get set: %v", err)
+	}
+	if !got.FlaggedForReview || !got.QuarantineOnRelease {
+		t.Errorf("true flags did not round-trip: %+v", got)
+	}
+	got, err = s.Repos().Handles.Get(ctx, "owner-a", "h-clear")
+	if err != nil {
+		t.Fatalf("Get clear: %v", err)
+	}
+	if got.FlaggedForReview || got.QuarantineOnRelease {
+		t.Errorf("false flags did not round-trip: %+v", got)
+	}
+}
+
 func TestHandleRegisterDuplicateNameConflict(t *testing.T) {
 	t.Parallel()
 	s := newStore(t)
@@ -60,6 +90,27 @@ func TestHandleRegisterDuplicateNameConflict(t *testing.T) {
 	err := s.Repos().Handles.Register(context.Background(), newHandle("h-b", "owner-b", "shared"))
 	if !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("duplicate name Register error = %v, want ErrConflict", err)
+	}
+}
+
+func TestHandleRegisterNilInvalidInput(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	if err := s.Repos().Handles.Register(context.Background(), nil); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("Register(nil) error = %v, want ErrInvalidInput", err)
+	}
+}
+
+// TestHandleUpdateNilInvalidInput pins the nil guard on Update. Register was
+// already guarded; Update was not, so a nil entity panicked inside the
+// transaction instead of returning ErrInvalidInput like its sibling.
+func TestHandleUpdateNilInvalidInput(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	if err := s.Repos().Handles.Update(context.Background(), nil); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("Update(nil) error = %v, want ErrInvalidInput", err)
 	}
 }
 
@@ -136,6 +187,21 @@ func TestHandleListByOwner(t *testing.T) {
 	}
 }
 
+// TestHandleListByOwnerEmptyReturnsNilSlice pins the empty-list convention.
+func TestHandleListByOwnerEmptyReturnsNilSlice(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	mustCreateOwner(t, s, "owner-empty")
+	got, err := s.Repos().Handles.ListByOwner(context.Background(), "owner-empty")
+	if err != nil {
+		t.Fatalf("ListByOwner: %v", err)
+	}
+	if got != nil {
+		t.Errorf("ListByOwner with no rows = %#v, want nil slice", got)
+	}
+}
+
 func TestHandleUpdateMutableFields(t *testing.T) {
 	t.Parallel()
 	s := newStore(t)
@@ -166,6 +232,34 @@ func TestHandleUpdateMutableFields(t *testing.T) {
 	}
 	if !got.UpdatedAt.Equal(h.UpdatedAt) {
 		t.Errorf("UpdatedAt = %v, want %v", got.UpdatedAt, h.UpdatedAt)
+	}
+}
+
+// TestHandleUpdateClearsQuarantineUntil checks the NULL path: setting the
+// pointer back to nil must store SQL NULL and read back as nil, not as a zero
+// time.
+func TestHandleUpdateClearsQuarantineUntil(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	until := testClock.Add(time.Hour)
+	h := newHandle("h-null", "owner-a", "nullable")
+	h.State = domain.NameStateQuarantined
+	h.QuarantineUntil = &until
+	mustRegisterHandle(t, s, h)
+
+	h.State = domain.NameStateActive
+	h.QuarantineUntil = nil
+	if err := s.Repos().Handles.Update(ctx, h); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := s.Repos().Handles.Get(ctx, "owner-a", "h-null")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.QuarantineUntil != nil {
+		t.Errorf("QuarantineUntil = %v, want nil after clearing", got.QuarantineUntil)
 	}
 }
 
@@ -316,14 +410,35 @@ func TestHandleCrossTenantIsolation(t *testing.T) {
 	}
 }
 
-// TestHandleUpdateRejectsNil pins the nil guard on Update. Register and Create
-// were already guarded; Update was not, so a nil entity panicked inside the
-// transaction instead of returning ErrInvalidInput like every sibling method.
-func TestHandleUpdateRejectsNil(t *testing.T) {
+// TestHandleMissingAndWrongOwnerIndistinguishable is the existence-leak guard
+// stated directly: a lookup for a handle that does not exist at all and a
+// lookup for one that exists under another owner must return the identical
+// error value, so a caller cannot tell the two apart.
+func TestHandleMissingAndWrongOwnerIndistinguishable(t *testing.T) {
 	t.Parallel()
-
 	s := newStore(t)
-	if err := s.Repos().Handles.Update(context.Background(), nil); !errors.Is(err, domain.ErrInvalidInput) {
-		t.Fatalf("Update(nil) = %v, want ErrInvalidInput", err)
+	ctx := context.Background()
+
+	mustRegisterHandle(t, s, newHandle("h-real", "owner-a", "real"))
+	mustCreateOwner(t, s, "owner-b")
+
+	_, wrongOwner := s.Repos().Handles.Get(ctx, "owner-b", "h-real")
+	_, missing := s.Repos().Handles.Get(ctx, "owner-b", "h-does-not-exist")
+	if wrongOwner == nil || missing == nil {
+		t.Fatal("expected errors from both lookups")
+	}
+	if wrongOwner.Error() != missing.Error() {
+		t.Errorf("wrong-owner error %q differs from missing-row error %q; existence leaks",
+			wrongOwner, missing)
+	}
+
+	updWrongOwner := s.Repos().Handles.Update(ctx, newHandle("h-real", "owner-b", "real"))
+	updMissing := s.Repos().Handles.Update(ctx, newHandle("h-nope", "owner-b", "nope"))
+	if updWrongOwner == nil || updMissing == nil {
+		t.Fatal("expected errors from both updates")
+	}
+	if updWrongOwner.Error() != updMissing.Error() {
+		t.Errorf("wrong-owner Update error %q differs from missing-row error %q; existence leaks",
+			updWrongOwner, updMissing)
 	}
 }
