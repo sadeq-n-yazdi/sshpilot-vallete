@@ -21,6 +21,52 @@ import (
 // business here is supposed to see.
 const invented = domain.KeySetID("INVENTEDIDENTIFIER00000000")
 
+// auditSink collects the records a real audit.Emitter writes.
+type auditSink struct{ records []*domain.AuditRecord }
+
+func (s *auditSink) Append(_ context.Context, rec *domain.AuditRecord) error {
+	s.records = append(s.records, rec)
+	return nil
+}
+
+// replay pushes captured events through a real audit.Emitter and returns the
+// records it produced. Details keeps its pairs unexported on purpose, so what a
+// stored record ends up carrying is the only observable worth asserting on --
+// and going through the real emitter means a detail the screen would reject is
+// caught here rather than passing because a test read the struct directly.
+func replay(t *testing.T, events []audit.Event) []*domain.AuditRecord {
+	t.Helper()
+	sink := &auditSink{}
+	emitter, err := audit.NewEmitter(sink)
+	if err != nil {
+		t.Fatalf("audit.NewEmitter: %v", err)
+	}
+	for _, ev := range events {
+		if err := emitter.Emit(context.Background(), ev); err != nil {
+			t.Fatalf("Emit %s: %v", ev.Action, err)
+		}
+	}
+	return sink.records
+}
+
+// recordsFor returns the records of one action, in the order they were emitted.
+func recordsFor(records []*domain.AuditRecord, action domain.AuditAction) []*domain.AuditRecord {
+	out := make([]*domain.AuditRecord, 0, len(records))
+	for _, rec := range records {
+		if rec.Action == action {
+			out = append(out, rec)
+		}
+	}
+	return out
+}
+
+func wantDetail(t *testing.T, rec *domain.AuditRecord, key audit.DetailKey, want string) {
+	t.Helper()
+	if got := rec.Metadata[string(key)]; got != want {
+		t.Errorf("%s record: %s = %q, want %q", rec.Action, key, got, want)
+	}
+}
+
 // defaultID returns the id of the owner's default set, or "" if there is none.
 func (f *fixture) defaultID(owner domain.OwnerID) domain.KeySetID {
 	f.t.Helper()
@@ -404,6 +450,28 @@ func TestDefaultAndVisibilityAreAudited(t *testing.T) {
 		if got := f.auditor.actions(); !slices.Equal(got, want) {
 			t.Fatalf("audit actions = %v, want %v", got, want)
 		}
+
+		// The action alone is not the record. What makes one readable in an
+		// incident review is which set took the designation and which one gave
+		// it up, and which direction a visibility moved, so the details are
+		// asserted by value rather than merely counted.
+		records := replay(t, f.auditor.captured())
+		moves := recordsFor(records, domain.AuditActionKeySetDefaultChanged)
+		wantDetail(t, moves[0], audit.DetailTo, "prod")
+		if got, ok := moves[0].Metadata[string(audit.DetailFrom)]; ok {
+			// The first designation has no predecessor to name, and the audit
+			// screen refuses an empty value, so the key is omitted rather than
+			// carrying something a reader could mistake for a set's name.
+			t.Errorf("the first designation recorded from=%q; there was no previous default", got)
+		}
+		wantDetail(t, moves[1], audit.DetailFrom, "prod")
+		wantDetail(t, moves[1], audit.DetailTo, "staging")
+
+		vis := recordsFor(records, domain.AuditActionKeySetVisibilityChanged)[0]
+		wantDetail(t, vis, audit.DetailFrom, string(domain.VisibilityProtected))
+		wantDetail(t, vis, audit.DetailTo, string(domain.VisibilityPublic))
+		wantDetail(t, vis, audit.DetailVisibility, string(domain.VisibilityPublic))
+		wantDetail(t, vis, audit.DetailKeySetName, "staging")
 	})
 
 	t.Run("a failure to record is returned", func(t *testing.T) {
