@@ -40,7 +40,7 @@ func mustNotContain(t *testing.T, out, secret, what string) {
 	}
 }
 
-// --- The catalogue of things that must never reach a log ------------------
+// --- The catalog of things that must never reach a log ------------------
 
 // TestSecretBearingShapesNeverRender walks every secret-carrying shape the
 // service handles and asserts the value is absent from the rendered bytes.
@@ -189,6 +189,69 @@ func TestRedactionSurvivesNesting(t *testing.T) {
 		}
 		out := render(t, func(l *slog.Logger) { l.Info("op", attr) })
 		mustNotContain(t, out, secret, "secret past the depth bound")
+	})
+}
+
+// TestDepthBoundRedactsEvenAllowlistedKeys pins that the bound is a real limit
+// and not decoration.
+//
+// It has to assert on an ALLOWLISTED key. A secret under an unknown key is
+// already redacted at every depth by the key policy, so nesting one proves
+// nothing about the bound -- the test would pass with the bound removed. Only a
+// value that the key policy would otherwise let through shows that the depth
+// check fires, and firing means redacting: the bound stops the walk, and a
+// value the filter has stopped inspecting must not be printed.
+func TestDepthBoundRedactsEvenAllowlistedKeys(t *testing.T) {
+	t.Parallel()
+
+	attr := slog.String("handle", "alice")
+	for i := 0; i < maxDepth+3; i++ {
+		attr = slog.Group("g", attr)
+	}
+
+	out := render(t, func(l *slog.Logger) { l.Info("op", attr) })
+	if strings.Contains(out, "alice") {
+		t.Errorf("depth bound did not fire; the walk continued past maxDepth: %s", out)
+	}
+	if !strings.Contains(out, RedactedMarker) {
+		t.Errorf("depth bound must redact what it stops inspecting: %s", out)
+	}
+}
+
+// TestLogValuerIsResolvedNotRedactedWholesale pins that the handler resolves
+// LogValuer rather than treating it as an opaque structured value.
+//
+// Both halves matter. Resolution is what lets a group returned by a LogValuer
+// be filtered leaf by leaf -- keeping the safe fields -- instead of being
+// redacted whole. It is worth stating that the failure mode if Resolve were
+// dropped is a loss of usefulness rather than a leak: an unresolved
+// KindLogValuer matches none of leafValue's safe kinds and would be redacted.
+// The design is fail-closed even against its own omission, and this test exists
+// so that the usefulness half is pinned too.
+func TestLogValuerIsResolvedNotRedactedWholesale(t *testing.T) {
+	t.Parallel()
+
+	t.Run("scalar LogValuer under an allowed key renders", func(t *testing.T) {
+		t.Parallel()
+		out := render(t, func(l *slog.Logger) {
+			l.Info("op", slog.Any("handle", handleValuer{name: "alice"}))
+		})
+		if !strings.Contains(out, "alice") {
+			t.Errorf("LogValuer was not resolved; its value was redacted wholesale: %s", out)
+		}
+	})
+
+	t.Run("group LogValuer keeps its safe leaves", func(t *testing.T) {
+		t.Parallel()
+		out := render(t, func(l *slog.Logger) {
+			l.Info("op", slog.Any("auth", mixedValuer{handle: "alice", secret: "ak_secret"}))
+		})
+		if !strings.Contains(out, "alice") {
+			t.Errorf("safe leaf of a resolved group was lost: %s", out)
+		}
+		if strings.Contains(out, "ak_secret") {
+			t.Errorf("unsafe leaf of a resolved group leaked: %s", out)
+		}
 	})
 }
 
@@ -480,6 +543,22 @@ func (c credentialValuer) LogValue() slog.Value {
 	return slog.GroupValue(
 		slog.String("name", "alice"),
 		slog.String("access_key", c.secret),
+	)
+}
+
+// handleValuer resolves to a plain, non-secret value.
+type handleValuer struct{ name string }
+
+func (h handleValuer) LogValue() slog.Value { return slog.StringValue(h.name) }
+
+// mixedValuer resolves to a group holding one loggable and one secret leaf, so
+// that resolution and per-leaf filtering are exercised together.
+type mixedValuer struct{ handle, secret string }
+
+func (m mixedValuer) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("handle", m.handle),
+		slog.String("access_key", m.secret),
 	)
 }
 
