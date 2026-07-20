@@ -306,6 +306,14 @@ func TestOwnerReachesItsOwnResource(t *testing.T) {
 			if tt.want == http.StatusOK && s.paramOwner != ownerA {
 				t.Fatalf("handler received owner %q, want %q", s.paramOwner, ownerA)
 			}
+			// Every outcome must vary on the credential, and the allowed
+			// outcomes are the ones that matter: two owners issuing the same
+			// GET for a resource each may see would otherwise let a shared
+			// cache serve one owner's body to the other. This runs on the 200
+			// rows as well as the 403 rows, so it pins the success path.
+			if got := w.Header().Get("Vary"); got != "Authorization" {
+				t.Fatalf("Vary = %q, want %q", got, "Authorization")
+			}
 		})
 	}
 }
