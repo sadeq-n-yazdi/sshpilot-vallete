@@ -2,8 +2,10 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -146,13 +148,23 @@ func TestAuditAppendCannotOverwriteExisting(t *testing.T) {
 // which forces that change to be a deliberate, reviewed edit here rather than a
 // quiet expansion of what the sink can do.
 //
-// The ADR-0024 maintenance operations live on repository.AuditRepository, which
-// this adapter does not implement; the assertion below also pins that.
+// The ADR-0024 maintenance operations — PurgeOlderThan and Pseudonymize — are
+// now implemented here deliberately, so they are in the allowed set below. That
+// is the whole mechanism: widening this list is a visible, reviewed edit, and
+// anything NOT on it still fails. A general Delete or Update, which could
+// rewrite the substance of a record rather than only its subject, remains
+// forbidden.
 func TestAuditRepoExposesNoMutatingMethods(t *testing.T) {
 	t.Parallel()
 
-	// The append-only surface this slice implements, in full.
-	allowed := map[string]bool{"Append": true, "Get": true, "List": true}
+	// The full surface this adapter implements. Append/Get/List are the
+	// append-and-read core; the other two are the bounded ADR-0024 maintenance
+	// capabilities, each of which can only remove an aged row or overwrite the
+	// two identity columns.
+	allowed := map[string]bool{
+		"Append": true, "Get": true, "List": true,
+		"PurgeOlderThan": true, "Pseudonymize": true,
+	}
 
 	repoType := reflect.TypeOf(&auditRepo{})
 	for i := range repoType.NumMethod() {
@@ -169,13 +181,24 @@ func TestAuditRepoExposesNoMutatingMethods(t *testing.T) {
 		t.Errorf("repository.AuditAppender must expose exactly Append, got %d methods", n)
 	}
 
-	// auditRepo must NOT satisfy the full AuditRepository: that interface carries
-	// PurgeOlderThan and Pseudonymize, and satisfying it here would mean this
-	// type had grown a delete and a rewrite path.
+	// auditRepo now satisfies the full AuditRepository; maintenance jobs receive
+	// it through Repos.Audit.
 	fullType := reflect.TypeOf((*repository.AuditRepository)(nil)).Elem()
-	if repoType.Implements(fullType) {
-		t.Error("auditRepo implements repository.AuditRepository: it has gained the " +
-			"ADR-0024 purge/pseudonymize powers, which this slice must not grant")
+	if !repoType.Implements(fullType) {
+		t.Error("auditRepo must implement repository.AuditRepository")
+	}
+
+	// The value handed to request-path code must NOT. auditAppenderOnly is the
+	// wrapper that keeps the sink narrow at the type level, so it must carry
+	// exactly one method — adding a second here would reopen the type-assertion
+	// escalation route that TestAuditAppenderIsInsertOnlyAtTheTypeLevel guards.
+	sinkType := reflect.TypeOf(auditAppenderOnly{})
+	if n := sinkType.NumMethod(); n != 1 || sinkType.Method(0).Name != "Append" {
+		t.Errorf("auditAppenderOnly must expose exactly Append, got %d methods", n)
+	}
+	if sinkType.Implements(fullType) {
+		t.Error("auditAppenderOnly implements repository.AuditRepository: the request-path " +
+			"sink can be widened back to the purge and rewrite powers")
 	}
 }
 
@@ -607,5 +630,545 @@ func TestAuditQueryErrorsAreMapped(t *testing.T) {
 	}
 	if err := sink.Append(ctx, newAuditRecord("aud-1", "owner-a", "key-1", testClock)); err == nil {
 		t.Error("Append with a canceled context = nil error, want failure")
+	}
+}
+
+// auditIDs returns the IDs of every record in the table, oldest first, so a
+// test can assert exactly which rows survived an operation.
+func auditIDs(t *testing.T, repo *auditRepo) []string {
+	t.Helper()
+	recs, _, err := repo.List(context.Background(), repository.AuditQuery{}, repository.Page{Limit: 1000})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	ids := make([]string, 0, len(recs))
+	for i := len(recs) - 1; i >= 0; i-- {
+		ids = append(ids, string(recs[i].ID))
+	}
+	return ids
+}
+
+// TestAuditPurgeCutoffBoundary pins the inclusive cutoff from both sides. The
+// record exactly at the cutoff must go (the port says "at or before cutoff"),
+// and the record one nanosecond after it must survive. The survival half is the
+// security-critical direction: a reversed or widened comparison there silently
+// destroys evidence.
+func TestAuditPurgeCutoffBoundary(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	cutoff := testClock
+	before := cutoff.Add(-time.Nanosecond)
+	after := cutoff.Add(time.Nanosecond)
+
+	for _, tc := range []struct {
+		id string
+		at time.Time
+	}{
+		{"aud-before", before},
+		{"aud-at", cutoff},
+		{"aud-after", after},
+	} {
+		if err := sink.Append(ctx, newAuditRecord(tc.id, "owner-a", "key-1", tc.at)); err != nil {
+			t.Fatalf("Append %s: %v", tc.id, err)
+		}
+	}
+
+	n, err := repo.PurgeOlderThan(ctx, cutoff, 100)
+	if err != nil {
+		t.Fatalf("PurgeOlderThan: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("deleted = %d, want 2 (strictly-before and at-cutoff)", n)
+	}
+
+	got := auditIDs(t, repo)
+	want := []string{"aud-after"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("survivors = %v, want %v", got, want)
+	}
+}
+
+// TestAuditPurgeNeverDeletesNewerThanCutoff is the anti-evidence-destruction
+// test. Every record is newer than the cutoff, so a correct purge deletes
+// nothing at all no matter how large the batch limit is.
+func TestAuditPurgeNeverDeletesNewerThanCutoff(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	cutoff := testClock
+	for i := range 5 {
+		id := "aud-recent-" + strconv.Itoa(i)
+		at := cutoff.Add(time.Duration(i+1) * time.Hour)
+		if err := sink.Append(ctx, newAuditRecord(id, "owner-a", "key-1", at)); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	n, err := repo.PurgeOlderThan(ctx, cutoff, 1000)
+	if err != nil {
+		t.Fatalf("PurgeOlderThan: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("deleted = %d, want 0: purge reached records newer than the cutoff", n)
+	}
+	if got := len(auditIDs(t, repo)); got != 5 {
+		t.Errorf("surviving records = %d, want 5", got)
+	}
+}
+
+// TestAuditPurgeRespectsBatchLimit proves one call deletes at most limit rows
+// and that repeated calls drain the backlog oldest-first.
+func TestAuditPurgeRespectsBatchLimit(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	cutoff := testClock.Add(24 * time.Hour)
+	for i := range 7 {
+		id := "aud-" + strconv.Itoa(i)
+		at := testClock.Add(time.Duration(i) * time.Minute)
+		if err := sink.Append(ctx, newAuditRecord(id, "owner-a", "key-1", at)); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	n, err := repo.PurgeOlderThan(ctx, cutoff, 3)
+	if err != nil {
+		t.Fatalf("PurgeOlderThan: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("first batch deleted = %d, want 3 (batch limit ignored)", n)
+	}
+	// Oldest-first: the three lowest timestamps went, the rest remain.
+	want := []string{"aud-3", "aud-4", "aud-5", "aud-6"}
+	if got := auditIDs(t, repo); !reflect.DeepEqual(got, want) {
+		t.Fatalf("after first batch = %v, want %v", got, want)
+	}
+
+	// Drain: the final batch returns fewer than the limit, which is the
+	// caller's signal that the backlog is exhausted.
+	n, err = repo.PurgeOlderThan(ctx, cutoff, 3)
+	if err != nil {
+		t.Fatalf("PurgeOlderThan: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("second batch deleted = %d, want 3", n)
+	}
+	n, err = repo.PurgeOlderThan(ctx, cutoff, 3)
+	if err != nil {
+		t.Fatalf("PurgeOlderThan: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("final batch deleted = %d, want 1", n)
+	}
+	if got := auditIDs(t, repo); len(got) != 0 {
+		t.Errorf("after drain = %v, want empty", got)
+	}
+}
+
+func TestAuditPurgeRejectsNonPositiveLimit(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	_, repo := auditSink(t, s)
+
+	for _, limit := range []int{0, -1} {
+		n, err := repo.PurgeOlderThan(ctx, testClock, limit)
+		if !errors.Is(err, domain.ErrInvalidInput) {
+			t.Errorf("limit %d: err = %v, want ErrInvalidInput", limit, err)
+		}
+		if n != 0 {
+			t.Errorf("limit %d: deleted = %d, want 0", limit, n)
+		}
+	}
+}
+
+func TestAuditPurgeEmptyTableIsNotAnError(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	_, repo := auditSink(t, s)
+
+	n, err := repo.PurgeOlderThan(context.Background(), testClock, 10)
+	if err != nil {
+		t.Fatalf("PurgeOlderThan: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("deleted = %d, want 0", n)
+	}
+}
+
+// TestAuditPseudonymizeRewritesOnlyIdentity is the anti-forgery test: the
+// action, timestamp, and both type columns must be byte-identical afterwards.
+// Pseudonymization removes WHO an event was about; it must never be a route to
+// changing WHAT happened or WHEN.
+func TestAuditPseudonymizeRewritesOnlyIdentity(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	rec := newAuditRecord("aud-1", "owner-a", "key-1", testClock)
+	rec.Metadata = map[string]string{"fingerprint": "SHA256:abc"}
+	if err := sink.Append(ctx, rec); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	n, err := repo.Pseudonymize(ctx, []string{"owner-a"}, "tomb-xyz")
+	if err != nil {
+		t.Fatalf("Pseudonymize: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("rewritten = %d, want 1", n)
+	}
+
+	got, err := repo.Get(ctx, "aud-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ActorID != "tomb-xyz" {
+		t.Errorf("ActorID = %q, want the tombstone", got.ActorID)
+	}
+	if !got.Pseudonymized {
+		t.Error("Pseudonymized = false, want true")
+	}
+	// The substance of the event is untouched.
+	if got.Action != rec.Action {
+		t.Errorf("Action = %q, want %q: pseudonymize altered the recorded action", got.Action, rec.Action)
+	}
+	if !got.OccurredAt.Equal(rec.OccurredAt) {
+		t.Errorf("OccurredAt = %v, want %v: pseudonymize altered the timestamp", got.OccurredAt, rec.OccurredAt)
+	}
+	if got.ActorType != rec.ActorType || got.TargetType != rec.TargetType {
+		t.Errorf("type columns changed: %v/%v", got.ActorType, got.TargetType)
+	}
+	// The target was not in the erasure set, so it must survive in the clear.
+	if got.TargetID != "key-1" {
+		t.Errorf("TargetID = %q, want key-1: a bystander identity was erased", got.TargetID)
+	}
+	if !reflect.DeepEqual(got.Metadata, rec.Metadata) {
+		t.Errorf("Metadata = %v, want %v", got.Metadata, rec.Metadata)
+	}
+}
+
+// TestAuditPseudonymizeIsIdempotent runs the same erasure twice. The second run
+// must match nothing and change nothing: the match is on the original IDs, which
+// no longer exist, and the pseudonym is never derived from the column's current
+// value, so there is no double-hashing and nothing is resurrected.
+func TestAuditPseudonymizeIsIdempotent(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	if err := sink.Append(ctx, newAuditRecord("aud-1", "owner-a", "key-1", testClock)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	first, err := repo.Pseudonymize(ctx, []string{"owner-a"}, "tomb-xyz")
+	if err != nil {
+		t.Fatalf("first Pseudonymize: %v", err)
+	}
+	if first != 1 {
+		t.Fatalf("first run rewritten = %d, want 1", first)
+	}
+	afterFirst, err := repo.Get(ctx, "aud-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	second, err := repo.Pseudonymize(ctx, []string{"owner-a"}, "tomb-xyz")
+	if err != nil {
+		t.Fatalf("second Pseudonymize: %v", err)
+	}
+	if second != 0 {
+		t.Errorf("second run rewritten = %d, want 0: operation is not idempotent", second)
+	}
+	afterSecond, err := repo.Get(ctx, "aud-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if afterSecond.ActorID != afterFirst.ActorID {
+		t.Errorf("ActorID drifted across runs: %q then %q (double-hashed?)",
+			afterFirst.ActorID, afterSecond.ActorID)
+	}
+	if afterSecond.ActorID != "tomb-xyz" {
+		t.Errorf("ActorID = %q, want the stable tombstone", afterSecond.ActorID)
+	}
+}
+
+// TestAuditPseudonymizeIndependentSubjects proves the two identity columns are
+// erased independently. One record names an administrator actor acting on an
+// owner target; erasing the owner must not disturb the administrator, and a
+// later erasure of the administrator must still work even though the row is
+// already flagged pseudonymized.
+func TestAuditPseudonymizeIndependentSubjects(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	rec := newAuditRecord("aud-1", "admin-a", "owner-b", testClock)
+	rec.ActorType = domain.ActorTypeAdministrator
+	rec.TargetType = domain.TargetTypeOwner
+	if err := sink.Append(ctx, rec); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	if _, err := repo.Pseudonymize(ctx, []string{"owner-b"}, "tomb-owner"); err != nil {
+		t.Fatalf("erase owner: %v", err)
+	}
+	got, err := repo.Get(ctx, "aud-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ActorID != "admin-a" {
+		t.Errorf("ActorID = %q, want admin-a: erasing the target hit the actor", got.ActorID)
+	}
+	if got.TargetID != "tomb-owner" {
+		t.Errorf("TargetID = %q, want tomb-owner", got.TargetID)
+	}
+
+	// The row is already pseudonymized; the second subject must still be
+	// erasable. A WHERE gated on pseudonymized = 0 would fail here.
+	n, err := repo.Pseudonymize(ctx, []string{"admin-a"}, "tomb-admin")
+	if err != nil {
+		t.Fatalf("erase admin: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("rewritten = %d, want 1: flag gate locked out the second subject", n)
+	}
+	got, err = repo.Get(ctx, "aud-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ActorID != "tomb-admin" || got.TargetID != "tomb-owner" {
+		t.Errorf("after both erasures = %q/%q, want tomb-admin/tomb-owner", got.ActorID, got.TargetID)
+	}
+}
+
+func TestAuditPseudonymizeRejectsBadInput(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	// A system-actor record with an empty actor ID: the bystander that an
+	// empty ID in the erasure set would sweep in.
+	rec := newAuditRecord("aud-sys", "", "key-1", testClock)
+	rec.ActorType = domain.ActorTypeSystem
+	if err := sink.Append(ctx, rec); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	if _, err := repo.Pseudonymize(ctx, []string{"owner-a"}, ""); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("empty pseudonym: err = %v, want ErrInvalidInput", err)
+	}
+	if _, err := repo.Pseudonymize(ctx, []string{"owner-a", ""}, "tomb"); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("empty id: err = %v, want ErrInvalidInput", err)
+	}
+	// The bystander was not touched by either rejected call.
+	got, err := repo.Get(ctx, "aud-sys")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ActorID != "" || got.Pseudonymized {
+		t.Errorf("system record was modified by a rejected call: %+v", got)
+	}
+}
+
+func TestAuditPseudonymizeEmptySetIsNoOp(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	if err := sink.Append(ctx, newAuditRecord("aud-1", "owner-a", "key-1", testClock)); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	n, err := repo.Pseudonymize(ctx, nil, "tomb")
+	if err != nil {
+		t.Fatalf("Pseudonymize: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("rewritten = %d, want 0", n)
+	}
+	got, err := repo.Get(ctx, "aud-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.ActorID != "owner-a" || got.Pseudonymized {
+		t.Errorf("empty set modified a record: %+v", got)
+	}
+}
+
+// TestAuditPseudonymizeChunksLargeSets drives the input past
+// maxPseudonymizeBatch so the multi-batch path runs and the per-statement bound
+// variable ceiling is respected.
+func TestAuditPseudonymizeChunksLargeSets(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	const n = maxPseudonymizeBatch + 25
+	ids := make([]string, 0, n)
+	for i := range n {
+		id := "owner-" + strconv.Itoa(i)
+		ids = append(ids, id)
+		if err := sink.Append(ctx, newAuditRecord("aud-"+strconv.Itoa(i), id, "key-1", testClock)); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+
+	got, err := repo.Pseudonymize(ctx, ids, "tomb")
+	if err != nil {
+		t.Fatalf("Pseudonymize: %v", err)
+	}
+	if got != int64(n) {
+		t.Errorf("rewritten = %d, want %d: chunking dropped records", got, n)
+	}
+	recs, _, err := repo.List(ctx, repository.AuditQuery{ActorID: "tomb"}, repository.Page{Limit: 1000})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(recs) != n {
+		t.Errorf("tombstoned records = %d, want %d", len(recs), n)
+	}
+}
+
+// errResult is a sql.Result whose RowsAffected fails. The SQLite driver always
+// reports a row count successfully, so this stub is the only way to exercise
+// the RowsAffected error branches, which must surface the failure rather than
+// silently report zero rows purged or rewritten.
+type errResult struct{ err error }
+
+func (r errResult) LastInsertId() (int64, error) { return 0, r.err }
+func (r errResult) RowsAffected() (int64, error) { return 0, r.err }
+
+// countErrExecer runs statements against a real execer but replaces every Exec
+// result with one whose RowsAffected fails.
+type countErrExecer struct {
+	execer
+	err error
+}
+
+func (e countErrExecer) ExecContext(ctx context.Context, q string, args ...any) (sql.Result, error) {
+	if _, err := e.execer.ExecContext(ctx, q, args...); err != nil {
+		return nil, err
+	}
+	return errResult{err: e.err}, nil
+}
+
+// closedStore returns a store whose database has been closed, so every
+// statement issued through it fails at the driver.
+func closedStore(t *testing.T) *Store {
+	t.Helper()
+	s := newStore(t)
+	if err := s.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	return s
+}
+
+func TestAuditPurgeSurfacesExecError(t *testing.T) {
+	t.Parallel()
+	repo := &auditRepo{e: closedStore(t).db}
+
+	n, err := repo.PurgeOlderThan(context.Background(), testClock, 10)
+	if err == nil {
+		t.Fatal("PurgeOlderThan on a closed db = nil error, want error")
+	}
+	if n != 0 {
+		t.Errorf("deleted = %d, want 0 on error", n)
+	}
+}
+
+func TestAuditPurgeSurfacesRowsAffectedError(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	sentinel := errors.New("rows affected failed")
+	repo := &auditRepo{e: countErrExecer{execer: s.db, err: sentinel}}
+
+	n, err := repo.PurgeOlderThan(context.Background(), testClock, 10)
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want the RowsAffected failure", err)
+	}
+	if n != 0 {
+		t.Errorf("deleted = %d, want 0 on error", n)
+	}
+}
+
+func TestAuditPseudonymizeSurfacesExecError(t *testing.T) {
+	t.Parallel()
+	repo := &auditRepo{e: closedStore(t).db}
+
+	n, err := repo.Pseudonymize(context.Background(), []string{"owner-a"}, "tomb")
+	if err == nil {
+		t.Fatal("Pseudonymize on a closed db = nil error, want error")
+	}
+	if n != 0 {
+		t.Errorf("rewritten = %d, want 0 on error", n)
+	}
+}
+
+// TestAuditPseudonymizeBatchSurfacesErrors drives the batch helper directly.
+// withLocalTx only accepts a real *sql.DB or *sql.Tx, so a stub execer cannot
+// reach the helper through Pseudonymize; calling it here is what exercises its
+// two failure branches.
+func TestAuditPseudonymizeBatchSurfacesErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	sentinel := errors.New("rows affected failed")
+
+	t.Run("rows affected", func(t *testing.T) {
+		t.Parallel()
+		s := newStore(t)
+		n, err := pseudonymizeBatch(ctx, countErrExecer{execer: s.db, err: sentinel}, []string{"owner-a"}, "tomb")
+		if !errors.Is(err, sentinel) {
+			t.Errorf("err = %v, want the RowsAffected failure", err)
+		}
+		if n != 0 {
+			t.Errorf("rewritten = %d, want 0 on error", n)
+		}
+	})
+
+	t.Run("exec", func(t *testing.T) {
+		t.Parallel()
+		n, err := pseudonymizeBatch(ctx, closedStore(t).db, []string{"owner-a"}, "tomb")
+		if err == nil {
+			t.Fatal("pseudonymizeBatch on a closed db = nil error, want error")
+		}
+		if n != 0 {
+			t.Errorf("rewritten = %d, want 0 on error", n)
+		}
+	})
+}
+
+// TestAuditPseudonymizeAbortsTransactionOnBatchError covers the failure inside
+// the transaction: the tx begins successfully and the UPDATE then fails, so the
+// error must propagate out and the transaction must roll back rather than
+// leaving a half-erased set behind.
+func TestAuditPseudonymizeAbortsTransactionOnBatchError(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	if _, err := s.db.ExecContext(ctx, `DROP TABLE audit_records`); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	repo := &auditRepo{e: s.db}
+
+	n, err := repo.Pseudonymize(ctx, []string{"owner-a"}, "tomb")
+	if err == nil {
+		t.Fatal("Pseudonymize against a missing table = nil error, want error")
+	}
+	if n != 0 {
+		t.Errorf("rewritten = %d, want 0 on error", n)
 	}
 }
