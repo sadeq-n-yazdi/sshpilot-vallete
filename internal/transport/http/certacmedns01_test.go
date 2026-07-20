@@ -396,6 +396,10 @@ func TestSolveAuthorizationCleansUpWhenPresentFails(t *testing.T) {
 	if recorder.accepts != 0 {
 		t.Error("the CA was told to validate a challenge that was never successfully presented")
 	}
+	if recorder.cleanupSawDeadContext {
+		t.Error("cleanup was handed an already-canceled context; a real provider's " +
+			"delete would fail without being sent, leaving the record published")
+	}
 }
 
 // TestSolveAuthorizationCleansUpOnSuccess proves the withdrawal is not
@@ -412,6 +416,9 @@ func TestSolveAuthorizationCleansUpOnSuccess(t *testing.T) {
 	}
 	if recorder.cleanups != 1 {
 		t.Errorf("cleanup ran %d times on the success path, want 1", recorder.cleanups)
+	}
+	if recorder.cleanupSawDeadContext {
+		t.Error("cleanup was handed an already-canceled context")
 	}
 }
 
@@ -442,6 +449,10 @@ type recordingSolver struct {
 	presents int
 	cleanups int
 	accepts  int
+
+	// cleanupSawDeadContext records that cleanup was handed an already-canceled
+	// context, which would make a real provider's DELETE fail before it was sent.
+	cleanupSawDeadContext bool
 }
 
 func (r *recordingSolver) name() string { return "recording" }
@@ -458,8 +469,17 @@ func (r *recordingSolver) present(context.Context, *acme.Client, *acme.Challenge
 	return r.presentErr
 }
 
-func (r *recordingSolver) cleanup(context.Context, string) error {
+// cleanup records the call AND whether the caller's context was still live.
+//
+// The second half is what makes the detached-context invariant testable from
+// the production call path: releaseChallenge must hand cleanup a context that
+// is NOT the order's, because the order's is already canceled during a shutdown
+// mid-order, and a delete on a canceled context fails without being sent.
+func (r *recordingSolver) cleanup(ctx context.Context, _ string) error {
 	r.cleanups++
+	if ctx.Err() != nil {
+		r.cleanupSawDeadContext = true
+	}
 	return nil
 }
 
