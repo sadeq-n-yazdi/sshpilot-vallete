@@ -67,6 +67,7 @@ type Repos struct {
 	KeySets            KeySetRepository
 	AccessKeys         AccessKeyRepository
 	RefreshCredentials RefreshCredentialRepository
+	DevicePairings     DevicePairingRepository
 	LinkedIdentities   LinkedIdentityRepository
 	Audit              AuditRepository
 	Admins             AdministratorRepository

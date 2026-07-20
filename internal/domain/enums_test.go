@@ -55,6 +55,10 @@ func TestEnumWireValues(t *testing.T) {
 		{string(CredentialStatusRotated), "rotated"},
 		{string(CredentialStatusRevoked), "revoked"},
 		{string(CredentialStatusExpired), "expired"},
+		{string(PairingStatusPending), "pending"},
+		{string(PairingStatusApproved), "approved"},
+		{string(PairingStatusRedeemed), "redeemed"},
+		{string(PairingStatusRevoked), "revoked"},
 		{string(ScopeFullOwner), "full-owner"},
 		{string(ScopeReadOnly), "read-only"},
 		{string(ScopeSingleSet), "single-set"},
@@ -164,6 +168,19 @@ func TestCredentialStatusIsValid(t *testing.T) {
 		{"expired", true, CredentialStatusExpired.IsValid()},
 		{"empty", false, CredentialStatus("").IsValid()},
 		{"unknown", false, CredentialStatus("grace").IsValid()},
+	})
+}
+
+func TestPairingStatusIsValid(t *testing.T) {
+	checkEnum(t, []enumCase{
+		{"pending", true, PairingStatusPending.IsValid()},
+		{"approved", true, PairingStatusApproved.IsValid()},
+		{"redeemed", true, PairingStatusRedeemed.IsValid()},
+		{"revoked", true, PairingStatusRevoked.IsValid()},
+		{"empty", false, PairingStatus("").IsValid()},
+		// "used" is the status name a reimplementation is most likely to reach
+		// for; it must not be accepted as an alias for redeemed.
+		{"unknown", false, PairingStatus("used").IsValid()},
 	})
 }
 

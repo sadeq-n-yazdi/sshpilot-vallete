@@ -18,6 +18,7 @@ var (
 	_ repository.KeySetRepository            = nil
 	_ repository.AccessKeyRepository         = nil
 	_ repository.RefreshCredentialRepository = nil
+	_ repository.DevicePairingRepository     = nil
 	_ repository.LinkedIdentityRepository    = nil
 	_ repository.AuditAppender               = nil
 	_ repository.AuditRepository             = nil
