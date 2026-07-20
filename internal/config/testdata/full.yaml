@@ -12,6 +12,10 @@ tls:
   acme:
     directory_url: https://acme-staging-v02.api.letsencrypt.org/directory
     solver: dns_01
+    account_key_file: /var/lib/vallet/acme/account.key
+    cache_dir: /var/lib/vallet/acme
+    contact_email: ops@example.com
+    accept_tos: true
     dns:
       mode: api
       provider: cloudflare

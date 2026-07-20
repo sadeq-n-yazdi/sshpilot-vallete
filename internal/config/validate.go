@@ -184,6 +184,30 @@ func (c *Config) validateACME(v *validator, prod bool) {
 	if a.Solver == "dns_01" {
 		c.validateACMEDNS(v)
 	}
+
+	// The remaining settings are required by BOTH solvers, because they are
+	// properties of holding an ACME account rather than of answering a
+	// particular challenge. They are checked for any acme mode so that a later
+	// solver cannot be added without them.
+	if a.DirectoryURL == "" {
+		// Only reachable when an operator explicitly blanks the default. An
+		// empty URL would silently fall through to the acme package's built-in
+		// Let's Encrypt endpoint, which is exactly the accidental production
+		// traffic this mode has to avoid.
+		v.add("tls.acme.directory_url", "required for acme mode")
+	}
+	if a.AccountKeyFile == "" {
+		v.add("tls.acme.account_key_file", "required for acme mode")
+	}
+	if a.CacheDir == "" {
+		// Refused rather than defaulted. Without a cache every restart
+		// re-issues, and the CA's duplicate-certificate limit is measured over
+		// a rolling week, so a crash loop turns into a week-long lockout.
+		v.add("tls.acme.cache_dir", "required for acme mode (it is the restart-storm rate-limit control)")
+	}
+	if !a.AcceptTOS {
+		v.add("tls.acme.accept_tos", "must be true: the CA requires the operator to accept its terms of service")
+	}
 }
 
 // validateACMEDNS fails closed on the DNS-01 solving mode. ADR-0015 defines
