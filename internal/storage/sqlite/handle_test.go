@@ -10,6 +10,10 @@ import (
 )
 
 // newHandle returns a fully populated active handle owned by ownerID.
+//
+// The fixture sets no fold: there is no field for one. The adapter derives it
+// from Name on write, which is what makes the look-alike tests below evidence
+// about the adapter rather than about what the fixture happened to pass in.
 func newHandle(id, ownerID, name string) *domain.Handle {
 	return &domain.Handle{
 		ID:        domain.HandleID(id),
@@ -118,8 +122,15 @@ func TestHandleListByOwner(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
+	// One active claim plus the tombstone of a name renamed away from: that is
+	// the shape an owner's rows actually take, and the only shape
+	// ux_handles_owner_active permits.
 	mustRegisterHandle(t, s, newHandle("h-1", "owner-a", "n1"))
-	mustRegisterHandle(t, s, newHandle("h-2", "owner-a", "n2"))
+	freed := newHandle("h-2", "owner-a", "n2")
+	freed.State = domain.NameStateQuarantined
+	until := testClock.Add(30 * 24 * time.Hour)
+	freed.QuarantineUntil = &until
+	mustRegisterHandle(t, s, freed)
 	mustRegisterHandle(t, s, newHandle("h-3", "owner-b", "n3"))
 
 	got, err := s.Repos().Handles.ListByOwner(ctx, "owner-a")
@@ -325,5 +336,180 @@ func TestHandleUpdateRejectsNil(t *testing.T) {
 	s := newStore(t)
 	if err := s.Repos().Handles.Update(context.Background(), nil); !errors.Is(err, domain.ErrInvalidInput) {
 		t.Fatalf("Update(nil) = %v, want ErrInvalidInput", err)
+	}
+}
+
+// TestHandleRegisterLookAlikeConflict is the mechanism behind ADR-0026's
+// normalized-form uniqueness. "paypa1" and "ad-min" are distinct, individually
+// valid slugs, so the unique index on the raw name cannot see the collision;
+// only the fold can. Registering a look-alike of a live claim must be refused
+// by the database, not merely discouraged upstream.
+func TestHandleRegisterLookAlikeConflict(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ taken, lookAlike string }{
+		{"paypal", "p4ypal"}, // leetspeak, 4 folds to a
+		{"admin", "adm1n"},   // leetspeak, 1 folds to i
+		{"admin", "ad-min"},  // separator
+		{"stripe", "str1pe"}, // leetspeak, interior
+	} {
+		t.Run(tc.taken+"/"+tc.lookAlike, func(t *testing.T) {
+			t.Parallel()
+			s := newStore(t)
+
+			mustRegisterHandle(t, s, newHandle("h-taken", "owner-a", tc.taken))
+			mustCreateOwner(t, s, "owner-b")
+
+			err := s.Repos().Handles.Register(
+				context.Background(), newHandle("h-look", "owner-b", tc.lookAlike))
+			if !errors.Is(err, domain.ErrConflict) {
+				t.Fatalf("Register look-alike %q against %q = %v, want ErrConflict",
+					tc.lookAlike, tc.taken, err)
+			}
+		})
+	}
+}
+
+// TestHandleFoldMissesAmbiguousReadings pins a KNOWN GAP rather than a
+// behavior worth having, so that closing it later is a visible change.
+//
+// blocklist.Skeleton folds '1' to 'i', so "paypa1" becomes "paypai" and does
+// not equal "paypal". The i/l/1 family is genuinely ambiguous and the matcher
+// resolves it by expanding one input into several candidate skeletons and
+// testing each. A single stored column holds one value and cannot do that, so a
+// unique index reaches exactly as far as a single fold reaches and no further.
+//
+// This is a gap in the auxiliary look-alike layer only. It is not a
+// takeover gap: "paypa1" is a distinct name that resolves to whoever registered
+// it, never to paypal's keys.
+func TestHandleFoldMissesAmbiguousReadings(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	mustRegisterHandle(t, s, newHandle("h-1", "owner-a", "paypal"))
+	mustCreateOwner(t, s, "owner-b")
+
+	if err := s.Repos().Handles.Register(
+		context.Background(), newHandle("h-2", "owner-b", "paypa1")); err != nil {
+		t.Fatalf("Register = %v; if this now conflicts the ambiguous-reading gap "+
+			"has been closed and this test should become a positive assertion", err)
+	}
+}
+
+// TestHandleResolutionIgnoresFold is the guardrail on storing the fold at all.
+// The fold exists to refuse registration; if it ever became a resolution key, a
+// request for "paypa1" would answer with paypal's keys, which is precisely the
+// impersonation the fold was added to prevent. A look-alike that was never
+// registered must miss.
+func TestHandleResolutionIgnoresFold(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	mustRegisterHandle(t, s, newHandle("h-1", "owner-a", "paypal"))
+
+	if _, err := s.Repos().Handles.GetByName(ctx, "paypa1"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetByName(paypa1) = %v, want ErrNotFound: resolution must not "+
+			"go through the fold", err)
+	}
+
+	// And the exact name still resolves, so the miss above is fold-blindness
+	// rather than a broken lookup.
+	if _, err := s.Repos().Handles.GetByName(ctx, "paypal"); err != nil {
+		t.Fatalf("GetByName(paypal) = %v, want the row", err)
+	}
+}
+
+// TestHandleRegisterSecondActiveConflict proves an owner cannot end up with two
+// active name-claims, which would make "the name that publishes this owner's
+// keys" ambiguous. GetActiveByOwner is singular; this is what makes that safe.
+func TestHandleRegisterSecondActiveConflict(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	mustRegisterHandle(t, s, newHandle("h-1", "owner-a", "first"))
+
+	err := s.Repos().Handles.Register(
+		context.Background(), newHandle("h-2", "owner-a", "second"))
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("second active claim for one owner = %v, want ErrConflict", err)
+	}
+}
+
+// TestHandleReleaseFreesTheName covers the end of the quarantine: once the hold
+// has elapsed the row is deleted, and only then may the name be claimed again.
+func TestHandleReleaseFreesTheName(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	mustCreateOwner(t, s, "owner-a")
+	past := testClock.Add(-time.Hour)
+	freed := newHandle("h-freed", "owner-a", "released")
+	freed.State = domain.NameStateQuarantined
+	freed.QuarantineUntil = &past
+	if err := s.Repos().Handles.Register(ctx, freed); err != nil {
+		t.Fatalf("register quarantined: %v", err)
+	}
+
+	// Before release the name is still taken, for everyone.
+	mustCreateOwner(t, s, "owner-b")
+	if err := s.Repos().Handles.Register(ctx, newHandle("h-b", "owner-b", "released")); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("claim during quarantine = %v, want ErrConflict", err)
+	}
+
+	if err := s.Repos().Handles.Release(ctx, "h-freed", testClock); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if _, err := s.Repos().Handles.GetByName(ctx, "released"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("after Release GetByName = %v, want ErrNotFound", err)
+	}
+	// And now the name really is claimable, which is the point of deleting the
+	// row rather than parking it in a terminal state.
+	if err := s.Repos().Handles.Register(ctx, newHandle("h-b", "owner-b", "released")); err != nil {
+		t.Fatalf("claim after release: %v", err)
+	}
+}
+
+// TestHandleReleaseRefusesEarlyAndReclaimed is the race the in-statement
+// predicates exist for. A sweep reads a batch, then acts on it; between those
+// two moments the owner may reclaim the name or an operator may retire it.
+// Release must not delete either, and must not delete a hold that has not
+// elapsed at all.
+func TestHandleReleaseRefusesEarlyAndReclaimed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	future := testClock.Add(time.Hour)
+	past := testClock.Add(-time.Hour)
+
+	for _, tc := range []struct {
+		name  string
+		state domain.NameState
+		until *time.Time
+	}{
+		{"hold still running", domain.NameStateQuarantined, &future},
+		{"reclaimed by its owner", domain.NameStateActive, &past},
+		{"retired by an operator", domain.NameStateRetired, &past},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStore(t)
+			mustCreateOwner(t, s, "owner-a")
+
+			h := newHandle("h-x", "owner-a", "held")
+			h.State = tc.state
+			h.QuarantineUntil = tc.until
+			if err := s.Repos().Handles.Register(ctx, h); err != nil {
+				t.Fatalf("register: %v", err)
+			}
+
+			if err := s.Repos().Handles.Release(ctx, "h-x", testClock); !errors.Is(err, domain.ErrNotFound) {
+				t.Fatalf("Release = %v, want ErrNotFound", err)
+			}
+			// The claim must survive, so the name stays reserved.
+			if _, err := s.Repos().Handles.GetByName(ctx, "held"); err != nil {
+				t.Fatalf("claim was deleted despite Release refusing: %v", err)
+			}
+		})
 	}
 }
