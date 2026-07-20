@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -181,7 +182,22 @@ func managementRateLimit(lim *ratelimit.Limiter, logger *slog.Logger) func(Scope
 				// far more widely than the request, and this line would
 				// otherwise turn every 429 into a record of which account was
 				// active when.
-				logger.LogAttrs(r.Context(), slog.LevelError, "rate limit: counter store unavailable",
+				//
+				// A caller who hung up is the exception, and only when the
+				// error IS that cancellation. Testing r.Context().Err()
+				// instead would ask a different question -- "did the client
+				// go away at some point" -- and a store outage that happens to
+				// coincide with a disconnect would be filed at Debug. Under a
+				// fail-closed tier that is worth being careful about: refusals
+				// make clients disconnect, so the coincidence is correlated
+				// with the outage rather than independent of it, and anyone
+				// who can cause disconnects could otherwise mute the signal
+				// that the limiter has stopped working.
+				level := slog.LevelError
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					level = slog.LevelDebug
+				}
+				logger.LogAttrs(r.Context(), level, "rate limit: counter store unavailable",
 					slog.String("request_id", RequestIDFromContext(r.Context())),
 					slog.Bool("serving", decision.Allowed),
 					slog.String("error", err.Error()))

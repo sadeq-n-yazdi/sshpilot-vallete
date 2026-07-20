@@ -1,7 +1,10 @@
 package httpserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -820,5 +823,88 @@ func TestManagementAndPublishTiersDoNotShareBudget(t *testing.T) {
 	mgmtH := mgmtScoped(t, store, ratelimit.Tier{Limit: 1, Window: time.Minute})
 	if rec := mgmtServe(mgmtH, mgmtAuthorization(t, shared)); rec.Code != http.StatusOK {
 		t.Fatalf("management request = %d, want 200: the publish tier spent its budget", rec.Code)
+	}
+}
+
+// errCounterStore fails every Increment with a fixed error, so a test can
+// choose exactly which failure the limiter reports.
+type errCounterStore struct {
+	counter.Store
+	err error
+}
+
+func (s errCounterStore) Increment(context.Context, string, int64, time.Duration) (counter.Count, error) {
+	return counter.Count{}, s.err
+}
+
+// mgmtLogged runs one management-tier request against a store that fails with
+// err and returns the decoded log entry the decorator emitted.
+func mgmtLogged(t *testing.T, err error, cancelRequest bool) (level, msg string) {
+	t.Helper()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	lim, lerr := ratelimit.NewLimiter(
+		errCounterStore{err: err},
+		ratelimit.TierManagement,
+		ratelimit.DefaultTiers().Management,
+	)
+	if lerr != nil {
+		t.Fatalf("NewLimiter: %v", lerr)
+	}
+	ok := func(w http.ResponseWriter, _ *http.Request, _ *auth.Authorization) { w.WriteHeader(http.StatusOK) }
+	h := managementRateLimit(lim, logger)(ok)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/keys", nil)
+	if cancelRequest {
+		ctx, cancel := context.WithCancel(req.Context())
+		cancel()
+		req = req.WithContext(ctx)
+	}
+	h(httptest.NewRecorder(), req, mgmtAuthorization(t, "cred-log"))
+
+	var entry struct {
+		Level string `json:"level"`
+		Msg   string `json:"msg"`
+	}
+	if uerr := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry); uerr != nil {
+		t.Fatalf("decode log entry %q: %v", buf.String(), uerr)
+	}
+	return entry.Level, entry.Msg
+}
+
+// TestManagementLogsClientCancellationBelowError keeps a caller that hung up
+// from alerting operators. A tight client timeout would otherwise emit a steady
+// stream of Error lines and train readers to ignore the one that means the
+// limiter has stopped limiting.
+func TestManagementLogsClientCancellationBelowError(t *testing.T) {
+	t.Parallel()
+
+	level, _ := mgmtLogged(t, context.Canceled, true)
+	if level == slog.LevelError.String() || level == slog.LevelWarn.String() {
+		t.Fatalf("client cancellation logged at %s; must not alert operators", level)
+	}
+}
+
+// TestManagementStillErrorsOnRealStoreOutageDuringCancellation guards the other
+// direction, and it is the reason this carve-out tests the ERROR rather than
+// r.Context().Err().
+//
+// This tier fails closed, so an outage produces refusals, and refusals make
+// clients hang up. The disconnect is therefore correlated with the outage
+// rather than independent of it, and a carve-out keyed on "did the client go
+// away" would file the outage at Debug exactly when it is happening most --
+// leaving anyone able to cause disconnects a way to mute the signal that the
+// limiter stopped working.
+func TestManagementStillErrorsOnRealStoreOutageDuringCancellation(t *testing.T) {
+	t.Parallel()
+
+	level, msg := mgmtLogged(t, errors.New("connection refused"), true)
+	if level != slog.LevelError.String() {
+		t.Fatalf("store outage logged at %s during a canceled request, want ERROR", level)
+	}
+	if msg != "rate limit: counter store unavailable" {
+		t.Fatalf("msg = %q, want the genuine-failure message", msg)
 	}
 }
