@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -107,6 +108,34 @@ func (r *keySetRepo) CountByOwner(ctx context.Context, ownerID domain.OwnerID) (
 		return 0, mapError(err)
 	}
 	return n, nil
+}
+
+// LockOwnerForCreate takes an exclusive row lock on the owner so that the
+// service's cap check and insert cannot interleave with another transaction's.
+//
+// SECURITY: this is the whole of the per-owner cap's concurrency safety on
+// PostgreSQL. Transactions here run at READ COMMITTED, under which a plain
+// SELECT COUNT(*) takes no lock and blocks nothing: two concurrent creates can
+// both read cap-1, both insert, and commit an owner into cap+1 sets. FOR UPDATE
+// holds until the transaction ends, so the second create blocks here and its
+// count then sees the first's committed row.
+//
+// The lock is taken on owners rather than on the key_sets rows being counted
+// because a row lock cannot cover rows that do not exist yet -- the two racing
+// inserts are precisely the phantoms it would have to exclude. The owner row is
+// guaranteed to exist for any set that could be created: key_sets.owner_id is
+// NOT NULL REFERENCES owners(id).
+//
+// A missing owner yields no row and no lock, which is not an error: the foreign
+// key refuses the insert that follows, so no create can pass the cap this way.
+func (r *keySetRepo) LockOwnerForCreate(ctx context.Context, ownerID domain.OwnerID) error {
+	const q = `SELECT 1 FROM owners WHERE id = $1 FOR UPDATE`
+	var one int
+	err := r.e.QueryRowContext(ctx, q, string(ownerID)).Scan(&one)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return mapError(err)
+	}
+	return nil
 }
 
 // Update persists changes to the mutable fields of a key set, scoped by

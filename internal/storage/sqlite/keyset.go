@@ -106,6 +106,23 @@ func (r *keySetRepo) CountByOwner(ctx context.Context, ownerID domain.OwnerID) (
 	return n, nil
 }
 
+// LockOwnerForCreate is a no-op on SQLite, and deliberately so.
+//
+// SQLite handles are opened with _txlock=immediate (see Open), so every
+// transaction begins as BEGIN IMMEDIATE and takes the database write lock up
+// front. Writers are therefore already serialized database-wide: no second
+// transaction can insert a key_sets row between the service's cap check and its
+// insert, which is exactly the interleaving this method exists to exclude on
+// PostgreSQL. There is no narrower per-owner lock to take, and issuing one
+// would not make the invariant any stronger than the write lock already does.
+//
+// It is implemented rather than omitted because the cap's safety must not
+// depend on the service knowing which engine it is talking to. The service
+// calls this on every create; the engine that needs a lock takes one.
+func (r *keySetRepo) LockOwnerForCreate(_ context.Context, _ domain.OwnerID) error {
+	return nil
+}
+
 // Update persists changes to the mutable fields of a key set, scoped by
 // s.OwnerID AND s.ID. Only visibility, state, quarantine_until,
 // flagged_for_review, and quarantine_on_release are written (plus the
