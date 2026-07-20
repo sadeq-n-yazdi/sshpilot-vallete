@@ -129,4 +129,10 @@ var (
 	// that they always exist and always refuse, and a missing service is
 	// therefore a 500 on the route rather than a process that will not start.
 	ErrNilDeviceService = errors.New("httpserver: nil device service")
+
+	// ErrNilPublicKeyService is logged when a public key management route is
+	// reached with no service behind it. Like ErrNilDeviceService it is a 500
+	// on the route rather than a startup refusal, because the management routes
+	// are mounted unconditionally so that they always exist and always refuse.
+	ErrNilPublicKeyService = errors.New("httpserver: nil public key service")
 )

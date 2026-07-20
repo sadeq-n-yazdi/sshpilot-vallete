@@ -51,6 +51,7 @@ func Registry() (*migrate.Registry, error) {
 		migration0007LinkedIdentities(),
 		migration0008DevicePairings(),
 		migration0009Administrators(),
+		migration0010AccessKeys(),
 		migration0011ListOverrides(),
 	)
 }
@@ -816,6 +817,107 @@ func migration0009Administrators() migrate.Migration {
 		Down: migrate.Steps{
 			SQLite:   []string{`DROP TABLE administrators`},
 			Postgres: []string{`DROP TABLE administrators`},
+		},
+	}
+}
+
+// migration0010AccessKeys creates the access_keys table: the per-key-set Bearer
+// credentials that a consumer presents to fetch a protected key set
+// (ADR-0010, ADR-0016).
+//
+// # Only the digest is stored
+//
+// secret_hash holds a digest of the access key, never the key itself. The
+// plaintext exists only in the response that minted it — it is shown once and
+// is not recoverable afterwards, by the owner or by the operator — so a stolen
+// database backup yields nothing that can be presented as a Bearer credential.
+// The column is BLOB/BYTEA because it holds raw digest bytes, and the
+// comparison that consumes it is a constant-time one outside this package; the
+// repository only ever stores and returns the bytes.
+//
+// There is deliberately NO unique index on secret_hash. Uniqueness there would
+// turn an INSERT into an oracle: one owner could learn that some other owner
+// already holds a key with a chosen digest, because the write would fail
+// instead of succeeding. Digest collisions are prevented by drawing keys from a
+// large random space, which is a property of the minting code, not something a
+// shared-namespace constraint can assert without leaking across owners. For the
+// same reason name carries no unique index: the port declares no duplicate-name
+// conflict, and every read that would resolve a name is owner-scoped anyway.
+//
+// # status and the grace window
+//
+// status is CHECK-constrained to the AccessKeyStatus set. Rotation does not
+// revoke the outgoing key immediately: it moves to 'grace' with a deadline in
+// grace_until and a forward pointer in replaced_by_id, so a consumer that has
+// not yet picked up the new key keeps working until the window closes. Both
+// columns are therefore nullable — an active key has neither — and the sweep
+// that retires expired grace keys reads (status, grace_until).
+//
+// replaced_by_id carries no self-referential FOREIGN KEY, for the same reason
+// refresh_credentials.rotated_from_id carries none: the grace-expiry sweep
+// removes rows by deadline without regard to chain position, and an FK would
+// either block that sweep or cascade it into rows that are still live.
+//
+// # Why key_set_id has a plain foreign key
+//
+// key_set_id references key_sets(id) alone, not the composite (id, owner_id)
+// that public_keys uses for its device. key_sets was not created with the
+// UNIQUE (id, owner_id) that such a reference requires, and it cannot portably
+// acquire one now (SQLite has no ALTER TABLE ADD CONSTRAINT). This table
+// therefore inherits the stance key_set_members already documents: the FK
+// guarantees the key set EXISTS, and preventing a key set and a credential from
+// belonging to different owners is the caller's responsibility. It costs
+// nothing at read time, because every owner-scoped query in the adapter carries
+// owner_id in its WHERE clause, so a mismatched row is unreachable through the
+// owner's own queries regardless of how it got written.
+func migration0010AccessKeys() migrate.Migration {
+	const (
+		createSQLite = `CREATE TABLE access_keys (
+	id TEXT PRIMARY KEY,
+	owner_id TEXT NOT NULL REFERENCES owners(id),
+	key_set_id TEXT NOT NULL REFERENCES key_sets(id),
+	name TEXT NOT NULL,
+	secret_hash BLOB NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('active', 'grace', 'revoked')),
+	created_at TEXT NOT NULL,
+	revoked_at TEXT,
+	grace_until TEXT,
+	replaced_by_id TEXT
+)`
+		createPostgres = `CREATE TABLE access_keys (
+	id TEXT PRIMARY KEY,
+	owner_id TEXT NOT NULL REFERENCES owners(id),
+	key_set_id TEXT NOT NULL REFERENCES key_sets(id),
+	name TEXT NOT NULL,
+	secret_hash BYTEA NOT NULL,
+	status TEXT NOT NULL CHECK (status IN ('active', 'grace', 'revoked')),
+	created_at TEXT NOT NULL,
+	revoked_at TEXT,
+	grace_until TEXT,
+	replaced_by_id TEXT
+)`
+		// No standalone owner_id index: owner_id is the leftmost column of
+		// indexOwnerSet, so an owner-only lookup such as ListByOwner uses that
+		// index already. A second index on the same prefix would be written on
+		// every insert and delete and read by nothing.
+		indexOwnerSet   = `CREATE INDEX ix_access_keys_owner_key_set ON access_keys (owner_id, key_set_id)`
+		indexGraceUntil = `CREATE INDEX ix_access_keys_grace_until ON access_keys (status, grace_until)`
+	)
+
+	return migrate.Migration{
+		ID:       "0010",
+		Name:     "access_keys",
+		Requires: []string{"0001", "0003"},
+		Preconditions: []migrate.Precondition{
+			migrate.TableAbsent("access_keys"),
+		},
+		Up: migrate.Steps{
+			SQLite:   []string{createSQLite, indexOwnerSet, indexGraceUntil},
+			Postgres: []string{createPostgres, indexOwnerSet, indexGraceUntil},
+		},
+		Down: migrate.Steps{
+			SQLite:   []string{`DROP TABLE access_keys`},
+			Postgres: []string{`DROP TABLE access_keys`},
 		},
 	}
 }
