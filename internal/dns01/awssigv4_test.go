@@ -107,6 +107,50 @@ func TestCanonicalQueryEncoding(t *testing.T) {
 	}
 }
 
+// TestSignV4SignsContentTypeWhenPresent pins the one branch the published
+// vector does not reach.
+//
+// AWS's get-vanilla case is a GET with no body, no query and no content-type,
+// so it verifies the key derivation, the string-to-sign and the empty-payload
+// hash but never exercises the content-type header. That branch is used by the
+// POST that actually writes records, where a mistake would mean the provider
+// can read zones but never publish a challenge.
+//
+// This test is SELF-REFERENTIAL and does not prove AWS-correctness: it locks in
+// the two things that are easy to get wrong and easy to regress -- content-type
+// sorts before host, and it must appear in SignedHeaders -- against a value
+// derived by reading the specification, not one AWS published. A wrong
+// signature here fails loudly as a 403 on the first real call, so this is a
+// regression lock rather than a security control.
+func TestSignV4SignsContentTypeWhenPresent(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "https://route53.amazonaws.com/2013-04-01/hostedzone/Z1/rrset/", nil)
+	req.Header.Set("Content-Type", "application/xml")
+
+	if err := signV4(req, []byte("<body/>"), sigV4TestAccessKey, sigV4TestSecret, "us-east-1", "route53", sigV4TestTime); err != nil {
+		t.Fatalf("signV4: %v", err)
+	}
+
+	auth := req.Header.Get("Authorization")
+	if !strings.Contains(auth, "SignedHeaders=content-type;host;x-amz-date") {
+		t.Errorf("SignedHeaders must list content-type first and include it at all: %s", auth)
+	}
+	if strings.Contains(auth, sigV4TestSecret) {
+		t.Errorf("the Authorization header carries the secret: %s", auth)
+	}
+
+	// A body must change the signature: the payload hash is part of the
+	// canonical request, so a signer that ignored the body would produce the
+	// same signature for different content.
+	other, _ := http.NewRequest(http.MethodPost, "https://route53.amazonaws.com/2013-04-01/hostedzone/Z1/rrset/", nil)
+	other.Header.Set("Content-Type", "application/xml")
+	if err := signV4(other, []byte("<different/>"), sigV4TestAccessKey, sigV4TestSecret, "us-east-1", "route53", sigV4TestTime); err != nil {
+		t.Fatalf("signV4: %v", err)
+	}
+	if other.Header.Get("Authorization") == auth {
+		t.Error("two different bodies produced the same signature: the payload is not being signed")
+	}
+}
+
 // TestCanonicalQuerySortsParameters checks that parameters are ordered by name,
 // which SigV4 requires and Go's map iteration does not provide.
 func TestCanonicalQuerySortsParameters(t *testing.T) {

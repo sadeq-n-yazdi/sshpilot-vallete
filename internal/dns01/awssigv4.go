@@ -35,9 +35,14 @@ import (
 // cannot see in the config. Signing explicitly with one supplied key is the
 // property we want, and it is the smaller amount of code.
 //
-// The risk of hand-rolling is getting the signature wrong, which is checked in
-// awssigv4_test.go against AWS's own published SigV4 test-suite vector rather
-// than against this implementation's own output.
+// The risk of hand-rolling is getting the signature wrong. awssigv4_test.go
+// checks the algorithm against AWS's own published SigV4 test-suite vector
+// rather than against this implementation's output — but that vector is a GET
+// with no body, no query and no content-type, so it verifies the key
+// derivation, the string-to-sign and the empty-payload hash, and does NOT cover
+// the content-type branch used by the POST that writes records. That branch is
+// pinned by a self-referential test below instead, and a mistake in it fails
+// loudly as a 403 on the first real call rather than silently.
 
 const (
 	// sigV4Algorithm is the only algorithm this signer emits.
