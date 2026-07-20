@@ -220,3 +220,104 @@ func (f *fakePairings) Touch(_ context.Context, id domain.PairingID, nextPollAt 
 }
 
 func (f *fakePairings) DeleteExpired(context.Context, time.Time, int) (int64, error) { return 0, nil }
+
+// snapshotOf returns a copy of a stored row so a test can inspect state after
+// an operation.
+func (f *fakePairings) snapshotOf(id domain.PairingID) *domain.DevicePairing {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return copyPairing(f.rows[id])
+}
+
+// fakeLinkStore is a writable LinkedIdentityRepository.
+//
+// fakeLinks, which the authenticator tests use, is deliberately read-only: it
+// exists to exercise resolution against a fixed set of rows. The enrollment
+// service creates links, and the tests need to read back, repoint and remove
+// them, so it gets a store of its own rather than making the other fake mutable
+// for everyone.
+type fakeLinkStore struct {
+	mu   sync.Mutex
+	rows map[linkKey]*domain.LinkedIdentity
+	err  error
+}
+
+var _ repository.LinkedIdentityRepository = (*fakeLinkStore)(nil)
+
+func newFakeLinkStore() *fakeLinkStore {
+	return &fakeLinkStore{rows: make(map[linkKey]*domain.LinkedIdentity)}
+}
+
+func (f *fakeLinkStore) Create(_ context.Context, li *domain.LinkedIdentity) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	if li == nil {
+		return domain.ErrInvalidInput
+	}
+	k := linkKey{provider: li.Provider, subject: li.Subject}
+	if _, exists := f.rows[k]; exists {
+		return domain.ErrConflict
+	}
+	cp := *li
+	f.rows[k] = &cp
+	return nil
+}
+
+func (f *fakeLinkStore) GetByProviderSubject(_ context.Context, provider, subject string) (*domain.LinkedIdentity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	li, ok := f.rows[linkKey{provider: provider, subject: subject}]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	cp := *li
+	return &cp, nil
+}
+
+func (f *fakeLinkStore) ListByOwner(_ context.Context, ownerID domain.OwnerID) ([]domain.LinkedIdentity, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []domain.LinkedIdentity
+	for _, li := range f.rows {
+		if li.OwnerID == ownerID {
+			out = append(out, *li)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeLinkStore) Delete(context.Context, domain.OwnerID, domain.LinkedIdentityID) error {
+	return nil
+}
+
+func (f *fakeLinkStore) DeleteByOwner(context.Context, domain.OwnerID) (int64, error) { return 0, nil }
+
+// get returns the stored link, or nil.
+func (f *fakeLinkStore) get(provider, subject string) *domain.LinkedIdentity {
+	li, err := f.GetByProviderSubject(context.Background(), provider, subject)
+	if err != nil {
+		return nil
+	}
+	return li
+}
+
+// remove drops a link, modeling a credential removed after the pairing was
+// created.
+func (f *fakeLinkStore) remove(provider, subject string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.rows, linkKey{provider: provider, subject: subject})
+}
+
+// setOwner repoints a link at another owner, modeling a tampered row or a
+// lookup that returned a neighbor.
+func (f *fakeLinkStore) setOwner(provider, subject string, ownerID domain.OwnerID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if li, ok := f.rows[linkKey{provider: provider, subject: subject}]; ok {
+		li.OwnerID = ownerID
+	}
+}

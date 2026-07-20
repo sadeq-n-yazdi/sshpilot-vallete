@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -316,4 +317,22 @@ func TestAPITokenProviderNotFoundIsADenial(t *testing.T) {
 
 	_, err := newTestProvider(t, f).Authenticate(context.Background(), auth.Credential{Secret: code})
 	requireBareAuthFailed(t, err, "not found")
+}
+
+// splitDeviceCode decodes a device code into its identifier and raw secret,
+// independently of the package under test.
+func splitDeviceCode(code secrets.Redacted) (domain.PairingID, []byte, error) {
+	body, ok := strings.CutPrefix(code.Reveal(), devicePrefix)
+	if !ok {
+		return "", nil, errors.New("device code lacks the svd_ prefix")
+	}
+	id, encoded, ok := strings.Cut(body, ".")
+	if !ok {
+		return "", nil, errors.New("device code has no separator")
+	}
+	secret, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", nil, err
+	}
+	return domain.PairingID(id), secret, nil
 }
