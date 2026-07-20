@@ -53,4 +53,13 @@ var (
 	// startup so a misconfigured deployment fails loudly instead of serving
 	// 500s that look like an outage, or 404s that look like empty accounts.
 	ErrNilPublisher = errors.New("httpserver: nil publish service")
+
+	// ErrNilAuthorizer is returned when a Guardian is constructed without an
+	// Authorizer. Like the nil publisher this is refused at startup rather than
+	// tolerated, and for a sharper reason: a Guardian without an Authorizer
+	// would mount routes that look protected in the route table and serve every
+	// request unauthorized. A control that is wired up, reads as enforced, and
+	// enforces nothing is the one failure mode this whole layer exists to
+	// prevent.
+	ErrNilAuthorizer = errors.New("httpserver: nil authorizer")
 )
