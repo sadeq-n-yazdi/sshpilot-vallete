@@ -175,6 +175,30 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	mux.Handle("DELETE /api/v1/keys/{keyID}",
 		guardian.Protect(AccountAccess, revokeKeyHandler(o.keys, logger)))
 
+	// The key set routes split their access declarations, and the split is the
+	// security decision on this block. Create and list address the account, so
+	// they declare AccountAccess and a set-bound token cannot reach them --
+	// a token scoped to one set must not be able to mint or enumerate others.
+	// Rename and delete address one set, so they declare KeySetAccess, which
+	// names the set from the path and lets auth.Guard confine a set-bound token
+	// to the set it was issued for.
+	//
+	// This is deliberately NOT the all-AccountAccess shape the key routes above
+	// use. Those have no choice: auth.ResourceKind has no kind for a key. Key
+	// sets have auth.ResourceKeySet, so declaring the account here would widen
+	// every set-bound token into an account-wide one.
+	//
+	// PATCH is the rename verb rather than PUT: the request carries the one
+	// field it changes, and a PUT would imply the body replaces the resource --
+	// inviting a later edit to accept visibility and is_default in it, which are
+	// C4's decisions with their own authorization story.
+	mux.Handle("POST /api/v1/keysets", guardian.Protect(AccountAccess, createKeySetHandler(o.keySets, logger)))
+	mux.Handle("GET /api/v1/keysets", guardian.Protect(AccountAccess, listKeySetsHandler(o.keySets, logger)))
+	mux.Handle("PATCH /api/v1/keysets/{keySetID}",
+		guardian.Protect(KeySetAccess, renameKeySetHandler(o.keySets, logger)))
+	mux.Handle("DELETE /api/v1/keysets/{keySetID}",
+		guardian.Protect(KeySetAccess, deleteKeySetHandler(o.keySets, logger)))
+
 	// Outermost first: every response carries the transport policy, then every
 	// request gets an ID, then is logged, then is protected from panics.
 	//
