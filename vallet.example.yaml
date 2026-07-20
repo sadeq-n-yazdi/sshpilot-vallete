@@ -182,6 +182,12 @@ retention:
   # larger than the ceiling is drained over successive passes.
   audit_purge_batch: 500
   audit_purge_max_per_run: 100000
+  # How often elapsed handle quarantines are returned to the pool, and how many
+  # one pass releases. 0 on the interval disables the sweep, which is safe in
+  # the sense that a vacated name then stays reserved by its previous owner
+  # rather than becoming claimable by anyone else -- it fails closed.
+  handle_quarantine_sweep_interval: 1h
+  handle_quarantine_sweep_batch: 200
   max_sets_per_owner: 100
 
 install:

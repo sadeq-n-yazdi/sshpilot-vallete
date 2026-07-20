@@ -543,6 +543,18 @@ func (c *Config) validateRetention(v *validator) {
 	if c.Retention.AuditPurgeMaxPerRun < 1 {
 		v.add("retention.audit_purge_max_per_run", "must be >= 1, got %d", c.Retention.AuditPurgeMaxPerRun)
 	}
+	// 0 disables the release sweep; negative is a mistake, not a mode. See the
+	// field for why an off switch is safe on this sweep specifically.
+	if c.Retention.HandleQuarantineSweepInterval.Std() < 0 {
+		v.add("retention.handle_quarantine_sweep_interval", "must be >= 0 (0 disables the quarantine release sweep)")
+	}
+	// Strictly positive even when the sweep is disabled: a non-positive batch
+	// has no safe reading, and the repository would coerce it to a page-size
+	// default rather than refuse it, so an operator's 0 would silently become
+	// a batch nobody chose.
+	if c.Retention.HandleQuarantineSweepBatch < 1 {
+		v.add("retention.handle_quarantine_sweep_batch", "must be >= 1, got %d", c.Retention.HandleQuarantineSweepBatch)
+	}
 	if c.Retention.MaxSetsPerOwner < 1 {
 		v.add("retention.max_sets_per_owner", "must be >= 1, got %d", c.Retention.MaxSetsPerOwner)
 	}
