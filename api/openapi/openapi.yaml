@@ -1,0 +1,340 @@
+openapi: 3.1.1
+info:
+  title: sshpilot-vallete API
+  version: 0.1.0
+  summary: Publishes SSH public key sets as native authorized_keys documents.
+  description: |
+    The contract for what the server implements **today**: the two probe
+    endpoints and the unauthenticated publish read path.
+
+    Management endpoints (owner onboarding, handle and key-set administration,
+    device pairing, credential enrollment) are **forthcoming** and are
+    deliberately absent. A specification that describes unbuilt routes cannot be
+    used as a contract, because a consumer has no way to tell the parts that are
+    real from the parts that are aspirational. Routes are added here as they
+    land, and a contract test fails the build when this document and the router
+    disagree in either direction.
+
+    ## Transport
+
+    HTTPS only (ADR-0015). Plaintext HTTP is not a supported transport for any
+    endpoint described here.
+
+    ## Methods
+
+    `HEAD` is supported wherever `GET` is, and returns the identical status and
+    headers with no body. It is spelled out only on the publish routes, where
+    ADR-0019 requires it and the handler implements the parity explicitly; on
+    the probe endpoints it follows from the same routing rule.
+
+    Any other method on any of these paths is answered with `405 Method Not
+    Allowed` and an `Allow: GET, HEAD` header, by the router rather than by a
+    handler. It is not repeated under each operation below.
+
+    ## Enumeration
+
+    Every negative verdict on the publish path — an unknown handle, an unknown
+    set, a set owned by somebody else, an inactive or non-public set, a
+    malformed name — produces one byte-identical `404`. The cases are **not**
+    distinguishable, and are not documented as separate responses, because the
+    indistinguishability is the security property (ADR-0019): a stranger must
+    not be able to read the existence of a handle or set off a difference
+    between two error responses.
+servers:
+  - url: https://{host}
+    description: A vallete deployment.
+    variables:
+      host:
+        default: localhost:8443
+tags:
+  - name: probes
+    description: Liveness and readiness, for orchestrators and load balancers.
+  - name: publish
+    description: The unauthenticated read path consumed by sshd and by operators.
+paths:
+  /healthz:
+    get:
+      tags: [probes]
+      operationId: getHealthz
+      summary: Liveness probe.
+      description: |
+        Reports on the process alone and performs no dependency checks: if this
+        handler runs, the process is alive and must not be restarted. It cannot
+        fail with a non-2xx of its own.
+      responses:
+        "200":
+          $ref: "#/components/responses/Status"
+  /readyz:
+    get:
+      tags: [probes]
+      operationId: getReadyz
+      summary: Readiness probe.
+      description: |
+        Reflects database health and **fails closed**: `200` is returned only
+        when the datastore answers within the internal 2s deadline. A missing
+        datastore, an error, and a timeout are all reported as `503`, with no
+        indication of which, so an unauthenticated probe cannot map the
+        deployment's dependencies.
+      responses:
+        "200":
+          $ref: "#/components/responses/Status"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /{handle}:
+    parameters:
+      - $ref: "#/components/parameters/Handle"
+    get:
+      tags: [publish]
+      operationId: getDefaultKeySet
+      summary: Fetch an owner's default key set.
+      description: |
+        Returns the key set the owner designated as their default (ADR-0016).
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/AuthorizedKeys"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    head:
+      tags: [publish]
+      operationId: headDefaultKeySet
+      summary: Headers for an owner's default key set.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/AuthorizedKeysHead"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /{handle}/{set}:
+    parameters:
+      - $ref: "#/components/parameters/Handle"
+      - $ref: "#/components/parameters/Set"
+    get:
+      tags: [publish]
+      operationId: getKeySet
+      summary: Fetch a named key set.
+      responses:
+        "200":
+          $ref: "#/components/responses/AuthorizedKeys"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    head:
+      tags: [publish]
+      operationId: headKeySet
+      summary: Headers for a named key set.
+      responses:
+        "200":
+          $ref: "#/components/responses/AuthorizedKeysHead"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+components:
+  parameters:
+    Handle:
+      name: handle
+      in: path
+      required: true
+      description: The owner's handle. Reserved terms are not routable as handles (ADR-0017).
+      schema:
+        type: string
+    Set:
+      name: set
+      in: path
+      required: true
+      description: The key set name, scoped to the handle's owner.
+      schema:
+        type: string
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: |
+        A previously returned `ETag`, or `*`. Compared with the weak comparison
+        RFC 9110 prescribes for this header, so a `W/` prefix is ignored. A
+        value that does not parse simply fails to match and yields a full `200`
+        — the safe direction, since a wrongly matched tag would answer `304` and
+        leave a consumer using a key list it should have replaced.
+      schema:
+        type: string
+  headers:
+    ETag:
+      description: |
+        A strong entity tag: the SHA-256 of the body. Because it is derived from
+        the content rather than from a clock or a random token, it is stable
+        across restarts, rebuilds, and replicas, so any instance can validate a
+        tag any other instance issued.
+      required: true
+      schema:
+        type: string
+    CacheControlPublic:
+      description: |
+        `public, max-age=60`. The TTL bounds the revocation window on the cached
+        path: a revoked key can be honored by a cache for at most this long.
+      required: true
+      schema:
+        type: string
+    CacheControlNoStore:
+      description: |
+        `no-store`. Failure and probe responses are never cached. A cached
+        negative would keep answering `404` after the owner published the set,
+        and a cached probe would let an unhealthy instance keep passing.
+      required: true
+      schema:
+        type: string
+    ContentTypeOptions:
+      description: Always `nosniff`.
+      required: true
+      schema:
+        type: string
+    ContentLength:
+      description: |
+        Set explicitly rather than inferred from what was written, so it is
+        accurate on a `HEAD` response that carries no body.
+      required: true
+      schema:
+        type: integer
+  responses:
+    Status:
+      description: The instance is healthy.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+          examples:
+            live:
+              value: { status: ok, version: 0.1.0 }
+            ready:
+              value: { status: ready, version: 0.1.0 }
+    Unavailable:
+      description: |
+        The instance is not ready to serve traffic and should be removed from
+        the load balancer. The reason is logged, never returned.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+          example: { status: unavailable }
+    AuthorizedKeys:
+      description: |
+        The key set, as a native `authorized_keys` document: one canonical,
+        options-free line per active key, in a deterministic order so identical
+        content yields a stable `ETag`. An existing but empty set is a `200`
+        with an empty body, not a `404`.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlPublic"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Content-Length:
+          $ref: "#/components/headers/ContentLength"
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: |
+            ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial01234567890abc owner@example
+    AuthorizedKeysHead:
+      description: |
+        Identical status and headers to the `GET`, with no body. `Content-Length`
+        still reports the size the body would have had.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlPublic"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Content-Length:
+          $ref: "#/components/headers/ContentLength"
+    NotModified:
+      description: |
+        The consumer's copy is current. The response carries no body.
+
+        It repeats the `ETag` and `Cache-Control` deliberately: a conditional
+        response that dropped its validator would leave the consumer with
+        nothing to revalidate against next time, silently degrading every
+        subsequent request into a full fetch.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlPublic"
+    UniformNotFound:
+      description: |
+        No key set is served for this path. This single response covers every
+        negative verdict, and the cases cannot be told apart — see the
+        enumeration note in the API description. It carries no `ETag` and is not
+        cacheable.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Content-Length:
+          $ref: "#/components/headers/ContentLength"
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: "not found\n"
+    InternalError:
+      description: |
+        An internal fault. The body is fixed text; the cause is in the server
+        log and never on the wire, because the failure reasons name internal
+        state that an unauthenticated caller has no business learning.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Content-Length:
+          $ref: "#/components/headers/ContentLength"
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: "internal server error\n"
+  schemas:
+    Status:
+      type: object
+      description: |
+        Carries no diagnostics. An unauthenticated probe must not disclose which
+        dependency failed or why, since that maps the deployment for an attacker.
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, unavailable]
+        version:
+          type: string
+          description: The running server's version. Omitted when unavailable.
+      additionalProperties: false
