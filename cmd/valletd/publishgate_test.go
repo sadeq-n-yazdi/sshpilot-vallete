@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -88,7 +90,19 @@ func (f *gateFixture) handler() http.Handler {
 	f.t.Helper()
 
 	logger := slog.New(slog.NewTextHandler(f.logs, nil))
-	srv, err := buildServer(context.Background(), f.cfg, logger, nil, f.store, telemetry.New(f.cfg, logger))
+
+	// Shut down through the same helper run defers, rather than leaving the
+	// provider to the garbage collector. Under this fixture's config the
+	// provider is pull-only -- traces and OTLP metrics are both disabled by
+	// default, so the one reader that runs a background export loop is never
+	// built -- but handler() is called once per test and more than once in
+	// some, and the fixture must not depend on those defaults staying false.
+	// Enabling traces here later would otherwise start a batch worker per call
+	// with nothing to stop it.
+	tel := telemetry.New(f.cfg, logger)
+	f.t.Cleanup(func() { shutdownTelemetry(tel, logger) })
+
+	srv, err := buildServer(context.Background(), f.cfg, logger, nil, f.store, tel)
 	if err != nil {
 		f.t.Fatalf("buildServer: %v", err)
 	}
@@ -385,5 +399,81 @@ func TestConfigRefusesProductionWithoutAPepper(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "auth.access_key_pepper_ref") {
 		t.Errorf("validation error does not name the field: %v", err)
+	}
+}
+
+// TestRunItselfReachesTheAccessGate closes the one hole every other test in
+// this file shares: they all enter at buildServer or newPublisher, so they
+// prove the gate assembly is correct without proving that run still calls it.
+//
+// That gap is not hypothetical -- it is the exact shape of the defect this
+// change removes. A regression that re-inlined the old, verifier-less
+// publish.New(store.Repos()) into run and stopped calling buildServer compiles
+// cleanly, leaves buildServer referenced (by these tests, so no unused-symbol
+// complaint), and passes every other assertion here, because a test that never
+// enters through run cannot see which publisher run built. The gate would be
+// perfectly constructed and never reached, which looks identical to a gate that
+// is reached and refusing.
+//
+// The discriminator is a pepper that is one byte too short, in DEVELOPMENT:
+//
+//   - config.Validate accepts it. Validate only checks IsZero; the length rule
+//     lives in accesskey.New, next to the HMAC it protects. So this config gets
+//     all the way past validation.
+//   - run therefore returns an error here if and ONLY if it actually executed
+//     the gate construction, which is the single place that length is ruled on.
+//   - a run that bypasses the gate never resolves the pepper at all, reaches
+//     serve, and blocks forever -- so it fails this test by deadline rather
+//     than by assertion.
+//
+// No seeding and no listener are needed: the refusal happens at construction,
+// before serve is ever called.
+func TestRunItselfReachesTheAccessGate(t *testing.T) {
+	// Not parallel: it sets process environment and may signal itself.
+	t.Setenv("VALLET_TEST_RUN_SHORT_PEPPER", strings.Repeat("a", accesskey.MinPepperLen-1))
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "vallet.yaml")
+	cfgText := "" +
+		"server:\n" +
+		"  environment: development\n" +
+		"  listen_addr: 127.0.0.1:0\n" +
+		"tls:\n" +
+		"  mode: self_signed\n" +
+		"database:\n" +
+		"  driver: sqlite\n" +
+		"  sqlite:\n" +
+		"    path: " + filepath.Join(dir, "vallet.db") + "\n" +
+		"auth:\n" +
+		"  access_key_pepper_ref: env:VALLET_TEST_RUN_SHORT_PEPPER\n" +
+		"telemetry:\n" +
+		"  log:\n" +
+		"    level: info\n" +
+		"    format: text\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgText), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	var logs syncBuffer
+	done := make(chan error, 1)
+	go func() { done <- run([]string{"-config", cfgPath}, &logs, &logs) }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("run returned success with a pepper too short to key any digest")
+		}
+		if !strings.Contains(err.Error(), "pepper") {
+			t.Fatalf("run failed for some other reason than the pepper: %v\nlogs:\n%s", err, logs.String())
+		}
+	case <-time.After(30 * time.Second):
+		// Either run began serving despite the short pepper, or -- the
+		// regression this test exists for -- it never consulted the gate at all.
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			t.Errorf("signal self: %v", err)
+		}
+		<-done
+		t.Fatalf("run started serving without ever ruling on the access key pepper; "+
+			"the gate is constructed somewhere run does not call.\nlogs:\n%s", logs.String())
 	}
 }
