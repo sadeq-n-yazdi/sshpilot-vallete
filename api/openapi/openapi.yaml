@@ -435,7 +435,7 @@ paths:
     post:
       tags: [keys]
       operationId: addPublicKey
-      summary: Enrol a public key on one of the token owner's devices.
+      summary: Enroll a public key on one of the token owner's devices.
       description: |
         Accepts one `authorized_keys`-style public key line and attaches it to a
         device the bearer token's owner owns.
@@ -869,7 +869,7 @@ components:
         so: the uniqueness constraint is per-owner, so the only key it can
         report on is one the caller already holds and can already see in its own
         list. It discloses nothing about any other owner, and it is what stops a
-        client from retrying an enrolment that will never succeed.
+        client from retrying an enrollment that will never succeed.
       headers:
         Cache-Control:
           $ref: "#/components/headers/CacheControlNoStore"
@@ -1093,7 +1093,7 @@ components:
     AddPublicKeyRequest:
       type: object
       description: |
-        A key enrolment. It names a device and carries one public key line.
+        A key enrollment. It names a device and carries one public key line.
 
         `additionalProperties: false` is the contract, and the server enforces
         it by rejecting the request rather than dropping the extra field. There
