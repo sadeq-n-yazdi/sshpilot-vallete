@@ -517,6 +517,18 @@ func live(set *domain.KeySet, err error) (*domain.KeySet, error) {
 		}
 		return nil, err
 	}
+	if set == nil {
+		// A nil row with a nil error violates the port contract, so this is
+		// unreachable through any adapter in the tree. It is kept because the
+		// alternative reading of a contract violation on an owner-scoped path
+		// is "dereference and panic", and the safe one is "denied" -- the same
+		// choice Authenticator.resolve makes for a nil linked identity.
+		//
+		// Every caller of live() is deciding whether an owner may act on a set,
+		// so a panic here is reachable from a request and would take the
+		// process down rather than refuse one call.
+		return nil, ErrNotFound
+	}
 	if set.State != domain.NameStateActive {
 		return nil, ErrNotFound
 	}
