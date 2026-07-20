@@ -469,6 +469,12 @@ func TestReleaseFailureStopsTheSweep(t *testing.T) {
 // TestNewRequiresEveryCollaborator: a Service missing one of these does not
 // half-work, it fails to build. A nil guard would let renames land on reserved
 // names; a nil auditor would move public names leaving no trace.
+//
+// The handle repository is checked for the same reason and is the easiest one
+// to miss, because a store carrying it can be non-nil while the repository
+// inside is not. That Service passes every other check, builds, and panics on
+// the first rename. The case below asserts a construction error rather than
+// that panic — and a panic here would fail the test rather than pass it.
 func TestNewRequiresEveryCollaborator(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -488,6 +494,12 @@ func TestNewRequiresEveryCollaborator(t *testing.T) {
 		}},
 		{name: "nil option", build: func() (*handle.Service, error) {
 			return handle.New(f.store, mustGuard(t), f.auditor, nil)
+		}},
+		{name: "nil handle repository", build: func() (*handle.Service, error) {
+			return handle.New(nilRowStore{
+				inner: f.store,
+				decor: func(repository.HandleRepository) repository.HandleRepository { return nil },
+			}, mustGuard(t), f.auditor)
 		}},
 	} {
 		if _, err := tc.build(); !errors.Is(err, handle.ErrMissingDependency) {
