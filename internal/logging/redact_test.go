@@ -377,6 +377,46 @@ func TestPublicValuesAreNotRedacted(t *testing.T) {
 	}
 }
 
+// TestSecretsFilePermissionWarningStaysUseful pins a real production log site
+// against the allowlist.
+//
+// internal/secrets warns when a secret file is group/other-readable, using the
+// keys "reference" and "perm". Both were missing from the first draft of the
+// allowlist, which would have reduced that warning to "some file somewhere has
+// bad permissions" -- a security warning an operator cannot act on, which is
+// worse than none. This is the failure mode an allowlist has to be tested
+// against, and it is invisible from the secrets package's own tests because
+// those use their own handler rather than the one production runs.
+func TestSecretsFilePermissionWarningStaysUseful(t *testing.T) {
+	t.Parallel()
+
+	out := render(t, func(l *slog.Logger) {
+		l.Warn("secret file has group/other-readable permissions",
+			slog.String("reference", "/run/secrets/pg-dsn"),
+			slog.String("perm", "0644"),
+		)
+	})
+
+	for _, want := range []string{"/run/secrets/pg-dsn", "0644"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("permission warning lost %q, leaving it unactionable: %s", want, out)
+		}
+	}
+}
+
+// TestRefUnderAllowlistedKeyStillRedacts pins the backstop that makes
+// allowlisting "reference" safe: a secrets.Ref redacts itself through LogValue
+// regardless of what the key policy says, so an operator who pastes a DSN into
+// a *_ref field cannot have it printed by this key.
+func TestRefUnderAllowlistedKeyStillRedacts(t *testing.T) {
+	t.Parallel()
+
+	out := render(t, func(l *slog.Logger) {
+		l.Warn("perm", slog.Any("reference", secrets.Ref("postgres://vallet:hunter2@db/x")))
+	})
+	mustNotContain(t, out, "hunter2", "Ref under an allowlisted key")
+}
+
 // --- Value-kind policy ----------------------------------------------------
 
 func TestScalarKindsPassThroughUnderAllowedKey(t *testing.T) {

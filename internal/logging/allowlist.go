@@ -70,6 +70,20 @@ var defaultAllowedKeys = []string{
 	"panic",
 	"reason",
 
+	// internal/secrets warns when a secret file is group/other-readable, and
+	// both fields of that warning are the whole point of it: "perm" is a file
+	// mode, and "reference" is the path of the offending file. Redacting either
+	// would leave an operator told that some file somewhere has bad permissions
+	// -- a warning they cannot act on, which is worse than no warning.
+	//
+	// "reference" is safe to render because a secrets.Ref redacts itself
+	// through LogValue no matter what the policy here says, so the only thing
+	// this key can print is the plain path string the file provider already
+	// puts in its errors, which ADR-0022's provider contract documents as the
+	// non-secret diagnostic half of a reference.
+	"perm",
+	"reference",
+
 	// --- Domain vocabulary, non-secret by ADR-0002 and ADR-0010 ---------
 	"handle",
 	"key_set",

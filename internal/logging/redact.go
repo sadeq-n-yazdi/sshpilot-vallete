@@ -11,6 +11,29 @@
 // that is precisely where log leaks come from. RedactHandler is the backstop for
 // those, and it is fail-closed: a value only survives if something about it was
 // affirmatively declared loggable.
+//
+// # Residual limits
+//
+// A handler sees values, not the expressions that produced them, so anything
+// flattened to a string BEFORE the record is built is past the point where key
+// or type policy can act. Two shapes reach that state:
+//
+//   - a secret interpolated into the message, e.g.
+//     log.Info(fmt.Sprintf("auth failed for %s", token));
+//   - a struct holding a plain-string secret field, formatted with %v into a
+//     string attribute under an allowlisted key.
+//
+// Both are inherent to any post-format redactor rather than gaps in this one,
+// and both are already narrowed from the other side. A secret carried as
+// secrets.Redacted or secrets.Ref renders "[REDACTED]" under every fmt verb, so
+// the struct case is closed at the type for values the codebase knows are
+// secret -- which is exactly the division of labor between these two packages.
+// scrubURLCredentials additionally runs over the message and over every
+// rendered string, so the highest-value instance of the first shape, a pasted
+// connection string, is caught. What remains uncovered is a plain-string secret
+// that was never given a secret type and never passed through an attribute; the
+// answer to that is secrets.Redacted at the point the value is obtained, not a
+// deeper handler.
 package logging
 
 import (
