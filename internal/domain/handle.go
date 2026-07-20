@@ -27,10 +27,19 @@ func (s NameState) IsValid() bool {
 }
 
 // Handle is an owner's globally unique public name.
+//
+// NameFold and FoldVersion are write-only: they are supplied on Register so the
+// database can refuse a look-alike of a live handle, and are deliberately not
+// populated when a Handle is read back. Nothing resolves a handle through the
+// fold — a request for a look-alike must miss, not land on the name it
+// resembles — so a reader that never sees the value cannot accidentally start
+// matching on it.
 type Handle struct {
 	ID                  HandleID
 	OwnerID             OwnerID
 	Name                string
+	NameFold            string
+	FoldVersion         int
 	State               NameState
 	QuarantineUntil     *time.Time
 	FlaggedForReview    bool

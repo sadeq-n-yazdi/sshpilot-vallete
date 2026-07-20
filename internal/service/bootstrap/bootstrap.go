@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/blocklist"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/keys"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
@@ -142,13 +143,19 @@ func Seed(ctx context.Context, store repository.Store, p Params) (Result, error)
 			return fmt.Errorf("create owner: %w", err)
 		}
 
+		// The fold is computed here, not in the repository: it is a derived
+		// value, and repositories in this codebase derive nothing. It lets the
+		// unique index refuse a later look-alike of this handle; nothing ever
+		// resolves through it.
 		if err := r.Handles.Register(ctx, &domain.Handle{
-			ID:        res.HandleID,
-			OwnerID:   res.OwnerID,
-			Name:      p.Handle,
-			State:     domain.NameStateActive,
-			CreatedAt: p.Now,
-			UpdatedAt: p.Now,
+			ID:          res.HandleID,
+			OwnerID:     res.OwnerID,
+			Name:        p.Handle,
+			NameFold:    blocklist.Skeleton(p.Handle),
+			FoldVersion: blocklist.TableVersion,
+			State:       domain.NameStateActive,
+			CreatedAt:   p.Now,
+			UpdatedAt:   p.Now,
 		}); err != nil {
 			return fmt.Errorf("register handle: %w", err)
 		}

@@ -25,21 +25,30 @@ type handleRepo struct {
 // Compile-time assertion that handleRepo satisfies the port.
 var _ repository.HandleRepository = (*handleRepo)(nil)
 
-// Register persists a new handle name-claim exactly as given. The global
-// UNIQUE index on name maps a clash to domain.ErrConflict.
+// Register persists a new handle name-claim exactly as given. Three UNIQUE
+// indexes map a clash to domain.ErrConflict: the global one on name, the one on
+// name_fold that refuses a look-alike of a live claim, and the partial one that
+// holds an owner to a single active claim.
+//
+// name_fold is written and never read back. Resolution matches the exact name,
+// so a look-alike that was never registered misses rather than landing on the
+// name it imitates.
 func (r *handleRepo) Register(ctx context.Context, h *domain.Handle) error {
 	// A nil entity is a caller programming error, not a storage fault; reject it
 	// as invalid input rather than dereferencing it into a panic.
 	if h == nil {
 		return fmt.Errorf("%s: nil handle: %w", errPrefix, domain.ErrInvalidInput)
 	}
-	const q = `INSERT INTO handles (id, owner_id, name, state, quarantine_until,
+	const q = `INSERT INTO handles (id, owner_id, name, name_fold, fold_version,
+state, quarantine_until,
 flagged_for_review, quarantine_on_release, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err := r.e.ExecContext(ctx, q,
 		string(h.ID),
 		string(h.OwnerID),
 		h.Name,
+		h.NameFold,
+		int64(h.FoldVersion),
 		string(h.State),
 		encNullTime(h.QuarantineUntil),
 		encBool(h.FlaggedForReview),
@@ -152,6 +161,25 @@ ORDER BY quarantine_until ASC, id ASC LIMIT ?`
 		return nil, mapError(err)
 	}
 	return collectHandles(rows)
+}
+
+// Release deletes an elapsed quarantined claim so the name returns to the pool.
+//
+// The state and deadline predicates are part of the DELETE rather than a read
+// beforehand, so the decision to release and the release itself cannot be
+// separated: a claim the owner reclaimed (state back to active) or an operator
+// retired after the sweep listed it no longer matches, and survives untouched.
+//
+// UNSCOPED: system-maintenance sweep across all owners; see the port.
+func (r *handleRepo) Release(ctx context.Context, id domain.HandleID, now time.Time) error {
+	const q = `DELETE FROM handles
+WHERE id = ? AND state = ? AND quarantine_until IS NOT NULL AND quarantine_until <= ?`
+	res, err := r.e.ExecContext(ctx, q,
+		string(id), string(domain.NameStateQuarantined), encTime(now))
+	if err != nil {
+		return mapError(err)
+	}
+	return requireAffected(res)
 }
 
 // collectHandles drains rows into a slice, mapping any iteration error through

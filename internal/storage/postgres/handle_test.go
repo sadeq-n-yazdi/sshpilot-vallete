@@ -6,18 +6,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/blocklist"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 )
 
 // newHandle returns a fully populated active handle owned by ownerID.
+//
+// NameFold carries the real fold so these fixtures exercise the same unique
+// index production writes go through; a fixture that left it empty would have
+// every handle collide on the empty string.
 func newHandle(id, ownerID, name string) *domain.Handle {
 	return &domain.Handle{
-		ID:        domain.HandleID(id),
-		OwnerID:   domain.OwnerID(ownerID),
-		Name:      name,
-		State:     domain.NameStateActive,
-		CreatedAt: testClock,
-		UpdatedAt: testClock,
+		ID:          domain.HandleID(id),
+		OwnerID:     domain.OwnerID(ownerID),
+		Name:        name,
+		NameFold:    blocklist.Skeleton(name),
+		FoldVersion: blocklist.TableVersion,
+		State:       domain.NameStateActive,
+		CreatedAt:   testClock,
+		UpdatedAt:   testClock,
 	}
 }
 
@@ -61,7 +68,9 @@ func TestHandleBooleanRoundTrip(t *testing.T) {
 	set.FlaggedForReview = true
 	set.QuarantineOnRelease = true
 	mustRegisterHandle(t, s, set)
-	cleared := newHandle("h-clear", "owner-a", "unflagged")
+	// A second owner, because ux_handles_owner_active allows one active claim
+	// each and this test is about boolean encoding, not that invariant.
+	cleared := newHandle("h-clear", "owner-b", "unflagged")
 	mustRegisterHandle(t, s, cleared)
 
 	got, err := s.Repos().Handles.Get(ctx, "owner-a", "h-set")
@@ -71,7 +80,7 @@ func TestHandleBooleanRoundTrip(t *testing.T) {
 	if !got.FlaggedForReview || !got.QuarantineOnRelease {
 		t.Errorf("true flags did not round-trip: %+v", got)
 	}
-	got, err = s.Repos().Handles.Get(ctx, "owner-a", "h-clear")
+	got, err = s.Repos().Handles.Get(ctx, "owner-b", "h-clear")
 	if err != nil {
 		t.Fatalf("Get clear: %v", err)
 	}
@@ -169,8 +178,15 @@ func TestHandleListByOwner(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
+	// One active claim plus the tombstone of a name renamed away from: that is
+	// the shape an owner's rows actually take, and the only shape
+	// ux_handles_owner_active permits.
 	mustRegisterHandle(t, s, newHandle("h-1", "owner-a", "n1"))
-	mustRegisterHandle(t, s, newHandle("h-2", "owner-a", "n2"))
+	freed := newHandle("h-2", "owner-a", "n2")
+	freed.State = domain.NameStateQuarantined
+	until := testClock.Add(30 * 24 * time.Hour)
+	freed.QuarantineUntil = &until
+	mustRegisterHandle(t, s, freed)
 	mustRegisterHandle(t, s, newHandle("h-3", "owner-b", "n3"))
 
 	got, err := s.Repos().Handles.ListByOwner(ctx, "owner-a")
@@ -440,5 +456,138 @@ func TestHandleMissingAndWrongOwnerIndistinguishable(t *testing.T) {
 	if updWrongOwner.Error() != updMissing.Error() {
 		t.Errorf("wrong-owner Update error %q differs from missing-row error %q; existence leaks",
 			updWrongOwner, updMissing)
+	}
+}
+
+// TestHandleRegisterLookAlikeConflict is the mechanism behind ADR-0026's
+// normalized-form uniqueness, proven on PostgreSQL. "ad-min" and "adm1n" are
+// distinct, individually valid slugs, so the unique index on the raw name
+// cannot see the collision; only the fold can.
+func TestHandleRegisterLookAlikeConflict(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ taken, lookAlike string }{
+		{"paypal", "p4ypal"}, // leetspeak, 4 folds to a
+		{"admin", "adm1n"},   // leetspeak, 1 folds to i
+		{"admin", "ad-min"},  // separator
+		{"stripe", "str1pe"}, // leetspeak, interior
+	} {
+		t.Run(tc.taken+"/"+tc.lookAlike, func(t *testing.T) {
+			t.Parallel()
+			s := newStore(t)
+
+			mustRegisterHandle(t, s, newHandle("h-taken", "owner-a", tc.taken))
+			mustCreateOwner(t, s, "owner-b")
+
+			err := s.Repos().Handles.Register(
+				context.Background(), newHandle("h-look", "owner-b", tc.lookAlike))
+			if !errors.Is(err, domain.ErrConflict) {
+				t.Fatalf("Register look-alike %q against %q = %v, want ErrConflict",
+					tc.lookAlike, tc.taken, err)
+			}
+		})
+	}
+}
+
+// TestHandleResolutionIgnoresFold is the guardrail on storing the fold at all.
+// If the fold ever became a resolution key, a request for a look-alike would
+// answer with the imitated owner's keys.
+func TestHandleResolutionIgnoresFold(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	mustRegisterHandle(t, s, newHandle("h-1", "owner-a", "paypal"))
+
+	if _, err := s.Repos().Handles.GetByName(ctx, "p4ypal"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("GetByName(p4ypal) = %v, want ErrNotFound: resolution must not "+
+			"go through the fold", err)
+	}
+	if _, err := s.Repos().Handles.GetByName(ctx, "paypal"); err != nil {
+		t.Fatalf("GetByName(paypal) = %v, want the row", err)
+	}
+}
+
+// TestHandleRegisterSecondActiveConflict proves an owner cannot hold two active
+// name-claims, which would make GetActiveByOwner's singularity a lie.
+func TestHandleRegisterSecondActiveConflict(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	mustRegisterHandle(t, s, newHandle("h-1", "owner-a", "first"))
+
+	err := s.Repos().Handles.Register(
+		context.Background(), newHandle("h-2", "owner-a", "second"))
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("second active claim for one owner = %v, want ErrConflict", err)
+	}
+}
+
+// TestHandleReleaseFreesTheName covers the end of the quarantine on PostgreSQL:
+// the row is deleted once the hold elapses, and only then is the name claimable.
+func TestHandleReleaseFreesTheName(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	mustCreateOwner(t, s, "owner-a")
+	past := testClock.Add(-time.Hour)
+	freed := newHandle("h-freed", "owner-a", "released")
+	freed.State = domain.NameStateQuarantined
+	freed.QuarantineUntil = &past
+	if err := s.Repos().Handles.Register(ctx, freed); err != nil {
+		t.Fatalf("register quarantined: %v", err)
+	}
+
+	mustCreateOwner(t, s, "owner-b")
+	if err := s.Repos().Handles.Register(ctx, newHandle("h-b", "owner-b", "released")); !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("claim during quarantine = %v, want ErrConflict", err)
+	}
+
+	if err := s.Repos().Handles.Release(ctx, "h-freed", testClock); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if err := s.Repos().Handles.Register(ctx, newHandle("h-b", "owner-b", "released")); err != nil {
+		t.Fatalf("claim after release: %v", err)
+	}
+}
+
+// TestHandleReleaseRefusesEarlyAndReclaimed is the sweep-window race: between a
+// sweep listing a claim and releasing it, the owner may reclaim it or an
+// operator may retire it. Neither may be deleted, nor may a running hold.
+func TestHandleReleaseRefusesEarlyAndReclaimed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	future := testClock.Add(time.Hour)
+	past := testClock.Add(-time.Hour)
+
+	for _, tc := range []struct {
+		name  string
+		state domain.NameState
+		until *time.Time
+	}{
+		{"hold still running", domain.NameStateQuarantined, &future},
+		{"reclaimed by its owner", domain.NameStateActive, &past},
+		{"retired by an operator", domain.NameStateRetired, &past},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStore(t)
+			mustCreateOwner(t, s, "owner-a")
+
+			h := newHandle("h-x", "owner-a", "held")
+			h.State = tc.state
+			h.QuarantineUntil = tc.until
+			if err := s.Repos().Handles.Register(ctx, h); err != nil {
+				t.Fatalf("register: %v", err)
+			}
+
+			if err := s.Repos().Handles.Release(ctx, "h-x", testClock); !errors.Is(err, domain.ErrNotFound) {
+				t.Fatalf("Release = %v, want ErrNotFound", err)
+			}
+			if _, err := s.Repos().Handles.GetByName(ctx, "held"); err != nil {
+				t.Fatalf("claim was deleted despite Release refusing: %v", err)
+			}
+		})
 	}
 }
