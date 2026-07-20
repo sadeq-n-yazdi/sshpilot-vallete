@@ -95,7 +95,26 @@ func TestMathAlphanumericBlockIsFullyReduced(t *testing.T) {
 			t.Errorf("%U folded away to nothing; it should reduce, not vanish", r)
 			continue
 		}
+		// For the styled LATIN letters and the styled digits, the assertion is
+		// ASCII rather than merely "left the block". Escaping the block is not
+		// enough: U+1D6A5 MATHEMATICAL ITALIC SMALL DOTLESS J decomposes to ȷ
+		// (U+0237), which is outside lo..hi and so passed a block-only check
+		// while leaving "blow𝚥ob" and "𝚥s" spellable past the list. A styled
+		// Latin letter that lands anywhere other than plain ASCII has not been
+		// reduced, it has just moved, and the plain spelling it is supposed to
+		// collide with is ASCII.
+		//
+		// The styled GREEK letters in between are held only to the weaker
+		// assertion, deliberately. Their plain spellings are plain Greek, and
+		// confusables covers only the Greek letters that draw a Latin one --
+		// β, γ, δ and the rest reduce to themselves and must, because folding
+		// them to ASCII would be an invention, not a fold. Agreement between
+		// the styled and plain spellings is the whole property there.
+		latin := r <= 0x1D6A5 || r >= 0x1D7CE
 		for _, o := range got {
+			if latin && o > unicode.MaxASCII {
+				t.Errorf("%U reduces to %U in skeleton %q, not to ASCII: it moved rather than folded", r, o, got)
+			}
 			if o >= lo && o <= hi {
 				t.Errorf("%U survives as %U in skeleton %q: styled and plain spellings disagree", r, o, got)
 			}
@@ -112,6 +131,70 @@ func TestMathAlphanumericBlockIsFullyReduced(t *testing.T) {
 	// gap. Treat a failure here as "re-audit the block", not as flakiness.
 	if want := 996; assigned != want {
 		t.Errorf("walked %d assigned runes in the block, want %d", assigned, want)
+	}
+}
+
+// TestEveryConfusablePreimageReachesItsTarget is the guard for the whole class
+// of defect that version 6 repaired. It is the test that stops the next
+// recurrence, and it is deliberately not the test the obvious reading suggests.
+//
+// # What went wrong
+//
+// Version 4 put NFKD at the front of the pipeline. NFKD folds by compatibility;
+// confusables folds by drawn shape. Where the two disagree, whichever runs
+// first wins, and NFKD running first rewrites a source into a base form the
+// table is not keyed on -- so the entry stops firing and a codepoint that used
+// to fold survives unfolded. That is a silent weakening: nothing errors, a
+// reserved word simply becomes spellable again.
+//
+// # Why this sweeps preimages rather than the table's keys
+//
+// The tempting guard is "for each key k in confusables, assert Skeleton(k)
+// folds to its value". That guard is USELESS here: it is green on the broken
+// code. U+03F2 ϲ folded correctly even while the defect was live, because NFKD
+// happens to decompose it to ς, which has its own entry. The bypass was only
+// ever visible one step up, through the uppercase preimage U+03F9 Ϲ, which
+// lowercases to ϲ but decomposes to Σ and lowercases to σ -- nothing.
+//
+// So the sweep is over the codepoint space, not over the table. Every rune that
+// case-folds onto a confusables key is a way of writing that key, and every one
+// of them must reach the same skeleton the key does. "Ϲonsole" == "console" is
+// the property; the table entry is only the mechanism.
+//
+// # Why it is phrased as an outcome and not as a rule about entries
+//
+// It would be possible to assert instead that no confusables key is a
+// compatibility form NFKD folds elsewhere -- a rule about what entries are
+// allowed to look like. That would be wrong twice over. It would reject
+// perfectly safe future entries, because stage 0 now consults the table before
+// NFKD can touch the source, so such a key is no longer vulnerable. And it
+// would not have caught this defect anyway, for the reason above: the key was
+// fine, its preimage was not. Asserting the outcome fails if and only if the
+// fold is actually broken, which is the only condition worth failing on.
+func TestEveryConfusablePreimageReachesItsTarget(t *testing.T) {
+	checked := 0
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if !utf8.ValidRune(r) {
+			continue
+		}
+		target, ok := confusables[unicode.ToLower(r)]
+		if !ok {
+			continue
+		}
+		checked++
+		want := Skeleton(target)
+		if got := Skeleton(string(r)); got != want {
+			t.Errorf("%U case-folds onto confusable %q (target %q, skeleton %q) but folds to %q",
+				r, unicode.ToLower(r), target, want, got)
+		}
+	}
+	// Every key is its own preimage, so the sweep can never find fewer runes
+	// than the table has entries. Finding exactly that many would mean the
+	// walk stopped covering the uppercase forms, which is the half that
+	// carries the defect this test exists for.
+	if checked <= len(confusables) {
+		t.Errorf("swept %d preimages for %d entries; the uppercase forms are not being reached",
+			checked, len(confusables))
 	}
 }
 

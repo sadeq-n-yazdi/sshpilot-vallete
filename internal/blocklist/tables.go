@@ -72,6 +72,12 @@ var confusables = map[rune]string{
 	// mapping already yields a bare "i", never the "i" plus combining dot that
 	// the full string-level Unicode mapping produces.
 	'ı': "i",
+	// U+0237 DOTLESS J is the exact sibling of ı above, and it is reached the
+	// same way: NFKD decomposes the mathematical dotless j forms
+	// (U+1D6A5 and friends) TO this codepoint and stops, so without an entry
+	// here the whole family strands one step short of j. "blow𝚥ob" and "𝚥s"
+	// were spellable past the list that way.
+	'ȷ': "j",
 	'ł': "l",  // U+0142 LATIN SMALL L WITH STROKE
 	'đ': "d",  // U+0111 LATIN SMALL D WITH STROKE
 	'ø': "o",  // U+00F8 LATIN SMALL O WITH STROKE

@@ -214,6 +214,82 @@ func TestConfirmedHomoglyphBypasses(t *testing.T) {
 	}
 }
 
+// TestNFKDRegressionsStayFolded pins the individual codepoints that version 4
+// stopped folding when it moved NFKD to the front of the pipeline. Each was a
+// working bypass of the reserved-word list on version 5, so each is asserted
+// twice: the skeleton, and the verdict a real matcher reaches for it. The
+// skeleton assertion alone would not prove the bypass is closed, and the
+// verdict alone would not say why.
+func TestNFKDRegressionsStayFolded(t *testing.T) {
+	cases := []struct {
+		name, in, wantSkeleton, wantTerm string
+	}{
+		// U+03F9 lowercases to ϲ, which confusables maps to c -- but NFKD
+		// decomposed it to Σ, which lowercases to σ, which is nothing.
+		{"greek capital lunate sigma for c (U+03F9)", "Ϲonsole", "console", "console"},
+		{"greek capital lunate sigma mid-word (U+03F9)", "seϹurity", "security", "security"},
+		// U+1D6A5 decomposes to ȷ (U+0237), which had no entry at all.
+		{"math italic small dotless j (U+1D6A5)", "\U0001D6A5s", "js", "js"},
+		{"math italic small dotless j mid-word (U+1D6A5)", "blow\U0001D6A5ob", "blowjob", "blowjob"},
+		// The base character the family decomposes onto must fold on its own,
+		// not only when NFKD hands it over.
+		{"latin small dotless j (U+0237)", "ȷs", "js", "js"},
+	}
+
+	m, err := DefaultMatcher()
+	if err != nil {
+		t.Fatalf("DefaultMatcher() error = %v", err)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			checkSkeleton(t, tc.in, tc.wantSkeleton)
+
+			got := m.Check(tc.in)
+			if !got.Blocked() {
+				t.Errorf("Check(%q) allowed it; the bypass is open again", tc.in)
+			}
+			if got.Term != tc.wantTerm {
+				t.Errorf("Check(%q) blocked on term %q, want %q", tc.in, got.Term, tc.wantTerm)
+			}
+		})
+	}
+}
+
+// TestSkeletonIsIdempotentAcrossInvalidUTF8 pins the specific shape of the
+// idempotence break that version 4 introduced, which FuzzSkeleton found in
+// seconds: norm.NFKD treats an undecodable byte as a segment boundary and
+// passes the neighboring text through untouched, so a compatibility character
+// next to invalid UTF-8 survived the first pass and was decomposed only by the
+// second. Skeleton("\xf7ʰ") was "ʰ" while Skeleton("ʰ") was "h".
+//
+// The property is that an invalid byte may not change the fate of any
+// character near it. Asserting that directly -- fold with the junk, fold
+// without it, demand the same answer -- is stronger than asserting the two
+// known outputs, because it fails for any future stage that acquires the same
+// segment-boundary sensitivity.
+func TestSkeletonIsIdempotentAcrossInvalidUTF8(t *testing.T) {
+	// Compatibility characters that only decompose if NFKD sees them in a
+	// well-formed segment: modifier letters, a ligature, a styled letter, a
+	// precomposed accent and the two codepoints repaired in version 6.
+	clean := []string{"ʰ", "ﬁ", "ª", "²", "ǆ", "á", "\U0001D6A5", "Ϲ", "admin"}
+	junk := []string{"\xf7", "\xff\xfe", "\x80", "\xc3", "\xed\xa0\x80"}
+
+	for _, c := range clean {
+		want := Skeleton(c)
+		if again := Skeleton(want); again != want {
+			t.Errorf("Skeleton(%q) = %q is not a fixed point (%q)", c, want, again)
+		}
+		for _, j := range junk {
+			for _, in := range []string{j + c, c + j, j + c + j} {
+				if got := Skeleton(in); got != want {
+					t.Errorf("Skeleton(%q) = %q, want %q: invalid UTF-8 changed the fold of %q",
+						in, got, want, c)
+				}
+			}
+		}
+	}
+}
+
 // TestDistinctIdentifiersDoNotCollide guards the other failure mode. Folding
 // too aggressively refuses a legitimate user their own name, so a set of
 // genuinely different identifiers must keep genuinely different skeletons.
