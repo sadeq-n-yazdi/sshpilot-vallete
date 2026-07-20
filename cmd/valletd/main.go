@@ -21,7 +21,6 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/erasure"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/logging"
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
 	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
@@ -95,26 +94,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	store := sqlite.NewStore(db)
 
-	// SEAM: protected key sets are enforced but not yet unlockable.
-	//
-	// With no publish.WithVerifier here the publish service has no access key
-	// verifier, and every protected set answers with the same 404 an absent set
-	// gets -- for everyone, credential or not. That is the fail-closed
-	// direction and the intended interim state: the enforcement path exists and
-	// is under test, and no protected set is served to anybody in the meantime.
-	//
-	// Completing the wiring needs an *accesskey.Service, which needs the audit
-	// emitter and the token pepper -- the same dependencies the management
-	// surface below is still waiting on. When they land, this call gains
-	//
-	//	publish.WithVerifier(accessKeySvc),
-	//
-	// and nothing else here changes.
-	publisher, err := publish.New(store.Repos())
-	if err != nil {
-		return err
-	}
-
 	// Built before the listener binds, so a bad retention policy fails startup
 	// rather than surfacing at the first tick of a server already taking
 	// traffic. Repos().Audit is the full port (the purge needs PurgeOlderThan);
@@ -153,7 +132,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	tel := telemetry.New(cfg, logger)
 	defer shutdownTelemetry(tel, logger)
 
-	srv, err := httpserver.New(cfg, logger, db, publisher, httpserver.WithTelemetry(tel))
+	srv, err := buildServer(context.Background(), cfg, logger, db, store, tel)
 	if err != nil {
 		return err
 	}
