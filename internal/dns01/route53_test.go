@@ -133,7 +133,7 @@ func (a *route53API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// listZones mimics ListHostedZonesByName, INCLUDING the behaviour that makes
+// listZones mimics ListHostedZonesByName, INCLUDING the behavior that makes
 // exact-match filtering necessary: the response is every zone that sorts at or
 // after the requested name, not only the zones that match it.
 func (a *route53API) listZones(w http.ResponseWriter, r *http.Request) {
