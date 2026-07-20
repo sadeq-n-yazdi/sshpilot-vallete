@@ -52,9 +52,14 @@ var ErrCloudflareAPI = errors.New("dns01: cloudflare api")
 // place, [cloudflareProvider.do], directly into the Authorization header of an
 // outbound request. Consequences of that being the only Reveal in the file:
 //
-//   - The struct cannot be logged into revealing it. Every fmt/log/json/yaml
-//     rendering of the field yields the redaction marker, so an added
-//     slog.Any("provider", p) or a %+v in a future error prints nothing useful.
+//   - The struct cannot be logged into revealing it, because it implements
+//     [fmt.Formatter] and renders as a constant under every verb. That method is
+//     not decoration: secrets.Redacted's own redaction is bypassed by fmt when
+//     the value sits in an UNEXPORTED struct field, because fmt renders such
+//     fields by raw reflection and never calls their String, Format or GoString
+//     methods. Verified: without the Format method below, "%+v" of this provider
+//     prints the bearer token in full. So an added slog.Any("provider", p), or a
+//     %+v of it in a future error, prints nothing useful.
 //   - This type holds NO logger and NO telemetry handle at all, so there is no
 //     local call site that could emit it even by mistake.
 //   - Errors below are built from the record name and Cloudflare's own error
@@ -83,7 +88,7 @@ var _ Provider = (*cloudflareProvider)(nil)
 // parameter exists so a test can supply a transport pointed at a local fake and
 // so an operator's proxy settings can be honored later.
 func NewCloudflare(token secrets.Redacted, client *http.Client) (Provider, error) {
-	if token.Reveal() == "" {
+	if token == "" {
 		return nil, fmt.Errorf("%w: empty api token", ErrCloudflareAPI)
 	}
 	if client == nil {
@@ -104,6 +109,22 @@ func NewCloudflare(token secrets.Redacted, client *http.Client) (Provider, error
 
 // Name identifies the provider. It is a constant, never derived from the token.
 func (p *cloudflareProvider) Name() string { return "cloudflare" }
+
+// Format renders the provider as a constant under every fmt verb, so no
+// formatting of this value can print the token.
+//
+// It exists because secrets.Redacted alone is NOT sufficient here. fmt walks a
+// struct's unexported fields with raw reflection and does not invoke their
+// String, GoString, Format or MarshalJSON methods, so "%+v" of a struct holding
+// a Redacted in an unexported field prints the underlying secret verbatim.
+// Implementing Formatter on the CONTAINING type is what stops fmt from
+// descending into the fields at all.
+//
+// GoString is covered too: "%#v" routes through Formatter when the operand
+// implements it.
+func (p *cloudflareProvider) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, "dns01.cloudflareProvider{token:[REDACTED]}")
+}
 
 // Present creates the TXT record and returns the delete-by-ID cleanup for it.
 func (p *cloudflareProvider) Present(ctx context.Context, rec Record) (CleanupFunc, error) {

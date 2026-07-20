@@ -88,7 +88,7 @@ func ChallengeRecordName(identifier string) string {
 // a previous attempt, leaves nothing to do and is a success.
 //
 // It takes its own context because it runs on paths where the caller's context
-// is already cancelled — see the solver's detached-context cleanup.
+// is already canceled — see the solver's detached-context cleanup.
 type CleanupFunc func(context.Context) error
 
 // Provider creates and removes the challenge TXT record for one DNS host.
