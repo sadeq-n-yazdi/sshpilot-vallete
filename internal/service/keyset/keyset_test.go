@@ -630,3 +630,56 @@ func TestDegenerateOptionsAreIgnored(t *testing.T) {
 		wantErr(t, err, keyset.ErrDuplicate, "re-creating a freed name with a degenerate window")
 	}
 }
+
+// TestDeleteWithUnrecordableDetailKeepsTheSet pins the ordering of the audit
+// details against the write in Delete.
+//
+// The details must be built inside the transaction, before the row is removed,
+// so that a value the audit screen refuses aborts the delete. Building them
+// afterwards is the failure this test exists to catch: the row is already gone
+// and committed, the caller gets an error, and the deletion is never audited --
+// a set that vanished with no record of who removed it or what it was called.
+//
+// requestID is the value that makes this reachable. The set name was screened
+// when the set was created, but requestID comes straight from the caller and
+// reaches the audit screen for the first time on this path, so a caller can
+// genuinely drive setDetails into refusing.
+//
+// Both halves are asserted. Checking only that an error came back would pass
+// against the broken ordering, which also returns an error -- it just returns
+// it after destroying the row.
+func TestDeleteWithUnrecordableDetailKeepsTheSet(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t)
+
+	set := f.mustCreate(ownerA, "prod")
+
+	// Longer than the audit package's per-value limit, so the screen refuses it
+	// for a reason that does not depend on any character-class rule.
+	unrecordable := strings.Repeat("r", 300)
+
+	err := f.svc.Delete(ctx, ownerA, set.ID, false, unrecordable)
+	wantErr(t, err, domain.ErrInvalidInput, "Delete with an unrecordable request id")
+
+	// The assertion that matters: the transaction rolled back, so the set is
+	// still there to be deleted properly once the caller sends a request id
+	// that can be recorded.
+	if got := f.names(ownerA); !slices.Contains(got, "prod") {
+		t.Errorf("live sets = %v, want the set to survive a refused delete", got)
+	}
+	if _, err := f.store.Repos().KeySets.Get(ctx, ownerA, set.ID); err != nil {
+		t.Errorf("Get after a refused delete: %v, want the row to still exist", err)
+	}
+
+	// Nothing was removed, so nothing may be recorded as removed.
+	if got := f.auditor.actions(); slices.Contains(got, domain.AuditActionKeySetDeleted) {
+		t.Errorf("audit actions = %v, want no delete recorded when nothing was deleted", got)
+	}
+
+	// The set is still deletable: the refusal cost the caller nothing but the
+	// bad request id.
+	if err := f.svc.Delete(ctx, ownerA, set.ID, false, "req-ok"); err != nil {
+		t.Fatalf("Delete with a recordable request id: %v", err)
+	}
+}
