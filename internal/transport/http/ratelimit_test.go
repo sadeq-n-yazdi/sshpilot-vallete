@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -372,6 +373,76 @@ func TestUnauthenticatedPublishingStillWorks(t *testing.T) {
 	if rec.Body.String() != "ssh-ed25519 AAAA x\n" {
 		t.Fatalf("body = %q", rec.Body.String())
 	}
+}
+
+// TestHandlerHonorsConfiguredTrustedProxies is the spoofing test applied to the
+// PRODUCTION wiring rather than to clientIP directly.
+//
+// The unit tests build trustedPeers by hand, so the one line in NewHandler that
+// turns operator configuration into the trust gate is executed but never
+// asserted. A regression there -- the wrong list passed, the helper returning an
+// empty set -- keeps every other test green while silently disabling spoof
+// protection in the server that actually ships. This test fails if the wiring
+// stops carrying the operator's trust list either way it can be wrong.
+func TestHandlerHonorsConfiguredTrustedProxies(t *testing.T) {
+	t.Parallel()
+
+	newHandler := func() http.Handler {
+		cfg := config.Default()
+		cfg.Server.TrustedProxies = []string{"10.0.0.1/32"}
+		cfg.RateLimit.Tiers.Publish = config.Tier{Requests: 2, Window: config.Duration(time.Minute)}
+		return NewHandler(&cfg, slog.New(slog.DiscardHandler), okPinger{},
+			stubPublisher{body: []byte("k\n")})
+	}
+
+	get := func(h http.Handler, peer, xff string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/alice/default", nil)
+		req.RemoteAddr = peer
+		if xff != "" {
+			req.Header.Set(forwardedForHeader, xff)
+		}
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	// From an UNTRUSTED peer, a forged header must not buy a fresh bucket: all
+	// four requests share the peer's bucket, so the third is refused. If the
+	// configured list leaked trust to this peer, each request would key on its
+	// own forged address and every one would be served.
+	t.Run("untrusted peer cannot spoof", func(t *testing.T) {
+		t.Parallel()
+		h := newHandler()
+		var codes []int
+		for i := range 4 {
+			codes = append(codes, get(h, "203.0.113.5:1",
+				"198.51.100."+strconv.Itoa(i+1)))
+		}
+		if codes[2] != http.StatusTooManyRequests || codes[3] != http.StatusTooManyRequests {
+			t.Fatalf("codes = %v, want the 3rd and 4th refused; a forged "+
+				"X-Forwarded-For from an untrusted peer changed the bucket", codes)
+		}
+	})
+
+	// From the CONFIGURED proxy, two distinct clients must get independent
+	// budgets. If the wiring passed no trusted proxies at all, both would key on
+	// the proxy address and the second client would inherit the first's count.
+	t.Run("trusted proxy separates clients", func(t *testing.T) {
+		t.Parallel()
+		h := newHandler()
+		for range 2 {
+			if code := get(h, "10.0.0.1:9", "198.51.100.7"); code != http.StatusOK {
+				t.Fatalf("client A within its budget = %d, want 200", code)
+			}
+		}
+		if code := get(h, "10.0.0.1:9", "198.51.100.7"); code != http.StatusTooManyRequests {
+			t.Fatalf("client A over its budget = %d, want 429", code)
+		}
+		if code := get(h, "10.0.0.1:9", "198.51.100.8"); code != http.StatusOK {
+			t.Fatalf("client B first request = %d, want 200; the trusted proxy's "+
+				"X-Forwarded-For is not separating clients", code)
+		}
+	})
 }
 
 // TestRateLimitDisabledByConfig covers the ADR's requirement that limits be

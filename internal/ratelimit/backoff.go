@@ -191,6 +191,16 @@ func (a *AuthLimiter) Check(ctx context.Context, key string) (Decision, error) {
 		// The lockout for this level has elapsed. The failure count survives it
 		// (Horizon outlives any single lockout), so the NEXT failure escalates
 		// to a longer one instead of restarting the curve.
+		//
+		// Accepted seam: an absent lock key also results from a RecordFailure
+		// whose failKey increment landed while its lockKey write failed
+		// transiently, and this read cannot tell "elapsed" from "never armed"
+		// without recording something -- which would break the property that
+		// Check spends nothing. The cost is bounded to ONE extra attempt at
+		// that level, after which the next failure escalates normally, so the
+		// curve is delayed by a rung rather than reset. That is a better trade
+		// than a Check with a side effect, where a caller that checks and never
+		// attempts would climb the curve on its own.
 		return Decision{Allowed: true, Count: failures.Value, Limit: a.tier.Limit}, nil
 	}
 	return Decision{
