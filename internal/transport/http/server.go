@@ -69,7 +69,7 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publi
 		return nil, ErrNilPublisher
 	}
 
-	tlsCfg, err := buildTLSConfig(cfg, time.Now())
+	tlsCfg, err := buildTLSConfig(cfg, time.Now)
 	if err != nil {
 		return nil, err
 	}
