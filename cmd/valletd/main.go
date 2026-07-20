@@ -102,8 +102,12 @@ func run(args []string, stdout, stderr io.Writer) error {
 	//	httpserver.WithAuthorizer(guard),
 	//	httpserver.WithDeviceService(deviceSvc),
 	//
-	// and nothing else here changes. TestManagementRoutesAreMountedInProdWiring
-	// pins the current state so this comment cannot quietly become stale.
+	// and nothing else here changes.
+	//
+	// The behavior described above is pinned by
+	// TestManagementRoutesFailClosedWithoutAnAuthorizer, which builds a handler
+	// with no authorizer -- this function's exact option set -- and asserts every
+	// management route answers 401. This wiring in main is not itself under test.
 	srv, err := httpserver.New(cfg, logger, db, publisher)
 	if err != nil {
 		return err

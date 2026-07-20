@@ -151,6 +151,24 @@ func (s *Service) Register(ctx context.Context, ownerID domain.OwnerID, name, re
 		return nil, err
 	}
 
+	// The audit details are built BEFORE the write, not after it.
+	//
+	// audit.Details screens every value for credential shapes, and that screen is
+	// broader than domain.ValidateDeviceName: a name like "my basic laptop"
+	// contains a credential marker ("basic ") while being a perfectly valid
+	// device name. Emitting after Create would mean such a name commits the
+	// device, then fails the audit, and returns an error to a caller whose device
+	// nevertheless exists and is unrecorded -- the exact state the "audit is not
+	// optional" rule exists to prevent. Building the details first turns that into
+	// a plain rejection with nothing written.
+	//
+	// It is reported as ErrInvalidInput because it is a property of the name the
+	// caller just sent, and one the caller can fix by choosing another.
+	details, err := registerDetails(name, requestID)
+	if err != nil {
+		return nil, err
+	}
+
 	now := s.now().UTC()
 	d := &domain.Device{
 		ID:        domain.DeviceID(s.newID()),
@@ -164,8 +182,21 @@ func (s *Service) Register(ctx context.Context, ownerID domain.OwnerID, name, re
 		return nil, err
 	}
 
-	if err := s.emit(ctx, domain.AuditActionDeviceRegistered, ownerID, d, requestID); err != nil {
+	if err := s.emit(ctx, domain.AuditActionDeviceRegistered, ownerID, d, details); err != nil {
 		return nil, err
+	}
+	return d, nil
+}
+
+// registerDetails builds the audit details for a registration, or reports why
+// the name cannot be recorded. See Register for why this runs before the write.
+func registerDetails(name, requestID string) (audit.Details, error) {
+	d := audit.Details{}.Set(audit.DetailDeviceName, name)
+	if requestID != "" {
+		d = d.Set(audit.DetailRequestID, requestID)
+	}
+	if err := d.Err(); err != nil {
+		return audit.Details{}, fmt.Errorf("device: name cannot be recorded: %w", domain.ErrInvalidInput)
 	}
 	return d, nil
 }
@@ -223,13 +254,25 @@ func (s *Service) Revoke(ctx context.Context, ownerID domain.OwnerID, id domain.
 		return ErrNotFound
 	}
 
+	// As in Register, the audit details are built before the write so a name the
+	// audit screen refuses cannot produce a revoked-but-unrecorded device. Unlike
+	// Register the name is not this caller's input -- it was stored earlier -- so
+	// this is not reported as ErrInvalidInput: the caller did nothing wrong and
+	// cannot fix it, which makes it a server fault (500) rather than a bad
+	// request. Post-fix such a name cannot be stored, so this is a guard against
+	// rows written before that rule existed, not an expected path.
+	details, err := registerDetails(d.Name, requestID)
+	if err != nil {
+		return fmt.Errorf("device: stored name cannot be recorded for %s", id)
+	}
+
 	if err := s.devices.Revoke(ctx, ownerID, id, s.now().UTC()); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
 			return ErrNotFound
 		}
 		return err
 	}
-	return s.emit(ctx, domain.AuditActionDeviceRevoked, ownerID, d, requestID)
+	return s.emit(ctx, domain.AuditActionDeviceRevoked, ownerID, d, details)
 }
 
 // emit records an access-affecting device change.
@@ -239,11 +282,9 @@ func (s *Service) Revoke(ctx context.Context, ownerID domain.OwnerID, id domain.
 // That is a different decision from what the request LOG may carry — an audit
 // record is an access-controlled, retention-governed artifact, whereas the
 // request log is not, which is why nothing in this package logs the name.
-func (s *Service) emit(ctx context.Context, action domain.AuditAction, ownerID domain.OwnerID, d *domain.Device, requestID string) error {
-	details := audit.Details{}.Set(audit.DetailDeviceName, d.Name)
-	if requestID != "" {
-		details = details.Set(audit.DetailRequestID, requestID)
-	}
+// The details are built by the caller, before its write, so that a name the
+// audit screen refuses cannot leave a committed change unrecorded.
+func (s *Service) emit(ctx context.Context, action domain.AuditAction, ownerID domain.OwnerID, d *domain.Device, details audit.Details) error {
 	return s.auditor.Emit(ctx, audit.Event{
 		ActorType:  domain.ActorTypeOwner,
 		ActorID:    string(ownerID),

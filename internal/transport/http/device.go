@@ -162,7 +162,29 @@ func revokeDeviceHandler(svc DeviceService, logger *slog.Logger) ScopedHandler {
 			return
 		}
 
-		id := domain.DeviceID(r.PathValue(devicePathValue))
+		// The id comes from DeviceAccess -- the SAME function the Guardian used
+		// to decide what this request was allowed to touch -- rather than from a
+		// second, independent read of the request.
+		//
+		// This is what closes the confused-deputy gap structurally. If the
+		// handler derived the id on its own, authorization and action would be
+		// two separate answers to "which device?", and any divergence between
+		// them would mutate a device the scope check never approved while the
+		// scope check passed honestly. Sharing one derivation means there is no
+		// second answer to diverge: anything that changes the id the handler
+		// acts on necessarily changes the id that was authorized, so the scope
+		// check sees it.
+		//
+		// A test cannot establish this by naming the channels an attacker might
+		// use -- that is a blocklist, and the next channel is not on it. The
+		// property has to come from there being one derivation, not two.
+		access, err := DeviceAccess(r)
+		if err != nil {
+			writeDeviceStatus(w, http.StatusNotFound)
+			return
+		}
+		id := domain.DeviceID(access.ResourceID)
+
 		if err := svc.Revoke(r.Context(), a.Owner(), id, RequestIDFromContext(r.Context())); err != nil {
 			writeDeviceError(w, r, logger, err, "device revocation failed")
 			return
