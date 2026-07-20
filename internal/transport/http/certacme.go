@@ -26,10 +26,43 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
-// acmeChallengeType is the RFC 8737 challenge this provider answers. DNS-01 is
-// a separate track; HTTP-01 is refused by ADR-0015 because it needs a port-80
-// listener the HTTPS-only posture forbids.
-const acmeChallengeType = "tls-alpn-01"
+// acmeSolver answers one ACME challenge type on the provider's behalf.
+//
+// This is the seam that lets ADR-0015's two solvers share ONE order flow. The
+// alternative — a second provider with its own account registration, order,
+// finalize, cache, renewal loop and backoff — would mean the rate-limit
+// controls, the fail-closed handshake refusal and the certificate validation
+// gate all existed twice, and a fix to one copy would silently not apply to the
+// other.
+//
+// HTTP-01 has no implementation and will not get one: ADR-0015 refuses it
+// because it needs a port-80 listener the HTTPS-only posture forbids.
+type acmeSolver interface {
+	// name is the solver's constant identifier, used to build the provider's
+	// diagnostic name. Never derived from key material or a credential.
+	name() string
+
+	// challengeType is the RFC 8555 challenge type string this solver answers,
+	// e.g. "tls-alpn-01" or "dns-01". The provider selects the CA's offered
+	// challenge by this value and REFUSES the authorization when the CA does
+	// not offer it, rather than answering a different one.
+	challengeType() string
+
+	// present makes the challenge answerable and returns only once it is
+	// verifiably in place. Returning nil is the solver's assertion that the CA
+	// may now be told to validate; anything less certain must be an error, so
+	// that a challenge the CA cannot satisfy is never accepted.
+	present(ctx context.Context, client *acme.Client, chal *acme.Challenge, identifier string) error
+
+	// cleanup withdraws whatever present installed for an identifier. It is
+	// called on EVERY exit path, must be safe when present never ran or
+	// partially ran, and must be safe to call twice.
+	cleanup(ctx context.Context, identifier string) error
+}
+
+// acmeCleanupTimeout bounds the detached cleanup of a challenge after an order
+// settles. See [acmeProvider.releaseChallenge] for why it is detached at all.
+const acmeCleanupTimeout = 30 * time.Second
 
 const (
 	// acmeCertFile and acmeKeyFile are the cached certificate and its key,
@@ -101,6 +134,13 @@ type acmeProvider struct {
 	cacheDir string
 	now      func() time.Time
 
+	// solver answers the configured challenge type. It is fixed at
+	// construction from tls.acme.solver and never changes, so no error path can
+	// switch challenge types at runtime — a silent downgrade from the solver
+	// the operator chose to a different one would be a security decision taken
+	// by a failure handler.
+	solver acmeSolver
+
 	// mu guards the certificate and challenge state read on the handshake path.
 	// An RWMutex because GetCertificate is called from every connection
 	// goroutine and almost always only reads.
@@ -147,7 +187,9 @@ var (
 // under the custody rules, the directory is discovered, and the account is
 // registered. Only the part that genuinely requires a live listener — proving
 // control of the name — is deferred.
-func newACMEProvider(ctx context.Context, cfg *config.Config, now func() time.Time) (*acmeProvider, error) {
+func newACMEProvider(
+	ctx context.Context, cfg *config.Config, now func() time.Time, newSolver acmeSolverFactory,
+) (*acmeProvider, error) {
 	a := cfg.TLS.ACME
 
 	if !a.AcceptTOS {
@@ -172,8 +214,17 @@ func newACMEProvider(ctx context.Context, cfg *config.Config, now func() time.Ti
 		UserAgent:    "sshpilot-vallet",
 	}
 
-	return newACMEProviderWithClient(ctx, client, cfg, now)
+	return newACMEProviderWithClient(ctx, client, cfg, now, newSolver)
 }
+
+// acmeSolverFactory builds a provider's solver.
+//
+// It takes the provider because the TLS-ALPN-01 solver publishes its answer
+// through the provider's own handshake path, which cannot exist before the
+// provider does. Passing a factory rather than a finished solver keeps that
+// ordering explicit and keeps the DNS-01 case — whose solver needs nothing from
+// the provider — free to ignore the argument.
+type acmeSolverFactory func(*acmeProvider) acmeSolver
 
 // newACMEProviderWithClient registers the account and starts the provider
 // around an already-built ACME client.
@@ -186,6 +237,7 @@ func newACMEProvider(ctx context.Context, cfg *config.Config, now func() time.Ti
 // CA.
 func newACMEProviderWithClient(
 	ctx context.Context, client *acme.Client, cfg *config.Config, now func() time.Time,
+	newSolver acmeSolverFactory,
 ) (*acmeProvider, error) {
 	a := cfg.TLS.ACME
 
@@ -203,6 +255,7 @@ func newACMEProviderWithClient(
 		stop:      cancel,
 		done:      make(chan struct{}),
 	}
+	p.solver = newSolver(p)
 
 	// A cached certificate that is still usable is adopted, and no ACME request
 	// is made. This is what stops a restart loop from becoming an issuance
@@ -218,17 +271,50 @@ func newACMEProviderWithClient(
 	return p, nil
 }
 
-// Name identifies the mode for diagnostics. It is a constant, never derived
-// from the domain or any key material.
-func (p *acmeProvider) Name() string { return "acme_tls_alpn_01" }
+// Name identifies the mode for diagnostics. It is built from two constants —
+// "acme" and the solver's own constant name — never from the domain, the
+// account key or a DNS credential.
+func (p *acmeProvider) Name() string {
+	if p.solver == nil {
+		return "acme"
+	}
+	return "acme_" + p.solver.name()
+}
 
-// challengeALPNProtos declares the ALPN protocol the CA uses to validate.
+// challengeALPNProtos declares the ALPN protocol the CA uses to validate, and
+// is empty for a solver that proves control out of band.
 //
-// Returning it here rather than hard-coding "acme-tls/1" into the TLS policy is
-// deliberate: the protocol is advertised ONLY when a provider that answers it
-// is actually installed, so every other mode's listener has no acme-tls/1 to
-// offer at all.
-func (p *acmeProvider) challengeALPNProtos() []string { return []string{acme.ALPNProto} }
+// Delegating to the solver rather than hard-coding "acme-tls/1" is what keeps
+// the listener honest across solvers: with DNS-01 selected the server has no
+// acme-tls/1 to offer at all, so a client cannot negotiate a protocol whose
+// challenge path is not in use.
+func (p *acmeProvider) challengeALPNProtos() []string {
+	if s, ok := p.solver.(inBandChallengeSolver); ok {
+		return s.challengeALPNProtos()
+	}
+	return nil
+}
+
+// issuesAfterStartup reports that this provider obtains its certificate after
+// the process is running, so buildTLSConfig must not demand one at startup.
+//
+// It is TRUE for every ACME solver, not only the in-band one, and that
+// distinction is the reason it is a separate predicate from
+// [acmeProvider.challengeALPNProtos]:
+//
+//   - TLS-ALPN-01 cannot be validated before the listener exists.
+//   - DNS-01 in manual mode cannot be validated before a HUMAN publishes a TXT
+//     record, which by definition has not happened when the process starts.
+//   - DNS-01 in api mode could in principle finish during startup, but binding
+//     process start to a third-party DNS API means an outage at that provider
+//     becomes a server that will not come up — while the certificate it already
+//     holds in cache is perfectly good.
+//
+// Fail-closed is unaffected: until a validated certificate exists, every
+// ordinary handshake is refused by [acmeProvider.GetCertificate] and there is
+// no self-signed substitute. Skipping the probe changes when the failure is
+// reported, never whether an unauthenticated certificate can be served.
+func (p *acmeProvider) issuesAfterStartup() bool { return true }
 
 // GetCertificate serves either the challenge certificate or the real one, and
 // never confuses the two.
@@ -311,6 +397,75 @@ func (p *acmeProvider) clearChallenge(name string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.challenge, name)
+}
+
+// releaseChallenge withdraws the solver's answer for one identifier on a
+// DETACHED, separately bounded context.
+//
+// Using the order's own context here would break cleanup on the one path where
+// it matters most. Close cancels the renewal loop's context, so a shutdown in
+// the middle of an order would hand cleanup an already-cancelled context: the
+// DNS provider's DELETE would fail instantly without being sent, and the
+// _acme-challenge TXT record would be left published — a standing
+// authorization, surviving the process that created it, for anyone who can
+// still satisfy it.
+//
+// context.WithoutCancel keeps cleanup running past that cancellation;
+// WithTimeout keeps it from running forever, so shutdown is still bounded. The
+// solver's error is not logged here for the reason renewalLoop gives — this
+// layer has no redaction-aware log path — so a solver that can report a failed
+// withdrawal does so itself.
+func (p *acmeProvider) releaseChallenge(identifier string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), acmeCleanupTimeout)
+	defer cancel()
+	_ = p.solver.cleanup(ctx, identifier)
+}
+
+// tlsALPNSolver answers TLS-ALPN-01 through the provider's own handshake path.
+//
+// It is the extraction of what E3 did inline, unchanged in behavior: the same
+// challenge certificate, published into and withdrawn from the same map that
+// [acmeProvider.GetCertificate] consults.
+type tlsALPNSolver struct{ p *acmeProvider }
+
+var _ acmeSolver = (*tlsALPNSolver)(nil)
+
+// newTLSALPNSolver is the [acmeSolverFactory] for the TLS-ALPN-01 solver.
+func newTLSALPNSolver(p *acmeProvider) acmeSolver { return &tlsALPNSolver{p: p} }
+
+func (s *tlsALPNSolver) name() string          { return "tls_alpn_01" }
+func (s *tlsALPNSolver) challengeType() string { return "tls-alpn-01" }
+
+// challengeALPNProtos marks this solver as proving control in band, which is
+// what makes the listener advertise "acme-tls/1".
+func (s *tlsALPNSolver) challengeALPNProtos() []string { return []string{acme.ALPNProto} }
+
+// present installs the challenge certificate.
+//
+// TLSALPN01ChallengeCert derives the key authorization from the challenge token
+// and the ACCOUNT KEY's public part, and embeds only its SHA-256 digest in a
+// critical extension. The token and the key authorization stay inside this
+// certificate; neither is logged nor returned in any error.
+//
+// It is answerable the instant it returns — the certificate is in the map the
+// handshake path reads — so there is nothing to wait for, which is the
+// structural difference from DNS-01.
+func (s *tlsALPNSolver) present(
+	_ context.Context, client *acme.Client, chal *acme.Challenge, identifier string,
+) error {
+	cert, err := client.TLSALPN01ChallengeCert(chal.Token, identifier)
+	if err != nil {
+		return fmt.Errorf("build challenge certificate: %w", err)
+	}
+	s.p.setChallengeCert(identifier, &cert)
+	return nil
+}
+
+// cleanup withdraws the challenge certificate. Deleting an absent entry is a
+// no-op, so it is safe when present never ran and safe to call twice.
+func (s *tlsALPNSolver) cleanup(_ context.Context, identifier string) error {
+	s.p.clearChallenge(identifier)
+	return nil
 }
 
 // setCurrent installs a newly issued certificate for subsequent handshakes.
@@ -429,26 +584,36 @@ func (p *acmeProvider) solveAuthorization(ctx context.Context, authzURL string) 
 		return nil
 	}
 
-	chal := findACMEChallenge(authz, acmeChallengeType)
+	challengeType := p.solver.challengeType()
+	chal := findACMEChallenge(authz, challengeType)
 	if chal == nil {
+		// Refused, never substituted with whichever challenge the CA did offer.
+		// The operator chose a solver, often because the other one cannot work
+		// in their topology; answering a different one would issue through a
+		// path they ruled out, and would do it silently.
 		return fmt.Errorf("%w: no %s challenge offered for %q",
-			ErrACMEIssuance, acmeChallengeType, authz.Identifier.Value)
+			ErrACMEIssuance, challengeType, authz.Identifier.Value)
 	}
 
-	// TLSALPN01ChallengeCert derives the key authorization from the challenge
-	// token and the ACCOUNT KEY's public part, and embeds only its SHA-256
-	// digest in a critical extension. The token and the key authorization stay
-	// inside this certificate; neither is logged or returned in any error.
-	cert, err := p.client.TLSALPN01ChallengeCert(chal.Token, authz.Identifier.Value)
-	if err != nil {
-		return fmt.Errorf("%w: build challenge certificate: %w", ErrACMEIssuance, err)
-	}
+	// Cleanup is armed BEFORE the challenge is presented, and unconditionally.
+	// The ordering is the point: a solver that publishes a record and then
+	// fails — a propagation timeout, a cancelled context, a panic — has already
+	// created the thing that must be withdrawn. Arming cleanup only after a
+	// successful present would leak exactly on the paths where a leftover
+	// challenge is most likely.
+	//
+	// For DNS-01 the leftover is a standing _acme-challenge TXT record, which is
+	// a durable authorization for anyone who can still answer it. For
+	// TLS-ALPN-01 it is a certificate that authenticates nothing left reachable
+	// on the acme-tls/1 path.
+	defer p.releaseChallenge(authz.Identifier.Value)
 
-	p.setChallengeCert(authz.Identifier.Value, &cert)
-	// Withdrawn on every exit path, including the error ones: a challenge
-	// certificate left installed after a failed order would stay answerable on
-	// the acme-tls/1 path indefinitely.
-	defer p.clearChallenge(authz.Identifier.Value)
+	if err := p.solver.present(ctx, p.client, chal, authz.Identifier.Value); err != nil {
+		// Wrapped without re-wording. A solver's error names the record and the
+		// fault; no solver is permitted to put a credential or a key
+		// authorization in one.
+		return fmt.Errorf("%w: present %s challenge: %w", ErrACMEIssuance, challengeType, err)
+	}
 
 	if _, err := p.client.Accept(ctx, chal); err != nil {
 		return fmt.Errorf("%w: accept challenge: %w", ErrACMEIssuance, err)
