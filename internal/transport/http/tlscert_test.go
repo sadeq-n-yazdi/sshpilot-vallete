@@ -208,7 +208,7 @@ func TestNewRefusesExpiredCertificate(t *testing.T) {
 	cfg.TLS.Manual.CertFile = certFile
 	cfg.TLS.Manual.KeyFile = keyFile
 
-	srv, err := New(cfg, nil, okPinger{})
+	srv, err := New(cfg, nil, okPinger{}, stubPublisher{})
 	if !errors.Is(err, ErrTLSCertificateExpired) {
 		t.Fatalf("err = %v, want ErrTLSCertificateExpired", err)
 	}

@@ -168,7 +168,7 @@ func TestHSTSSurvivesAPanickingHandler(t *testing.T) {
 func TestHSTSThroughRealHandshake(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(devConfig(), nil, okPinger{})
+	srv, err := New(devConfig(), nil, okPinger{}, stubPublisher{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestHSTSThroughRealHandshake(t *testing.T) {
 func TestNoPlaintextListenerExists(t *testing.T) {
 	t.Parallel()
 
-	srv, err := New(devConfig(), nil, okPinger{})
+	srv, err := New(devConfig(), nil, okPinger{}, stubPublisher{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestHSTSRequiresSecureTransport(t *testing.T) {
 func TestEmbeddedHandlerWithheldOverPlaintext(t *testing.T) {
 	t.Parallel()
 
-	srv := httptest.NewServer(NewHandler(nil, nil, okPinger{}))
+	srv := httptest.NewServer(NewHandler(nil, nil, okPinger{}, stubPublisher{}))
 	t.Cleanup(srv.Close)
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/healthz", nil)
