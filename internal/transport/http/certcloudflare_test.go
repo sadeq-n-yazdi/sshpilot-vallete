@@ -475,11 +475,10 @@ func TestOriginCAWiringResolvesCredentialsThroughTheRealPath(t *testing.T) {
 	// Deliberately unset: resolving it must fail, not fall back to a default.
 	cfg.TLS.CloudflareOrigin.APITokenRef = "env:VALLET_TEST_UNSET_ORIGIN_CA_KEY"
 
-	// Only the error is asserted. newCertProvider returns the concrete provider
-	// types of its cases, so on failure the interface holds a typed nil and is
-	// itself non-nil — a property shared with the self_signed, manual and csr
-	// cases, all of which callers handle by checking the error first. Asserting
-	// interface nil-ness here would encode a claim the package does not make.
+	// Only the error is asserted here; the interface nil-ness of every failing
+	// mode, this one included, is pinned by
+	// TestNewCertProviderReturnsNilInterfaceOnError. That claim IS one the
+	// package makes now: every case returns through asCertProvider.
 	_, err := newCertProvider(context.Background(), cfg, time.Now, slog.New(slog.DiscardHandler))
 	if !errors.Is(err, ErrOriginCACredential) {
 		t.Fatalf("err = %v, want ErrOriginCACredential", err)

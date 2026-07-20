@@ -180,7 +180,20 @@ func authoritativeServers(ctx context.Context, name string) ([][]string, error) 
 		zone = zone[idx+1:]
 
 		ns, err := net.DefaultResolver.LookupNS(ctx, zone)
-		if err != nil || len(ns) == 0 {
+		if err != nil {
+			// A canceled or expired context fails EVERY remaining lookup, so
+			// continuing would walk the rest of the tree issuing queries that
+			// cannot succeed and then report "no authoritative nameservers for
+			// the zone" — a DNS-shaped error for what is really a shutdown or a
+			// deadline. Returning the context's own error lets the caller tell
+			// a canceled wait from a zone that genuinely never converged, which
+			// is the distinction the solver's cancellation handling turns on.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			continue
+		}
+		if len(ns) == 0 {
 			continue
 		}
 
