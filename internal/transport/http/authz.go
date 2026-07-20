@@ -161,6 +161,16 @@ func (g *Guardian) Protect(access AccessFunc, h ScopedHandler) http.Handler {
 		panic("httpserver: Protect called with a nil ScopedHandler")
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Vary is set here, before anything branches, so it covers the success
+		// path as well as every refusal. The success path is where a
+		// cross-owner cache leak would actually live: two owners issue the same
+		// GET for a resource they each may see, and a shared cache without this
+		// header would serve the first one's body to the second. Setting it at
+		// the choke point rather than in each handler means a route cannot omit
+		// it, and ADR-0019 requires access-gated responses to vary on the
+		// credential.
+		w.Header().Set("Vary", "Authorization")
+
 		token, ok := bearerToken(r)
 		if !ok {
 			g.deny(w, r, auth.ErrAuthFailed)
@@ -291,10 +301,9 @@ func (g *Guardian) deny(w http.ResponseWriter, r *http.Request, err error) {
 		// only which scheme to use.
 		w.Header().Set("WWW-Authenticate", "Bearer")
 	}
-	// Vary on the credential: a shared cache must never serve one caller's
-	// refusal -- or, on the success path a route builds on top of this, one
-	// caller's content -- to another. ADR-0019 requires access-gated responses
-	// to vary on the access credential.
+	// Protect has already set this for every request it dispatches, success or
+	// refusal. It is repeated here so that deny remains correct on its own if a
+	// later entry point calls it directly; Set is idempotent.
 	w.Header().Set("Vary", "Authorization")
 	writeJSON(w, status, statusResponse{Status: "error"})
 }
