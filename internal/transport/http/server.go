@@ -61,7 +61,11 @@ type Server struct {
 // the honest answer for a server with no database. The publisher may NOT be
 // nil: serving the publish endpoint is the whole point of the process, and a
 // server that cannot answer it should never bind a port.
-func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publisher) (*Server, error) {
+// opts carry the authenticated management surface through to NewHandler. They
+// are optional here for the same reason they are optional there: an embedder
+// serving only the publish path needs none of them, and their absence has one
+// fail-closed meaning rather than several ambiguous ones.
+func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publisher, opts ...HandlerOption) (*Server, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
@@ -69,17 +73,19 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publi
 		return nil, ErrNilPublisher
 	}
 
-	tlsCfg, err := buildTLSConfig(cfg, time.Now())
+	tlsCfg, err := buildTLSConfig(cfg, time.Now)
 	if err != nil {
 		return nil, err
 	}
+
+	warnIfSelfSigned(cfg, logger)
 
 	return &Server{
 		logger: logger,
 		addr:   cfg.Server.ListenAddr,
 		httpSrv: &http.Server{
 			Addr:              cfg.Server.ListenAddr,
-			Handler:           NewHandler(cfg, logger, pinger, publisher),
+			Handler:           NewHandler(cfg, logger, pinger, publisher, opts...),
 			TLSConfig:         tlsCfg,
 			ReadHeaderTimeout: readHeaderTimeout,
 			ReadTimeout:       readTimeout,
@@ -89,6 +95,31 @@ func New(cfg *config.Config, logger *slog.Logger, pinger Pinger, publisher Publi
 			ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 		},
 	}, nil
+}
+
+// warnIfSelfSigned emits the loud warning ADR-0015's ephemeral-mode guardrails
+// require whenever the self-signed mode is active.
+//
+// Clients of a self-signed instance cannot distinguish this server from an
+// interceptor, so the operator must be told at every startup rather than only
+// when they go looking. The warning is louder still when the mode was reached in
+// production via the explicit override, because that is the configuration most
+// likely to be an accident someone has to notice and undo.
+//
+// The audit event the ADR also calls for is NOT emitted here: the audit sink is
+// not wired into this constructor, and reaching for it would drag an unrelated
+// dependency into the transport layer. It is deliberately left to the track that
+// wires auditing into startup.
+func warnIfSelfSigned(cfg *config.Config, logger *slog.Logger) {
+	if cfg == nil || cfg.TLS.Mode != "self_signed" {
+		return
+	}
+	logger.Warn("serving an ephemeral self-signed certificate; clients cannot authenticate this server",
+		slog.String("tls_mode", "self_signed"),
+		slog.String("environment", cfg.Server.Environment),
+		slog.Duration("validity", selfSignedValidity),
+		slog.Bool("production_override", isProduction(cfg) && cfg.TLS.AllowSelfSignedInProduction),
+	)
 }
 
 // Handler returns the wrapped handler. Exposed for tests and for embedding the

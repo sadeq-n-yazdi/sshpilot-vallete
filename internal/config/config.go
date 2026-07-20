@@ -34,6 +34,7 @@ type Config struct {
 	Onboarding OnboardingConfig `yaml:"onboarding"`
 	Blocklist  BlocklistConfig  `yaml:"blocklist"`
 	Retention  RetentionConfig  `yaml:"retention"`
+	Docs       DocsConfig       `yaml:"docs"`
 }
 
 // ServerConfig holds HTTP server and environment settings.
@@ -52,6 +53,7 @@ type TLSConfig struct {
 	ACME                        ACMEConfig             `yaml:"acme"`
 	CloudflareOrigin            CloudflareOriginConfig `yaml:"cloudflare_origin"`
 	Manual                      ManualTLSConfig        `yaml:"manual"`
+	CSR                         CSRTLSConfig           `yaml:"csr"`
 	Upstream                    UpstreamTLSConfig      `yaml:"upstream"`
 	AllowSelfSignedInProduction bool                   `yaml:"allow_self_signed_in_production"`
 	Domain                      string                 `yaml:"domain"`
@@ -81,6 +83,29 @@ type CloudflareOriginConfig struct {
 type ManualTLSConfig struct {
 	CertFile string `yaml:"cert_file"`
 	KeyFile  string `yaml:"key_file"`
+}
+
+// CSRTLSConfig configures the generate-a-CSR-for-external-signing mode.
+//
+// The app owns the private key and never emits it; the operator receives only
+// the CSR, has it signed by any CA, and drops the returned chain at CertFile.
+// All three paths are operator-chosen with no defaults, because a default key
+// path is a file an operator can be unaware their server created.
+type CSRTLSConfig struct {
+	// KeyFile is where the generated private key lives, written 0600. It is
+	// created once and reused: regenerating it would invalidate a certificate
+	// the operator already had signed.
+	KeyFile string `yaml:"key_file"`
+
+	// CSRFile is where the certificate signing request is written for the
+	// operator to collect. It contains only the public key and subject, both
+	// of which appear in the issued certificate, so it is not a secret.
+	CSRFile string `yaml:"csr_file"`
+
+	// CertFile is where the operator installs the signed chain. Until it
+	// exists the server refuses to start — there is no certificate to serve
+	// and ADR-0015 forbids falling back to plaintext or self-signed.
+	CertFile string `yaml:"cert_file"`
 }
 
 // UpstreamTLSConfig configures TLS termination by an upstream proxy.
@@ -220,4 +245,26 @@ type RetentionConfig struct {
 	HandleQuarantine Duration `yaml:"handle_quarantine"`
 	AuditRetention   Duration `yaml:"audit_retention"`
 	MaxSetsPerOwner  int      `yaml:"max_sets_per_owner"`
+}
+
+// DocsConfig configures exposure of the self-served API documentation
+// (ADR-0021).
+//
+// Enabled defaults to true, which ADR-0021 decides explicitly: the API
+// contract is not a secret, the service is meant to be consumed by strangers
+// with curl, and a contract nobody can fetch is a contract nobody can
+// implement against. The reconnaissance value of the document is real but
+// small — it describes route shapes, not credentials — and it is bounded by
+// the spec only ever describing endpoints that are already reachable.
+//
+// Deployers who do not accept that trade (internal-only installations, or
+// anyone minimizing an unauthenticated attack surface) set enabled: false and
+// the routes stop existing, indistinguishably from any other unknown path.
+//
+// ADR-0021 also contemplates a third posture — docs served but behind
+// authentication. That is deliberately not implemented here: it needs the
+// scope model to say which scope may read the contract, and shipping a
+// half-answer to that question is worse than shipping the boolean.
+type DocsConfig struct {
+	Enabled bool `yaml:"enabled"`
 }

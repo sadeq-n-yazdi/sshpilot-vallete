@@ -120,5 +120,9 @@ func reposFor(e execer) repository.Repos {
 		Audit:      &auditRepo{e: e},
 		Admins:     &adminRepo{e: e},
 		OwnerSalts: &ownerSaltRepo{e: e},
+
+		LinkedIdentities:   &linkedIdentityRepo{e: e},
+		RefreshCredentials: &refreshCredRepo{e: e},
+		DevicePairings:     &pairingRepo{e: e},
 	}
 }

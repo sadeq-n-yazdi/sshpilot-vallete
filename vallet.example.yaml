@@ -46,6 +46,13 @@ tls:
     # Both required for manual mode.
     cert_file: ""
     key_file: ""
+  csr:
+    # All three required for csr mode. The app generates key_file (0600) and
+    # writes csr_file for you to have signed; install the returned chain at
+    # cert_file. The server refuses to start until cert_file exists.
+    key_file: ""
+    csr_file: ""
+    cert_file: ""
   upstream:
     # TLS terminated by an upstream proxy; trust X-Forwarded-Proto from proxies.
     require_forwarded_proto: true
@@ -129,3 +136,10 @@ retention:
   handle_quarantine: 30d
   audit_retention: 365d
   max_sets_per_owner: 100
+
+docs:
+  # Serve the OpenAPI contract and the embedded documentation UI at /docs/
+  # (ADR-0021). Enabled by default: the contract is not secret, and consumers
+  # need it to build against this API. Set to false on locked-down
+  # installations; the routes then behave exactly like any unknown path.
+  enabled: true

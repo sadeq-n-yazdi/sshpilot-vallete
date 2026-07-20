@@ -128,6 +128,9 @@ func bindings() []binding {
 		{"VALLET_TLS_CLOUDFLARE_ORIGIN_API_TOKEN_REF", setRef(func(c *Config) *secrets.Ref { return &c.TLS.CloudflareOrigin.APITokenRef })},
 		{"VALLET_TLS_MANUAL_CERT_FILE", setString(func(c *Config) *string { return &c.TLS.Manual.CertFile })},
 		{"VALLET_TLS_MANUAL_KEY_FILE", setString(func(c *Config) *string { return &c.TLS.Manual.KeyFile })},
+		{"VALLET_TLS_CSR_KEY_FILE", setString(func(c *Config) *string { return &c.TLS.CSR.KeyFile })},
+		{"VALLET_TLS_CSR_CSR_FILE", setString(func(c *Config) *string { return &c.TLS.CSR.CSRFile })},
+		{"VALLET_TLS_CSR_CERT_FILE", setString(func(c *Config) *string { return &c.TLS.CSR.CertFile })},
 		{"VALLET_TLS_UPSTREAM_REQUIRE_FORWARDED_PROTO", setBool(func(c *Config) *bool { return &c.TLS.Upstream.RequireForwardedProto })},
 		{"VALLET_TLS_ALLOW_SELF_SIGNED_IN_PRODUCTION", setBool(func(c *Config) *bool { return &c.TLS.AllowSelfSignedInProduction })},
 		{"VALLET_TLS_DOMAIN", setString(func(c *Config) *string { return &c.TLS.Domain })},
@@ -184,5 +187,8 @@ func bindings() []binding {
 		{"VALLET_RETENTION_HANDLE_QUARANTINE", setDuration(func(c *Config) *Duration { return &c.Retention.HandleQuarantine })},
 		{"VALLET_RETENTION_AUDIT_RETENTION", setDuration(func(c *Config) *Duration { return &c.Retention.AuditRetention })},
 		{"VALLET_RETENTION_MAX_SETS_PER_OWNER", setInt(func(c *Config) *int { return &c.Retention.MaxSetsPerOwner })},
+
+		// docs
+		{"VALLET_DOCS_ENABLED", setBool(func(c *Config) *bool { return &c.Docs.Enabled })},
 	}
 }
