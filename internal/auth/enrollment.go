@@ -163,16 +163,12 @@ func (s *EnrollmentService) StartDeviceGrant(ctx context.Context, clientLabel st
 	if err := validateClientLabel(clientLabel); err != nil {
 		return nil, err
 	}
-	userCode := newUserCode()
-	// The generated code is normalized before hashing, so the digest stored is
-	// the one a transcribed code will produce. Storing the digest of the
-	// display form would make every approval fail.
-	normalized, err := normalizeUserCode(userCode.Reveal())
-	if err != nil {
-		return nil, fmt.Errorf("auth: generated user code does not normalize: %w", err)
-	}
+	// The canonical form is what is hashed, so the digest stored is the one a
+	// transcribed code produces. Hashing the grouped display form instead would
+	// make every approval fail.
+	userCode, canonical := newUserCode()
 	return s.create(ctx, &domain.DevicePairing{
-		UserCodeHash: hashUserCode(normalized),
+		UserCodeHash: hashUserCode(canonical),
 		Scopes:       cloneScopes(scopes),
 		ClientLabel:  clientLabel,
 		Status:       domain.PairingStatusPending,

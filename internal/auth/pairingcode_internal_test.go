@@ -46,13 +46,20 @@ func TestUserCodeAlphabetIsConfusableFree(t *testing.T) {
 func TestNewUserCodeShape(t *testing.T) {
 	seen := map[string]bool{}
 	for range 200 {
-		raw := newUserCode().Reveal()
+		shown, canonical := newUserCode()
+		raw := shown.Reveal()
 		if strings.Count(raw, "-") != userCodeLen/userCodeGroup-1 {
 			t.Fatalf("code %q is not grouped for transcription", raw)
 		}
 		norm, err := normalizeUserCode(raw)
 		if err != nil {
 			t.Fatalf("a freshly generated code %q failed to normalize: %v", raw, err)
+		}
+		// The canonical form returned alongside the display form must be the
+		// one normalization produces, or the stored digest matches nothing a
+		// user can type.
+		if canonical != norm {
+			t.Fatalf("canonical form %q does not match the normalized display form %q", canonical, norm)
 		}
 		if len(norm) != userCodeLen {
 			t.Fatalf("normalized code %q has length %d, want %d", norm, len(norm), userCodeLen)
@@ -76,10 +83,7 @@ func TestNewUserCodeShape(t *testing.T) {
 func TestNewUserCodeUsesEveryAlphabetSymbol(t *testing.T) {
 	seen := map[rune]bool{}
 	for range 2000 {
-		norm, err := normalizeUserCode(newUserCode().Reveal())
-		if err != nil {
-			t.Fatalf("normalizing a generated code: %v", err)
-		}
+		_, norm := newUserCode()
 		for _, r := range norm {
 			seen[r] = true
 		}

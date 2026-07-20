@@ -198,21 +198,32 @@ func hashUserCode(code string) []byte {
 	return sum[:]
 }
 
-// newUserCode returns a fresh user code, already grouped for display.
+// newUserCode returns a fresh user code in both the forms that are needed: the
+// grouped rendering shown to a person, and the canonical rendering that
+// hashUserCode is defined over.
+//
+// Both are returned rather than the caller normalizing the display form,
+// because that call could only fail in a way no caller could handle -- a
+// generated code that does not normalize is a bug in this function, not a
+// runtime condition -- and an error branch that cannot be reached is a branch
+// nobody can be sure is correct. Deriving the canonical form here makes the
+// impossible case unrepresentable instead.
 //
 // Each symbol is drawn by masking five bits off a random byte, which indexes the
 // 32-symbol alphabet uniformly. There is no rejection loop and no modulo,
 // because there is nothing to reject: every five-bit value is a valid index.
-func newUserCode() secrets.Redacted {
+func newUserCode() (display secrets.Redacted, canonical string) {
 	raw := randomBytes(userCodeLen)
-	var b strings.Builder
+	var shown, plain strings.Builder
 	for i, r := range raw {
 		if i > 0 && i%userCodeGroup == 0 {
-			b.WriteByte('-')
+			shown.WriteByte('-')
 		}
-		b.WriteByte(userCodeAlphabet[r&userCodeMask])
+		sym := userCodeAlphabet[r&userCodeMask]
+		shown.WriteByte(sym)
+		plain.WriteByte(sym)
 	}
-	return secrets.NewRedacted(b.String())
+	return secrets.NewRedacted(shown.String()), plain.String()
 }
 
 // normalizeUserCode converts a code as typed into the canonical form that

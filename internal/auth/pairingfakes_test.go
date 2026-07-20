@@ -38,6 +38,9 @@ type fakePairings struct {
 	// override replaces the row GetByID returns, so a test can simulate a store
 	// that hands back a pairing other than the one asked for.
 	override *domain.DevicePairing
+	// nilOwnedRow makes the owner-scoped Get return (nil, nil), the port
+	// violation an owner-scoped caller must survive without dereferencing.
+	nilOwnedRow bool
 }
 
 var _ repository.DevicePairingRepository = (*fakePairings)(nil)
@@ -119,6 +122,9 @@ func (f *fakePairings) GetByUserCodeHash(_ context.Context, hash []byte) (*domai
 func (f *fakePairings) Get(_ context.Context, ownerID domain.OwnerID, id domain.PairingID) (*domain.DevicePairing, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.nilOwnedRow {
+		return nil, nil //nolint:nilnil // deliberately models a port violation
+	}
 	p := f.rows[id]
 	// A row belonging to another owner is reported exactly as a missing one.
 	if p == nil || p.OwnerID != ownerID {

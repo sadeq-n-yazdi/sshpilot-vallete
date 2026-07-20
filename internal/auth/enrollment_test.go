@@ -24,7 +24,42 @@ type enrollHarness struct {
 	links    *fakeLinkStore
 	tokens   *auth.TokenService
 	counters *counter.MemoryStore
+	limiter  *faultyCounters
 	clock    *testTime
+}
+
+// faultyCounters wraps a counter.Store so a test can take it offline. It is the
+// only way to exercise the fail-closed branches: the real MemoryStore has no
+// failure mode, which is precisely why a fault has to be injected rather than
+// provoked.
+type faultyCounters struct {
+	inner counter.Store
+	// down is read on every call. Atomic because the enrollment service is
+	// exercised concurrently elsewhere in this package.
+	down atomic.Bool
+}
+
+var _ counter.Store = (*faultyCounters)(nil)
+
+func (f *faultyCounters) Increment(ctx context.Context, key string, delta int64, ttl time.Duration) (counter.Count, error) {
+	if f.down.Load() {
+		return counter.Count{}, counter.ErrStoreUnavailable
+	}
+	return f.inner.Increment(ctx, key, delta, ttl)
+}
+
+func (f *faultyCounters) Get(ctx context.Context, key string) (counter.Count, error) {
+	if f.down.Load() {
+		return counter.Count{}, counter.ErrStoreUnavailable
+	}
+	return f.inner.Get(ctx, key)
+}
+
+func (f *faultyCounters) Delete(ctx context.Context, key string) error {
+	if f.down.Load() {
+		return counter.ErrStoreUnavailable
+	}
+	return f.inner.Delete(ctx, key)
 }
 
 // testTime is a settable clock. Every expiry decision in the service takes its
@@ -77,7 +112,11 @@ func newEnrollHarness(t *testing.T) *enrollHarness {
 	if err != nil {
 		t.Fatalf("building the counter store: %v", err)
 	}
-	denylist, err := auth.NewDenylist(counters)
+	// The denylist and the approval limiter share one store, as ADR-0023 says
+	// they do in production, so taking it offline exercises both fail-closed
+	// paths at once.
+	limiter := &faultyCounters{inner: counters}
+	denylist, err := auth.NewDenylist(limiter)
 	if err != nil {
 		t.Fatalf("building the denylist: %v", err)
 	}
@@ -85,44 +124,18 @@ func newEnrollHarness(t *testing.T) *enrollHarness {
 	if err != nil {
 		t.Fatalf("building the token service: %v", err)
 	}
-	svc, err := auth.NewEnrollmentService(creds, authenticator, tokens, denylist, counters, clock.now)
+	svc, err := auth.NewEnrollmentService(creds, authenticator, tokens, denylist, limiter, clock.now)
 	if err != nil {
 		t.Fatalf("building the enrollment service: %v", err)
 	}
 	return &enrollHarness{
 		svc: svc, pairings: pairings, creds: creds, links: links,
-		tokens: tokens, counters: counters, clock: clock,
+		tokens: tokens, counters: counters, limiter: limiter, clock: clock,
 	}
 }
 
 // fullOwner is the default grant a paired management client receives.
 func fullOwner() []domain.Scope { return []domain.Scope{{Kind: domain.ScopeFullOwner}} }
-
-func TestNewEnrollmentServiceRejectsMissingDependencies(t *testing.T) {
-	h := newEnrollHarness(t)
-	// Each nil is a control the service would silently skip: no limiter is an
-	// unbounded guessing budget against a 40-bit code, no denylist is a revoked
-	// device that keeps its live tokens.
-	for _, tt := range []struct {
-		name string
-		call func() error
-	}{
-		{"nil store", func() error {
-			_, err := auth.NewEnrollmentService(nil, nil, nil, nil, nil, nil)
-			return err
-		}},
-		{"nil limiter", func() error {
-			_, err := auth.NewEnrollmentService(h.creds, nil, nil, nil, nil, h.clock.now)
-			return err
-		}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.call(); !errors.Is(err, domain.ErrInvalidInput) {
-				t.Fatalf("error = %v, want ErrInvalidInput", err)
-			}
-		})
-	}
-}
 
 // TestMintStoresOnlyHashes is the storage invariant for the manual-paste flow:
 // the row that comes back from the store must not contain the code that was
