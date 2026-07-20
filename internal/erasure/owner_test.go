@@ -261,10 +261,17 @@ func TestEraseOwnerRecordsTheErasureWithoutRestatingIt(t *testing.T) {
 		t.Fatalf("EraseOwner: %v", err)
 	}
 
+	// One read, one slice. The earlier form ranged over listAll(t, store) and
+	// then indexed a SECOND call to it, which is two separate queries: nothing
+	// makes the row order of the second match the first, so the record examined
+	// below need not have been the one the loop matched. A test that can assert
+	// against a different record than it selected is a test that can pass while
+	// the erasure record still names the owner.
+	recs := listAll(t, store)
 	var found *domain.AuditRecord
-	for i, rec := range listAll(t, store) {
-		if rec.Action == domain.AuditActionOwnerErased {
-			found = &listAll(t, store)[i]
+	for i := range recs {
+		if recs[i].Action == domain.AuditActionOwnerErased {
+			found = &recs[i]
 			break
 		}
 	}
