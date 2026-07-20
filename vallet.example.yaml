@@ -129,3 +129,11 @@ retention:
   handle_quarantine: 30d
   audit_retention: 365d
   max_sets_per_owner: 100
+
+install:
+  # Serve the helper installation script and its SHA-256 digest under /install/
+  # (ADR-0013, ADR-0029). Enabled by default: the script is the documented
+  # bootstrap path for a host that has nothing from this project yet, and it is
+  # not secret. Set to false on locked-down installations; both routes then
+  # behave exactly like any unknown path.
+  enabled: true

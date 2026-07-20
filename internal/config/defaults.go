@@ -89,5 +89,11 @@ func Default() Config {
 			AuditRetention:   Duration(365 * day),
 			MaxSetsPerOwner:  100,
 		},
+		Install: InstallConfig{
+			// Enabled and unauthenticated by default, per ADR-0013: the
+			// served installer is a bootstrap path. See InstallConfig for
+			// the reasoning and for how to turn it off.
+			Enabled: true,
+		},
 	}
 }

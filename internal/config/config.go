@@ -34,6 +34,7 @@ type Config struct {
 	Onboarding OnboardingConfig `yaml:"onboarding"`
 	Blocklist  BlocklistConfig  `yaml:"blocklist"`
 	Retention  RetentionConfig  `yaml:"retention"`
+	Install    InstallConfig    `yaml:"install"`
 }
 
 // ServerConfig holds HTTP server and environment settings.
@@ -220,4 +221,21 @@ type RetentionConfig struct {
 	HandleQuarantine Duration `yaml:"handle_quarantine"`
 	AuditRetention   Duration `yaml:"audit_retention"`
 	MaxSetsPerOwner  int      `yaml:"max_sets_per_owner"`
+}
+
+// InstallConfig configures exposure of the served helper installer (ADR-0013,
+// ADR-0029).
+//
+// Enabled defaults to true, which ADR-0013 decides explicitly: the installer is
+// the documented bootstrap path for a host that has nothing from this project
+// yet, so gating it behind a credential the host does not have would make it
+// useless for the one job it exists to do. The script is not secret -- it is
+// byte-identical for every requester and contains no keys, host names, or
+// information about who uses the deployment.
+//
+// Deployers who do not accept an unauthenticated route set enabled: false, and
+// both install routes then answer exactly as any unrouted path does, so a probe
+// cannot even learn that the feature exists to be disabled.
+type InstallConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
