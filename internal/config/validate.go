@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net"
+	"net/url"
 	"strings"
 	"time"
 
@@ -311,11 +313,87 @@ func (c *Config) validateTelemetry(v *validator) {
 	if err := logging.ValidateFormat(c.Telemetry.Log.Format); err != nil {
 		v.add("telemetry.log.format", "%v", err)
 	}
-	if c.Telemetry.Metrics.OTLP.Enabled && c.Telemetry.Metrics.OTLP.Endpoint == "" {
-		v.add("telemetry.metrics.otlp.endpoint", "required when otlp metrics are enabled")
+	if c.Telemetry.Metrics.OTLP.Enabled {
+		if c.Telemetry.Metrics.OTLP.Endpoint == "" {
+			v.add("telemetry.metrics.otlp.endpoint", "required when otlp metrics are enabled")
+		} else {
+			validateExportEndpoint(v, "telemetry.metrics.otlp.endpoint", c.Telemetry.Metrics.OTLP.Endpoint)
+		}
 	}
-	if c.Telemetry.Traces.Enabled && c.Telemetry.Traces.Endpoint == "" {
-		v.add("telemetry.traces.endpoint", "required when traces are enabled")
+	if c.Telemetry.Traces.Enabled {
+		if c.Telemetry.Traces.Endpoint == "" {
+			v.add("telemetry.traces.endpoint", "required when traces are enabled")
+		} else {
+			validateExportEndpoint(v, "telemetry.traces.endpoint", c.Telemetry.Traces.Endpoint)
+		}
+	}
+	if r := c.Telemetry.Traces.SampleRatio; r < 0 || r > 1 || math.IsNaN(r) {
+		v.add("telemetry.traces.sample_ratio", "must be between 0 and 1, got %v", r)
+	}
+	c.validatePrometheus(v)
+}
+
+// validateExportEndpoint checks a telemetry export endpoint.
+//
+// It must be an absolute http:// or https:// URL, and it must carry no
+// userinfo. Rejecting "https://user:password@collector/v1/traces" is the point:
+// an endpoint with embedded credentials is a secret sitting in a plain config
+// field, which then reaches error messages, process listings and any dump of
+// the effective configuration. The credential belongs in the headers reference,
+// which is a secrets.Ref and redacts itself everywhere.
+func validateExportEndpoint(v *validator, field, endpoint string) {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		// The parse error would quote the offending URL, so it is deliberately
+		// not echoed here -- that is the one string in this function that may
+		// contain a password.
+		v.add(field, "must be a valid URL")
+		return
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		v.add(field, "must be an http:// or https:// URL")
+	}
+	if u.Host == "" {
+		v.add(field, "must include a host")
+	}
+	if u.User != nil {
+		v.add(field, "must not embed credentials in the URL; use headers_ref instead")
+	}
+}
+
+// validatePrometheus enforces the scrape endpoint's exposure model (ADR-0025).
+//
+// Two rules, both fail-closed:
+//
+//   - The scrape listener may not share an address with the public API
+//     listener. Serving both from one socket is exactly the unauthenticated
+//     public exposure the separate-listener design exists to prevent, and an
+//     operator who pastes the same address into both fields has expressed it by
+//     accident. Refusing at startup is the only place that mistake is cheap.
+//   - The path must be absolute, since it is registered on a mux and a relative
+//     pattern would silently never match, leaving an operator with a listener
+//     that answers 404 to their scraper for no visible reason.
+//
+// Binding the scrape listener to a wildcard address is NOT rejected: a
+// container platform that scrapes across the pod network requires it, and a
+// rule that forces every Kubernetes deployer to disable a check teaches them to
+// disable checks. The safe posture is set by the default (unserved) and the
+// loopback example in vallet.example.yaml; what must be impossible is arriving
+// at public exposure by leaving a field blank, and it is.
+func (c *Config) validatePrometheus(v *validator) {
+	p := c.Telemetry.Metrics.Prometheus
+	if p.ListenAddr == "" {
+		return
+	}
+	if p.ListenAddr == c.Server.ListenAddr {
+		v.add("telemetry.metrics.prometheus.listen_addr",
+			"must not be the same address as server.listen_addr; the scrape endpoint is served on its own listener and is never mounted on the public API")
+	}
+	if _, _, err := net.SplitHostPort(p.ListenAddr); err != nil {
+		v.add("telemetry.metrics.prometheus.listen_addr", "must be a host:port address, got %q", p.ListenAddr)
+	}
+	if !strings.HasPrefix(p.Path, "/") {
+		v.add("telemetry.metrics.prometheus.path", "must be an absolute path beginning with /, got %q", p.Path)
 	}
 }
 

@@ -76,6 +76,17 @@ func setInt(sel func(*Config) *int) func(*Config, string) error {
 	}
 }
 
+func setFloat(sel func(*Config) *float64) func(*Config, string) error {
+	return func(c *Config, v string) error {
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return fmt.Errorf("invalid number %q", v)
+		}
+		*sel(c) = f
+		return nil
+	}
+}
+
 func setDuration(sel func(*Config) *Duration) func(*Config, string) error {
 	return func(c *Config, v string) error {
 		d, err := parseDuration(v)
@@ -174,6 +185,7 @@ func bindings() []binding {
 		{"VALLET_TELEMETRY_METRICS_OTLP_HEADERS_REF", setRef(func(c *Config) *secrets.Ref { return &c.Telemetry.Metrics.OTLP.HeadersRef })},
 		{"VALLET_TELEMETRY_TRACES_ENABLED", setBool(func(c *Config) *bool { return &c.Telemetry.Traces.Enabled })},
 		{"VALLET_TELEMETRY_TRACES_ENDPOINT", setString(func(c *Config) *string { return &c.Telemetry.Traces.Endpoint })},
+		{"VALLET_TELEMETRY_TRACES_SAMPLE_RATIO", setFloat(func(c *Config) *float64 { return &c.Telemetry.Traces.SampleRatio })},
 
 		// onboarding
 		{"VALLET_ONBOARDING_MODE", setString(func(c *Config) *string { return &c.Onboarding.Mode })},
