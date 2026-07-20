@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/erasure"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
@@ -82,7 +83,18 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	publisher, err := publish.New(sqlite.NewStore(db).Repos())
+	store := sqlite.NewStore(db)
+
+	publisher, err := publish.New(store.Repos())
+	if err != nil {
+		return err
+	}
+
+	// Built before the listener binds, so a bad retention policy fails startup
+	// rather than surfacing at the first tick of a server already taking
+	// traffic. Repos().Audit is the full port (the purge needs PurgeOlderThan);
+	// AuditAppender() is the insert-only one handed to the recorder.
+	purge, err := newRetentionScheduler(cfg, logger, store.Repos().Audit, store.AuditAppender())
 	if err != nil {
 		return err
 	}
@@ -99,7 +111,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		slog.String("tls_mode", cfg.TLS.Mode),
 	)
 
-	return serve(srv, logger)
+	return serve(srv, logger, purge)
 }
 
 // serve runs the server until a termination signal arrives, then drains.
@@ -107,9 +119,26 @@ func run(args []string, stdout, stderr io.Writer) error {
 // signal.NotifyContext restores the default disposition on return, so a second
 // SIGINT during the drain terminates the process immediately -- an operator who
 // asks twice should not have to wait out the grace period.
-func serve(srv *httpserver.Server, logger *slog.Logger) error {
+func serve(srv *httpserver.Server, logger *slog.Logger, purge *erasure.Scheduler) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The retention purge shares the signal context, so the same SIGTERM that
+	// drains the listener also stops the purge -- and is joined before serve
+	// returns, so no purge is still holding a transaction when run closes the
+	// database.
+	joinPurge := startRetention(ctx, purge)
+	// stop() is called before the join, and both are in one deferred func on
+	// purpose. Deferred calls run last-registered-first, so a plain
+	// "defer joinPurge()" here would run before the "defer stop()" above and
+	// wait forever on a context nothing had canceled yet -- deadlocking every
+	// exit path that does not reach the explicit stop() below, in particular
+	// the one where the listener fails on its own. stop is idempotent, so
+	// calling it here as well as there is safe.
+	defer func() {
+		stop()
+		joinPurge()
+	}()
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
