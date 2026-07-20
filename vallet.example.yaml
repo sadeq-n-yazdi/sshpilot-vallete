@@ -106,6 +106,14 @@ auth:
   refresh_token_max_age: 90d
   # Required in production. e.g. env:VALLET_TOKEN_SIGNING_KEY
   token_signing_key_ref: ""
+  # Keys the digest of every access key secret. REQUIRED when
+  # retention.access_key_grace_sweep_interval is set, because the service that
+  # runs that sweep also verifies bearer tokens and refuses to be built without
+  # an adequate pepper. At least 32 bytes. e.g. env:VALLET_ACCESS_KEY_PEPPER
+  #
+  # Changing it invalidates every access key already issued: the stored digests
+  # were computed under the old value. Treat it as long-lived key material.
+  access_key_pepper_ref: ""
   providers:
     # At least one provider must be enabled.
     api_token:
@@ -188,6 +196,16 @@ retention:
   # rather than becoming claimable by anyone else -- it fails closed.
   handle_quarantine_sweep_interval: 1h
   handle_quarantine_sweep_batch: 200
+  # How often lapsed rotation grace windows are retired, and how many one pass
+  # retires. 0 disables the sweep and is the DEFAULT.
+  #
+  # Off by default because this sweep enforces nothing. A credential past its
+  # grace deadline is already refused at verification, which compares the
+  # deadline against the clock on every request; the sweep moves the dead row to
+  # the revoked status so the stored state and the audit trail stop describing a
+  # window that closed. Enabling it requires auth.access_key_pepper_ref above.
+  access_key_grace_sweep_interval: 0
+  access_key_grace_sweep_batch: 200
   max_sets_per_owner: 100
 
 install:
