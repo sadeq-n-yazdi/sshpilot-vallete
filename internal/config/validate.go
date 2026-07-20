@@ -409,16 +409,51 @@ func (c *Config) validatePrometheus(v *validator) {
 	if p.ListenAddr == "" {
 		return
 	}
-	if p.ListenAddr == c.Server.ListenAddr {
-		v.add("telemetry.metrics.prometheus.listen_addr",
-			"must not be the same address as server.listen_addr; the scrape endpoint is served on its own listener and is never mounted on the public API")
-	}
 	if _, _, err := net.SplitHostPort(p.ListenAddr); err != nil {
 		v.add("telemetry.metrics.prometheus.listen_addr", "must be a host:port address, got %q", p.ListenAddr)
+	}
+	if addrsOverlap(p.ListenAddr, c.Server.ListenAddr) {
+		v.add("telemetry.metrics.prometheus.listen_addr",
+			"must not overlap server.listen_addr; the scrape endpoint is served on its own listener and is never mounted on the public API")
 	}
 	if !strings.HasPrefix(p.Path, "/") {
 		v.add("telemetry.metrics.prometheus.path", "must be an absolute path beginning with /, got %q", p.Path)
 	}
+}
+
+// addrsOverlap reports whether two listen addresses would end up serving the
+// same socket.
+//
+// A string comparison is not enough, and the gap is not cosmetic: ":8443" and
+// "0.0.0.0:8443" are different strings that bind the identical socket, so an
+// operator who wrote one in each field would defeat the check entirely and get
+// the scrape endpoint on the public API port -- precisely the outcome the check
+// exists to make unreachable. The ports must match for any overlap to be
+// possible; given that, a wildcard on either side covers every interface the
+// other could name, and two equal hosts are the same interface.
+//
+// Malformed input is reported as NOT overlapping, because the caller has
+// already flagged it as unparseable and a second error on the same field would
+// describe a conflict that is not what is wrong with it.
+func addrsOverlap(a, b string) bool {
+	ah, ap, err := net.SplitHostPort(a)
+	if err != nil {
+		return false
+	}
+	bh, bp, err := net.SplitHostPort(b)
+	if err != nil {
+		return false
+	}
+	if ap != bp {
+		return false
+	}
+	return isWildcardHost(ah) || isWildcardHost(bh) || ah == bh
+}
+
+// isWildcardHost reports whether a host from a listen address binds every
+// interface. An empty host is the ":8443" form.
+func isWildcardHost(h string) bool {
+	return h == "" || h == "0.0.0.0" || h == "::"
 }
 
 func (c *Config) validateOnboarding(v *validator) {

@@ -60,6 +60,55 @@ func TestScrapeAddressMayNotCollideWithTheAPIListener(t *testing.T) {
 	}
 }
 
+// TestScrapeAddressCollisionSurvivesDifferentSpellings covers the addresses
+// that bind the same socket without being the same string.
+//
+// An exact string comparison passes every one of these while the two listeners
+// fight over one port -- and the one that wins serves the scrape endpoint on
+// the public API address, which is the entire outcome this check exists to make
+// unreachable. ":8443" and "0.0.0.0:8443" are the same bind written two ways,
+// and a wildcard on either side covers whatever interface the other names.
+//
+// The non-overlapping rows matter as much as the overlapping ones: a check that
+// refuses a distinct port or a genuinely different interface would push
+// operators into disabling it, which costs more than it saves.
+func TestScrapeAddressCollisionSurvivesDifferentSpellings(t *testing.T) {
+	tests := []struct {
+		name       string
+		serverAddr string
+		scrapeAddr string
+		wantErr    bool
+	}{
+		{"identical", "0.0.0.0:8443", "0.0.0.0:8443", true},
+		{"bare colon against explicit wildcard", ":8443", "0.0.0.0:8443", true},
+		{"explicit wildcard against bare colon", "0.0.0.0:8443", ":8443", true},
+		{"both bare colon", ":8443", ":8443", true},
+		{"ipv6 wildcard against a loopback scrape", "[::]:8443", "127.0.0.1:8443", true},
+		{"server wildcard covers a named scrape interface", ":8443", "10.0.0.5:8443", true},
+		{"scrape wildcard covers a named server interface", "10.0.0.5:8443", ":8443", true},
+		{"same explicit host", "127.0.0.1:8443", "127.0.0.1:8443", true},
+
+		{"different ports on the same wildcard", ":8443", ":9090", false},
+		{"different ports, one wildcard", "0.0.0.0:8443", "127.0.0.1:9090", false},
+		{"same port, different explicit interfaces", "127.0.0.1:8443", "10.0.0.5:8443", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := validTelemetryBase()
+			c.Server.ListenAddr = tt.serverAddr
+			c.Telemetry.Metrics.Prometheus.ListenAddr = tt.scrapeAddr
+
+			errs := telemetryErrors(t, c)
+			_, got := errs["telemetry.metrics.prometheus.listen_addr"]
+			if got != tt.wantErr {
+				t.Fatalf("server=%q scrape=%q: refused=%v, want %v; errors: %v",
+					tt.serverAddr, tt.scrapeAddr, got, tt.wantErr, errs)
+			}
+		})
+	}
+}
+
 // TestScrapeAddressAndPathAreWellFormed keeps a misconfigured endpoint from
 // starting as a listener that silently answers nothing.
 func TestScrapeAddressAndPathAreWellFormed(t *testing.T) {
