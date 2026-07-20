@@ -3,6 +3,7 @@ package erasure
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -247,5 +248,126 @@ func TestNewPurgerDefaults(t *testing.T) {
 	// without options would disagree with one built from config.
 	if DefaultRetention != 365*24*time.Hour {
 		t.Errorf("DefaultRetention = %v, want 365 days", DefaultRetention)
+	}
+}
+
+// scriptedAudit is a purge repository whose behavior each test dictates. The
+// hook is called with the requested limit and returns the rows deleted and any
+// error, so a test can express "always return a full batch", "fail", or "block
+// until released" without a bespoke fake for each.
+type scriptedAudit struct {
+	repository.AuditRepository
+
+	mu    sync.Mutex
+	calls int
+
+	// hook is invoked for every PurgeOlderThan call. It must be safe for
+	// concurrent use; several tests rely on that to detect overlap.
+	hook func(ctx context.Context, cutoff time.Time, limit int) (int64, error)
+}
+
+func (s *scriptedAudit) PurgeOlderThan(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	return s.hook(ctx, cutoff, limit)
+}
+
+func (s *scriptedAudit) callCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+// TestPurgeOnceTerminatesWhenEveryBatchIsFull is the termination proof.
+//
+// It asserts the mechanism, not the artifact. The repository here always
+// reports exactly the requested limit deleted and never runs out, which is what
+// a repository that ignored the cutoff, or one racing a writer, would look
+// like. The short-batch exit can therefore never fire, so the maxPerRun ceiling
+// is the only thing that can stop the loop; if it is removed, this test hangs
+// rather than failing, so it runs under its own deadline.
+func TestPurgeOnceTerminatesWhenEveryBatchIsFull(t *testing.T) {
+	t.Parallel()
+
+	repo := &scriptedAudit{hook: func(_ context.Context, _ time.Time, limit int) (int64, error) {
+		// Always a full batch: the backlog is inexhaustible.
+		return int64(limit), nil
+	}}
+	p, err := NewPurger(repo, WithBatchSize(10), WithMaxPerRun(95))
+	if err != nil {
+		t.Fatalf("NewPurger: %v", err)
+	}
+
+	type outcome struct {
+		n   int64
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		n, err := p.PurgeOnce(context.Background())
+		done <- outcome{n, err}
+	}()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("PurgeOnce: %v", got.err)
+		}
+		// Exactly the ceiling, not a batch-rounded overshoot: the final batch
+		// is trimmed to the remaining headroom.
+		if got.n != 95 {
+			t.Errorf("deleted = %d, want exactly the 95 ceiling (an overshoot means the final batch was not trimmed)", got.n)
+		}
+		if repo.callCount() != 10 {
+			t.Errorf("PurgeOlderThan called %d times, want 10 (nine full batches of 10 plus a trimmed batch of 5)", repo.callCount())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("PurgeOnce did not terminate with a repository that always returns a full batch; the per-run ceiling is the only exit in this case and it is not stopping the loop")
+	}
+}
+
+// TestPurgeOnceTrimsFinalBatchToCeiling checks the ceiling is honored exactly
+// rather than approximately, so a pass cannot delete more than an operator
+// authorized for one run.
+func TestPurgeOnceTrimsFinalBatchToCeiling(t *testing.T) {
+	t.Parallel()
+
+	var limits []int
+	repo := &scriptedAudit{hook: func(_ context.Context, _ time.Time, limit int) (int64, error) {
+		limits = append(limits, limit)
+		return int64(limit), nil
+	}}
+	p, err := NewPurger(repo, WithBatchSize(100), WithMaxPerRun(250))
+	if err != nil {
+		t.Fatalf("NewPurger: %v", err)
+	}
+	n, err := p.PurgeOnce(context.Background())
+	if err != nil {
+		t.Fatalf("PurgeOnce: %v", err)
+	}
+	if n != 250 {
+		t.Errorf("deleted = %d, want 250", n)
+	}
+	want := []int{100, 100, 50}
+	if len(limits) != len(want) {
+		t.Fatalf("limits = %v, want %v", limits, want)
+	}
+	for i := range want {
+		if limits[i] != want[i] {
+			t.Fatalf("limits = %v, want %v", limits, want)
+		}
+	}
+}
+
+// TestNewPurgerRejectsNonPositiveMaxPerRun pins that the ceiling cannot be
+// disabled by configuration. A zero ceiling would remove the only guaranteed
+// exit from the batch loop.
+func TestNewPurgerRejectsNonPositiveMaxPerRun(t *testing.T) {
+	t.Parallel()
+	for _, n := range []int64{0, -1} {
+		if _, err := NewPurger(&scriptedAudit{}, WithMaxPerRun(n)); !errors.Is(err, domain.ErrInvalidInput) {
+			t.Errorf("NewPurger(WithMaxPerRun(%d)) error = %v, want ErrInvalidInput", n, err)
+		}
 	}
 }

@@ -3,6 +3,7 @@ package blocklist
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 )
 
 // ListVersion identifies the revision of the default word lists in lists.go.
@@ -152,6 +153,20 @@ const (
 	// renumber the existing reasons and silently change what an old record
 	// means.
 	ReasonTooAmbiguous
+
+	// ReasonAllowlisted: an administrator exempted this exact identifier, so
+	// the blocklist was not consulted.
+	//
+	// It is a distinct reason from ReasonAllowed, not a reuse of it, because an
+	// identifier that was permitted by a deliberate exemption and one that
+	// simply matched no term are different facts about the system. The first is
+	// a hole somebody opened and is accountable for; the second is the ordinary
+	// case. An audit trail that rendered them identically could not answer
+	// "which live identifiers exist only because of an allowlist entry?", which
+	// is the question ADR-0017's flag-for-review process is built on.
+	//
+	// Appended last, for the renumbering reason given on ReasonTooAmbiguous.
+	ReasonAllowlisted
 )
 
 // String renders the reason for logs. Like MatchMode.String it names no term.
@@ -167,6 +182,8 @@ func (r Reason) String() string {
 		return "blocked-term"
 	case ReasonTooAmbiguous:
 		return "too-ambiguous"
+	case ReasonAllowlisted:
+		return "allowlisted"
 	case ReasonEngineUnavailable:
 		return "engine-unavailable"
 	default:
@@ -309,7 +326,18 @@ type compiledList struct {
 // A Matcher that was not built by NewMatcher -- the zero value, or a nil
 // pointer -- blocks everything. See Check.
 //
-// A Matcher is immutable after construction and safe for concurrent use.
+// # Mutability
+//
+// A Matcher's LISTS are immutable after construction. Its ALLOWLIST is not:
+// ADR-0017 gives an administrator a runtime allowlist for false positives, and
+// that edit has to reach callers that already hold this *Matcher. The allowlist
+// therefore lives behind an atomic pointer swapped by SetAllowlist, so the
+// pointer identity of a Matcher never changes while its exemptions do. A
+// Matcher is safe for concurrent use, including concurrent Check and
+// SetAllowlist.
+//
+// A Matcher must not be copied after construction; the atomic pointer makes a
+// copy meaningless. NewMatcher hands out a pointer for this reason.
 type Matcher struct {
 	// ready is set only by NewMatcher, and only after every list has been
 	// validated. It is what distinguishes a usable Matcher from a zero one;
@@ -319,6 +347,17 @@ type Matcher struct {
 	ready bool
 
 	lists []compiledList
+
+	// allow holds the current compiled allowlist, or nil when none has been
+	// set. Nil means NOTHING is exempt, which is why a matcher whose allowlist
+	// failed to load behaves as though the allowlist were empty: an unavailable
+	// allowlist must block more, never less. See allowlisted.
+	allow atomic.Pointer[allowSet]
+
+	// extra holds the administrator-added blocklist terms, or nil when none
+	// have been set. Nil means the curated lists alone apply. See
+	// SetExtraTerms.
+	extra atomic.Pointer[compiledList]
 }
 
 // NewMatcher compiles lists into a Matcher, or reports why it cannot.
@@ -447,9 +486,57 @@ func (m *Matcher) Check(input string) Result {
 		return Result{Allowed: false, Reason: ReasonEmptySkeleton}
 	}
 
+	// The allowlist is consulted HERE, and the position is load-bearing in both
+	// directions.
+	//
+	// It is after normalization because it must exempt the same form the
+	// blocklist blocks. Comparing the raw input instead would let the exempted
+	// set and the blocked set be different sets, and the difference would be
+	// reachable by the confusable and leetspeak spellings the folding exists to
+	// catch.
+	//
+	// It is after the length and empty-skeleton guards because those are
+	// fail-closed refusals about the input being unexaminable, not policy
+	// judgments about a word. An allowlist entry says "this identifier is not
+	// the offensive word it looks like"; it does not say "skip the bounds".
+	// Consulting the allowlist first would let an entry exempt an over-length
+	// or empty-skeleton input from checks that exist to stop inputs no list can
+	// ever speak to -- which is a bypass of the engine, not an exemption from a
+	// term.
+	//
+	// It is before the candidate expansion because an exempted identifier must
+	// not then be blocked by an alternative reading of itself; that is the
+	// whole point of the entry. See allowlisted for why the expansion is not
+	// applied to the allowlist lookup itself.
+	if entry, exempt := m.allowlisted(skeleton); exempt {
+		return Result{
+			Allowed: true,
+			Reason:  ReasonAllowlisted,
+			List:    AllowlistName,
+			Term:    entry,
+		}
+	}
+
 	candidates, ok := candidateSkeletons(skeleton)
 	if !ok {
 		return Result{Allowed: false, Reason: ReasonTooAmbiguous}
+	}
+
+	// Administrator-added terms are consulted before the curated lists, so a
+	// term added at runtime takes effect immediately and is reported under its
+	// own list name. They are whole-skeleton, so they share the precedence the
+	// Matcher documentation gives that mode; placing them first within it means
+	// a runtime decision is the one reported when it overlaps a default.
+	//
+	// The candidate expansion applies here exactly as it does to the curated
+	// lists: an administrator who blocks a word must get its evasive spellings
+	// blocked too, or the entry would be worth less than the one in lists.go.
+	if extra := m.extra.Load(); extra != nil {
+		for _, candidate := range candidates {
+			if term, hit := extra.whole[candidate]; hit {
+				return blockedBy(*extra, term)
+			}
+		}
 	}
 
 	// Lists stay the outer loop, so the precedence documented on Matcher --

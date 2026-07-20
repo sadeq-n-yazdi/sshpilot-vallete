@@ -198,7 +198,15 @@ func revokeDeviceHandler(svc DeviceService, logger *slog.Logger) ScopedHandler {
 // extra field silently dropped, so a request that tried to assert an owner
 // never looks like it succeeded.
 func decodeDeviceJSON(w http.ResponseWriter, r *http.Request, into any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxDeviceRequestBody))
+	return decodeStrictJSON(w, r, into, maxDeviceRequestBody)
+}
+
+// decodeStrictJSON is the shared strict-decode used by every management
+// handler. It is one function rather than one per slice so a new endpoint
+// cannot acquire a laxer body policy by writing its own: the byte bound is the
+// only thing a caller chooses.
+func decodeStrictJSON(w http.ResponseWriter, r *http.Request, into any, limit int64) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(into); err != nil {
 		return err

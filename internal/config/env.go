@@ -133,6 +133,10 @@ func bindings() []binding {
 		{"VALLET_TLS_MIN_VERSION", setString(func(c *Config) *string { return &c.TLS.MinVersion })},
 		{"VALLET_TLS_ACME_DIRECTORY_URL", setString(func(c *Config) *string { return &c.TLS.ACME.DirectoryURL })},
 		{"VALLET_TLS_ACME_SOLVER", setString(func(c *Config) *string { return &c.TLS.ACME.Solver })},
+		{"VALLET_TLS_ACME_ACCOUNT_KEY_FILE", setString(func(c *Config) *string { return &c.TLS.ACME.AccountKeyFile })},
+		{"VALLET_TLS_ACME_CACHE_DIR", setString(func(c *Config) *string { return &c.TLS.ACME.CacheDir })},
+		{"VALLET_TLS_ACME_CONTACT_EMAIL", setString(func(c *Config) *string { return &c.TLS.ACME.ContactEmail })},
+		{"VALLET_TLS_ACME_ACCEPT_TOS", setBool(func(c *Config) *bool { return &c.TLS.ACME.AcceptTOS })},
 		{"VALLET_TLS_ACME_DNS_MODE", setString(func(c *Config) *string { return &c.TLS.ACME.DNS.Mode })},
 		{"VALLET_TLS_ACME_DNS_PROVIDER", setString(func(c *Config) *string { return &c.TLS.ACME.DNS.Provider })},
 		{"VALLET_TLS_ACME_DNS_CREDENTIALS_REF", setRef(func(c *Config) *secrets.Ref { return &c.TLS.ACME.DNS.CredentialsRef })},
@@ -198,8 +202,13 @@ func bindings() []binding {
 		// retention
 		{"VALLET_RETENTION_HANDLE_QUARANTINE", setDuration(func(c *Config) *Duration { return &c.Retention.HandleQuarantine })},
 		{"VALLET_RETENTION_AUDIT_RETENTION", setDuration(func(c *Config) *Duration { return &c.Retention.AuditRetention })},
+		{"VALLET_RETENTION_AUDIT_PURGE_INTERVAL", setDuration(func(c *Config) *Duration { return &c.Retention.AuditPurgeInterval })},
+		{"VALLET_RETENTION_AUDIT_PURGE_BATCH", setInt(func(c *Config) *int { return &c.Retention.AuditPurgeBatch })},
+		{"VALLET_RETENTION_AUDIT_PURGE_MAX_PER_RUN", setInt(func(c *Config) *int { return &c.Retention.AuditPurgeMaxPerRun })},
 		{"VALLET_RETENTION_MAX_SETS_PER_OWNER", setInt(func(c *Config) *int { return &c.Retention.MaxSetsPerOwner })},
 
+		// install
+		{"VALLET_INSTALL_ENABLED", setBool(func(c *Config) *bool { return &c.Install.Enabled })},
 		// docs
 		{"VALLET_DOCS_ENABLED", setBool(func(c *Config) *bool { return &c.Docs.Enabled })},
 	}

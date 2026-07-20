@@ -78,6 +78,24 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// handle. Both publish routes share one handler; the absence of the {set}
 	// segment is what selects the owner's default set.
 
+	// The served helper installer (ADR-0013, ADR-0029). Registered
+	// unconditionally and consulting the exposure setting per request: when
+	// installs are disabled both routes answer with http.NotFound, which is the
+	// identical response the mux itself gives an unregistered path, so probing
+	// a locked-down deployment reveals nothing -- not even that the feature
+	// exists to be turned off.
+	//
+	// Two hard-coded two-segment literals, one per artifact. There is
+	// deliberately no /install/{name}: a path segment that selects the file
+	// turns the one endpoint whose output operators execute into a traversal
+	// surface. Being literals, they are strictly more specific than
+	// GET /{handle}/{set} and register alongside it without conflict -- the
+	// subtree form "GET /install/" would not, since a subtree pattern and a
+	// two-wildcard pattern are incomparable and the mux panics on that pair.
+	install := installEnabled(cfg)
+	mux.Handle("GET /install/vallet-helper.sh", installScriptHandler(install))
+	mux.Handle("GET /install/vallet-helper.sh.sha256", installDigestHandler(install))
+
 	// The self-served API contract (ADR-0021). These are registered
 	// unconditionally and consult the exposure setting per request; when docs
 	// are disabled every one of them answers with http.NotFound, which is the
@@ -142,6 +160,20 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	mux.Handle("GET /api/v1/devices", guardian.Protect(AccountAccess, listDevicesHandler(o.devices, logger)))
 	mux.Handle("DELETE /api/v1/devices/{deviceID}",
 		guardian.Protect(DeviceAccess, revokeDeviceHandler(o.devices, logger)))
+
+	// The public key routes all declare AccountAccess, including the one that
+	// addresses a single key by id. That is not an oversight: auth.ResourceKind
+	// has kinds for key sets and devices only, so there is no resource-bound
+	// scope a key route could be checked against, and inventing an Access whose
+	// kind the auth package does not recognize would be refused by
+	// Access.validate rather than enforced. Declaring the account is the
+	// conservative reading -- a resource-bound token cannot reach any of these,
+	// and a read-only token cannot reach the two mutating ones, because the
+	// Guardian derives Mutating from the method.
+	mux.Handle("POST /api/v1/keys", guardian.Protect(AccountAccess, addKeyHandler(o.keys, logger)))
+	mux.Handle("GET /api/v1/keys", guardian.Protect(AccountAccess, listKeysHandler(o.keys, logger)))
+	mux.Handle("DELETE /api/v1/keys/{keyID}",
+		guardian.Protect(AccountAccess, revokeKeyHandler(o.keys, logger)))
 
 	// Outermost first: every response carries the transport policy, then every
 	// request gets an ID, then a span and a metric, then is logged, then is

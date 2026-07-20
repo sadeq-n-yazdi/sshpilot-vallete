@@ -261,13 +261,13 @@ func TestBuildTLSConfigUsesInjectedClock(t *testing.T) {
 	cfg.TLS.Manual.CertFile = certFile
 	cfg.TLS.Manual.KeyFile = keyFile
 
-	if _, err := buildTLSConfig(cfg, staticClock(base.Add(30*time.Minute))); err != nil {
+	if _, _, err := buildTLSConfig(t.Context(), cfg, staticClock(base.Add(30*time.Minute))); err != nil {
 		t.Fatalf("inside the validity window: %v", err)
 	}
-	if _, err := buildTLSConfig(cfg, staticClock(base.Add(2*time.Hour))); !errors.Is(err, ErrTLSCertificateExpired) {
+	if _, _, err := buildTLSConfig(t.Context(), cfg, staticClock(base.Add(2*time.Hour))); !errors.Is(err, ErrTLSCertificateExpired) {
 		t.Fatalf("after expiry: err = %v, want ErrTLSCertificateExpired", err)
 	}
-	if _, err := buildTLSConfig(cfg, staticClock(base.Add(-time.Minute))); !errors.Is(err, ErrTLSCertificateExpired) {
+	if _, _, err := buildTLSConfig(t.Context(), cfg, staticClock(base.Add(-time.Minute))); !errors.Is(err, ErrTLSCertificateExpired) {
 		t.Fatalf("before validity: err = %v, want ErrTLSCertificateExpired", err)
 	}
 }
@@ -308,7 +308,7 @@ func TestUnsupportedModesFailClosed(t *testing.T) {
 
 			cfg := devConfig()
 			cfg.TLS.Mode = mode
-			tlsCfg, err := buildTLSConfig(cfg, time.Now)
+			tlsCfg, _, err := buildTLSConfig(t.Context(), cfg, time.Now)
 			if !errors.Is(err, ErrTLSModeUnsupported) {
 				t.Fatalf("err = %v, want ErrTLSModeUnsupported", err)
 			}

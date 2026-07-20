@@ -16,6 +16,7 @@ import (
 type handlerOptions struct {
 	authorizer Authorizer
 	devices    DeviceService
+	keys       PublicKeyService
 	telemetry  *telemetry.Provider
 }
 
@@ -48,6 +49,11 @@ func WithDeviceService(s DeviceService) HandlerOption {
 // (telemetry.MetricsServer) and there is no code path from here to it.
 func WithTelemetry(p *telemetry.Provider) HandlerOption {
 	return func(o *handlerOptions) { o.telemetry = p }
+}
+
+// WithPublicKeyService supplies the public key management service.
+func WithPublicKeyService(s PublicKeyService) HandlerOption {
+	return func(o *handlerOptions) { o.keys = s }
 }
 
 // managementGuardian builds the Guardian for the management routes.
