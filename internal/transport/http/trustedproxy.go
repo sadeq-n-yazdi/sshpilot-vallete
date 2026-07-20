@@ -71,10 +71,41 @@ func (t trustedPeers) empty() bool { return len(t.prefixes) == 0 }
 // deny. Returning true on a parse failure would turn a malformed RemoteAddr
 // into a trust bypass.
 func (t trustedPeers) trusts(remoteAddr string) bool {
+	addr, ok := parsePeerAddr(remoteAddr)
+	if !ok {
+		return false
+	}
+	return t.trustsAddr(addr)
+}
+
+// trustsAddr is trusts for an address that has already been parsed.
+//
+// It exists because rate-limit IP keying must ask this question of each hop in
+// an X-Forwarded-For list, which arrives as bare addresses rather than as
+// host:port. Splitting it out keeps that caller on this same match logic
+// instead of growing a second copy of it — the duplication this type was
+// factored out to prevent.
+func (t trustedPeers) trustsAddr(addr netip.Addr) bool {
 	if len(t.prefixes) == 0 {
 		return false
 	}
+	addr = addr.Unmap()
+	for _, p := range t.prefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
 
+// parsePeerAddr extracts an IP from an http.Request.RemoteAddr, in host:port
+// form or as a bare address, and reports whether it succeeded.
+//
+// Failure is reported rather than papered over with a zero Addr, because every
+// caller here is making a trust or identity decision and the two answers must
+// not be confusable: a zero Addr that flowed onward would be an unparseable
+// peer masquerading as a valid one.
+func parsePeerAddr(remoteAddr string) (netip.Addr, bool) {
 	host, _, err := net.SplitHostPort(remoteAddr)
 	if err != nil {
 		// Not host:port. Accept a bare address too, since a custom listener may
@@ -84,16 +115,9 @@ func (t trustedPeers) trusts(remoteAddr string) bool {
 
 	addr, err := netip.ParseAddr(host)
 	if err != nil {
-		return false
+		return netip.Addr{}, false
 	}
 	// An IPv4 peer may be reported as ::ffff:a.b.c.d on a dual-stack listener;
 	// unmapping makes it match an IPv4 prefix the operator configured.
-	addr = addr.Unmap()
-
-	for _, p := range t.prefixes {
-		if p.Contains(addr) {
-			return true
-		}
-	}
-	return false
+	return addr.Unmap(), true
 }
