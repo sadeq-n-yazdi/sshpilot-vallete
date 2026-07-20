@@ -149,7 +149,7 @@ func TestReposPopulatesEveryRepository(t *testing.T) {
 	t.Parallel()
 	r := reposFor((*sql.DB)(nil))
 	if r.Owners == nil || r.Handles == nil || r.Devices == nil ||
-		r.PublicKeys == nil || r.KeySets == nil {
+		r.PublicKeys == nil || r.KeySets == nil || r.Audit == nil || r.OwnerSalts == nil {
 		t.Errorf("Repos left a repository nil: %+v", r)
 	}
 }

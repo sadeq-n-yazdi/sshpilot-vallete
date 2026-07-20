@@ -58,6 +58,11 @@ const (
 	DetailRequestID DetailKey = "request_id"
 	// DetailClientLabel is the caller-supplied label of the client involved.
 	DetailClientLabel DetailKey = "client_label"
+	// DetailCount is a whole number of items an action affected, for actions
+	// that operate on a set rather than one entity -- for example how many
+	// records a retention purge removed. It carries a count, never any part of
+	// what was counted.
+	DetailCount DetailKey = "count"
 )
 
 // allowedDetailKeys is the authoritative allowlist. DetailKey is a defined
@@ -77,6 +82,7 @@ var allowedDetailKeys = map[DetailKey]bool{
 	DetailResult:      true,
 	DetailRequestID:   true,
 	DetailClientLabel: true,
+	DetailCount:       true,
 }
 
 // maxDetailValueLen bounds a detail value. Audit context is short, factual
