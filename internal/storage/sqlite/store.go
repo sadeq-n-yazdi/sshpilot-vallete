@@ -122,5 +122,6 @@ func reposFor(e execer) repository.Repos {
 
 		LinkedIdentities:   &linkedIdentityRepo{e: e},
 		RefreshCredentials: &refreshCredRepo{e: e},
+		DevicePairings:     &pairingRepo{e: e},
 	}
 }

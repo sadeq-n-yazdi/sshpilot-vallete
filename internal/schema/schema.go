@@ -45,6 +45,7 @@ func Registry() (*migrate.Registry, error) {
 		migration0005OwnerErasureSalts(),
 		migration0006RefreshCredentials(),
 		migration0007LinkedIdentities(),
+		migration0008DevicePairings(),
 	)
 }
 
@@ -443,6 +444,91 @@ func migration0005OwnerErasureSalts() migrate.Migration {
 		Down: migrate.Steps{
 			SQLite:   []string{`DROP TABLE owner_erasure_salts`},
 			Postgres: []string{`DROP TABLE owner_erasure_salts`},
+		},
+	}
+}
+
+// migration0008DevicePairings creates the device_pairings table: the short-lived
+// enrollment records a device code and a user code are verified against.
+//
+// Only digests are stored. device_code_hash and user_code_hash hold the hash of
+// each secret, never the secret, so a store dump yields nothing presentable;
+// the lookup path hashes first and matches on the digest.
+//
+// user_code_hash is nullable because a manually minted pairing is approved at
+// creation and never needs a user code. The index on it is therefore a plain
+// index and not UNIQUE: a UNIQUE index would still permit multiple NULLs on
+// both engines, so it would not constrain the manual case, while it would make
+// a hash collision between two live pairings an insert failure rather than a
+// lookup that the caller resolves. Uniqueness of a user code is a property the
+// minting code enforces by drawing fresh codes, not something this table can
+// assert about a digest column that is mostly NULL.
+//
+// status is CHECK-constrained to the PairingStatus set. It is the interlock the
+// conditional transitions turn on: approval applies only to a pending row and
+// redemption only to an approved one, so a second approval cannot rebind the
+// owner and a second redemption cannot spend the same device code twice.
+//
+// owner_id is nullable and carries no FOREIGN KEY. A pending pairing has no
+// owner yet — the owner is established BY the approval — so the column cannot
+// be NOT NULL, and a pairing must remain deletable by the expiry sweep on its
+// own schedule rather than one an owner row's lifetime dictates.
+//
+// expires_at is indexed for the expiry sweep, and next_poll_at is stored so a
+// client that ignores the polling interval is throttled rather than served.
+func migration0008DevicePairings() migrate.Migration {
+	const (
+		createSQLite = `CREATE TABLE device_pairings (
+	id TEXT PRIMARY KEY,
+	owner_id TEXT,
+	device_code_hash BLOB NOT NULL,
+	user_code_hash BLOB,
+	client_label TEXT NOT NULL DEFAULT '',
+	scopes TEXT NOT NULL DEFAULT '[]',
+	status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'redeemed', 'revoked')),
+	lineage_id TEXT NOT NULL DEFAULT '',
+	next_poll_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	approved_at TEXT,
+	redeemed_at TEXT,
+	revoked_at TEXT
+)`
+		createPostgres = `CREATE TABLE device_pairings (
+	id TEXT PRIMARY KEY,
+	owner_id TEXT,
+	device_code_hash BYTEA NOT NULL,
+	user_code_hash BYTEA,
+	client_label TEXT NOT NULL DEFAULT '',
+	scopes TEXT NOT NULL DEFAULT '[]',
+	status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'redeemed', 'revoked')),
+	lineage_id TEXT NOT NULL DEFAULT '',
+	next_poll_at TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	approved_at TEXT,
+	redeemed_at TEXT,
+	revoked_at TEXT
+)`
+		indexUserCode  = `CREATE INDEX ix_device_pairings_user_code_hash ON device_pairings (user_code_hash)`
+		indexOwner     = `CREATE INDEX ix_device_pairings_owner_id ON device_pairings (owner_id)`
+		indexExpiresAt = `CREATE INDEX ix_device_pairings_expires_at ON device_pairings (expires_at)`
+	)
+
+	return migrate.Migration{
+		ID:       "0008",
+		Name:     "device_pairings",
+		Requires: []string{"0001"},
+		Preconditions: []migrate.Precondition{
+			migrate.TableAbsent("device_pairings"),
+		},
+		Up: migrate.Steps{
+			SQLite:   []string{createSQLite, indexUserCode, indexOwner, indexExpiresAt},
+			Postgres: []string{createPostgres, indexUserCode, indexOwner, indexExpiresAt},
+		},
+		Down: migrate.Steps{
+			SQLite:   []string{`DROP TABLE device_pairings`},
+			Postgres: []string{`DROP TABLE device_pairings`},
 		},
 	}
 }
