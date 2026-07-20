@@ -136,3 +136,10 @@ retention:
   handle_quarantine: 30d
   audit_retention: 365d
   max_sets_per_owner: 100
+
+docs:
+  # Serve the OpenAPI contract and the embedded documentation UI at /docs/
+  # (ADR-0021). Enabled by default: the contract is not secret, and consumers
+  # need it to build against this API. Set to false on locked-down
+  # installations; the routes then behave exactly like any unknown path.
+  enabled: true
