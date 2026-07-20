@@ -14,6 +14,7 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/keys"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/schema"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/bootstrap"
@@ -80,6 +81,7 @@ func (f *fixture) seedOwner(handle string) bootstrap.Result {
 	res, err := bootstrap.Seed(context.Background(), f.store, bootstrap.Params{
 		Handle: handle,
 		Now:    testNow,
+		Guard:  mustGuard(f.t),
 	})
 	if err != nil {
 		f.t.Fatalf("bootstrap.Seed(%q): %v", handle, err)
@@ -169,4 +171,16 @@ func lines(body string) []string {
 		return nil
 	}
 	return strings.Split(trimmed, "\n")
+}
+
+// mustGuard builds the real blocklist guard. Tests seed through the same
+// enforcement an operator gets, so a name these fixtures use is a name the
+// product actually permits.
+func mustGuard(t *testing.T) *nameguard.Guard {
+	t.Helper()
+	g, err := nameguard.Default()
+	if err != nil {
+		t.Fatalf("nameguard.Default(): %v", err)
+	}
+	return g
 }
