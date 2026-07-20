@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -141,6 +142,16 @@ func TestAddRejectsPrivateKeyMaterial(t *testing.T) {
 		}
 	}
 
+	// An ingest refusal is the caller's fault, not the server's, so it must not
+	// reach the log at ERROR level. This is the mechanism behind "the 400 branch
+	// does not log": routing ingest failures through the server-fault branch
+	// would both pollute alerting and put a key-submission error into the
+	// request log, where a future change to the ingest layer could make it carry
+	// input.
+	if strings.Contains(logged.String(), `"level":"ERROR"`) {
+		t.Errorf("a rejected submission was logged as a server fault: %s", logged.String())
+	}
+
 	if env.keys.count() != 0 {
 		t.Error("a private key submission created a stored row")
 	}
@@ -252,6 +263,53 @@ func TestAddRejectsBadBodies(t *testing.T) {
 	}
 	if env.keys.count() != 0 {
 		t.Error("a rejected body created a stored row")
+	}
+}
+
+// TestTheOwnerComesFromTheTokenNotTheBody is the confused-deputy check, and it
+// asserts the MECHANISM rather than the artifact.
+//
+// The obvious test -- "a body carrying owner_id is refused" -- passes for the
+// wrong reason: it is satisfied by DisallowUnknownFields, so it keeps passing
+// against a server that added an owner_id field and honored it. This test
+// instead sends a body that would only succeed if the owner were taken from it,
+// and asserts on where the key ended up. It holds whether or not the field is
+// known to the decoder.
+func TestTheOwnerComesFromTheTokenNotTheBody(t *testing.T) {
+	t.Parallel()
+
+	env := newKeyEnv(t)
+	tokenA := env.fullToken(t, "owner-a")
+	tokenB := env.fullToken(t, "owner-b")
+	env.seedDevice(t, "owner-a", "dev-a")
+	env.seedDevice(t, "owner-b", "dev-b")
+
+	// Owner A's token, a body naming owner B and owner B's device. A server
+	// that believed the body would find a coherent, authorized-looking request
+	// and enroll the key for owner B.
+	body := `{"device_id":"dev-b","public_key":` +
+		strconv.Quote(ed25519Line(t, "stolen")) + `,"owner_id":"owner-b"}`
+	rr := env.do(t, http.MethodPost, keysPath, tokenA, body)
+	if rr.Code == http.StatusCreated {
+		t.Fatalf("a body naming another owner was accepted: %s", rr.Body.String())
+	}
+	if got := env.mustList(t, tokenB); len(got) != 0 {
+		t.Fatalf("owner-b list = %+v, want empty; the body's owner_id was believed", got)
+	}
+	if n := env.keys.count(); n != 0 {
+		t.Fatalf("stored rows = %d, want 0", n)
+	}
+
+	// The same body against owner A's own device must also not be attributed to
+	// owner B: whatever the server does with the extra field, the key it writes
+	// belongs to the token's owner.
+	body = `{"device_id":"dev-a","public_key":` +
+		strconv.Quote(ed25519Line(t, "mine")) + `,"owner_id":"owner-b"}`
+	if rr := env.do(t, http.MethodPost, keysPath, tokenA, body); rr.Code == http.StatusCreated {
+		t.Error("a body carrying owner_id was accepted; unknown fields must be refused")
+	}
+	if got := env.mustList(t, tokenB); len(got) != 0 {
+		t.Fatalf("owner-b list = %+v, want empty", got)
 	}
 }
 
