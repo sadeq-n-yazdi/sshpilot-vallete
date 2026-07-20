@@ -1,4 +1,4 @@
-package sqlite
+package postgres
 
 import (
 	"context"
@@ -15,8 +15,8 @@ import (
 const handleColumns = `id, owner_id, name, state, quarantine_until,
 flagged_for_review, quarantine_on_release, created_at, updated_at`
 
-// handleRepo is the SQLite HandleRepository. Every owner-scoped method carries
-// owner_id in its WHERE clause so a row belonging to another owner is
+// handleRepo is the PostgreSQL HandleRepository. Every owner-scoped method
+// carries owner_id in its WHERE clause so a row belonging to another owner is
 // indistinguishable from a missing row.
 type handleRepo struct {
 	e execer
@@ -35,15 +35,18 @@ func (r *handleRepo) Register(ctx context.Context, h *domain.Handle) error {
 	}
 	const q = `INSERT INTO handles (id, owner_id, name, state, quarantine_until,
 flagged_for_review, quarantine_on_release, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+	// flagged_for_review and quarantine_on_release are real BOOLEAN columns
+	// here, so the Go bools bind directly; the SQLite adapter has to encode
+	// them as 0/1 integers to satisfy its CHECK constraints.
 	_, err := r.e.ExecContext(ctx, q,
 		string(h.ID),
 		string(h.OwnerID),
 		h.Name,
 		string(h.State),
 		encNullTime(h.QuarantineUntil),
-		encBool(h.FlaggedForReview),
-		encBool(h.QuarantineOnRelease),
+		h.FlaggedForReview,
+		h.QuarantineOnRelease,
 		encTime(h.CreatedAt),
 		encTime(h.UpdatedAt),
 	)
@@ -56,28 +59,28 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
 // UNSCOPED: handle-name resolution is public; any caller may look up which
 // handle owns a name, so this method is deliberately not owner-scoped.
 func (r *handleRepo) GetByName(ctx context.Context, normalized string) (*domain.Handle, error) {
-	q := `SELECT ` + handleColumns + ` FROM handles WHERE name = ?`
+	q := `SELECT ` + handleColumns + ` FROM handles WHERE name = $1`
 	return scanHandle(r.e.QueryRowContext(ctx, q, normalized))
 }
 
 // Get returns the owner's handle with the given ID, scoped by owner_id, or
 // domain.ErrNotFound if it does not exist or belongs to another owner.
 func (r *handleRepo) Get(ctx context.Context, ownerID domain.OwnerID, id domain.HandleID) (*domain.Handle, error) {
-	q := `SELECT ` + handleColumns + ` FROM handles WHERE id = ? AND owner_id = ?`
+	q := `SELECT ` + handleColumns + ` FROM handles WHERE id = $1 AND owner_id = $2`
 	return scanHandle(r.e.QueryRowContext(ctx, q, string(id), string(ownerID)))
 }
 
 // GetActiveByOwner returns the owner's single active handle, or
 // domain.ErrNotFound if the owner has none.
 func (r *handleRepo) GetActiveByOwner(ctx context.Context, ownerID domain.OwnerID) (*domain.Handle, error) {
-	q := `SELECT ` + handleColumns + ` FROM handles WHERE owner_id = ? AND state = ?`
+	q := `SELECT ` + handleColumns + ` FROM handles WHERE owner_id = $1 AND state = $2`
 	return scanHandle(r.e.QueryRowContext(ctx, q, string(ownerID), string(domain.NameStateActive)))
 }
 
 // ListByOwner returns all of the owner's handle rows in any state, ordered by
 // creation time then id for a stable sequence.
 func (r *handleRepo) ListByOwner(ctx context.Context, ownerID domain.OwnerID) ([]domain.Handle, error) {
-	q := `SELECT ` + handleColumns + ` FROM handles WHERE owner_id = ?
+	q := `SELECT ` + handleColumns + ` FROM handles WHERE owner_id = $1
 ORDER BY created_at ASC, id ASC`
 	rows, err := r.e.QueryContext(ctx, q, string(ownerID))
 	if err != nil {
@@ -100,7 +103,7 @@ func (r *handleRepo) Update(ctx context.Context, h *domain.Handle) error {
 		return fmt.Errorf("%s: nil handle: %w", errPrefix, domain.ErrInvalidInput)
 	}
 	return withLocalTx(ctx, r.e, func(ex execer) error {
-		const sel = `SELECT name FROM handles WHERE id = ? AND owner_id = ?`
+		const sel = `SELECT name FROM handles WHERE id = $1 AND owner_id = $2`
 		var current string
 		// The owner-scoped read is the security gate: a row owned by another
 		// owner returns sql.ErrNoRows here and is reported as ErrNotFound, so
@@ -113,14 +116,14 @@ func (r *handleRepo) Update(ctx context.Context, h *domain.Handle) error {
 		}
 
 		const upd = `UPDATE handles
-SET state = ?, quarantine_until = ?, flagged_for_review = ?,
-quarantine_on_release = ?, updated_at = ?
-WHERE id = ? AND owner_id = ?`
+SET state = $1, quarantine_until = $2, flagged_for_review = $3,
+quarantine_on_release = $4, updated_at = $5
+WHERE id = $6 AND owner_id = $7`
 		res, err := ex.ExecContext(ctx, upd,
 			string(h.State),
 			encNullTime(h.QuarantineUntil),
-			encBool(h.FlaggedForReview),
-			encBool(h.QuarantineOnRelease),
+			h.FlaggedForReview,
+			h.QuarantineOnRelease,
 			encTime(h.UpdatedAt),
 			string(h.ID),
 			string(h.OwnerID),
@@ -144,8 +147,8 @@ func (r *handleRepo) ListExpiredQuarantine(ctx context.Context, now time.Time, l
 		limit = defaultPageLimit
 	}
 	q := `SELECT ` + handleColumns + ` FROM handles
-WHERE state = ? AND quarantine_until IS NOT NULL AND quarantine_until <= ?
-ORDER BY quarantine_until ASC, id ASC LIMIT ?`
+WHERE state = $1 AND quarantine_until IS NOT NULL AND quarantine_until <= $2
+ORDER BY quarantine_until ASC, id ASC LIMIT $3`
 	rows, err := r.e.QueryContext(ctx, q,
 		string(domain.NameStateQuarantined), encTime(now), limit)
 	if err != nil {
@@ -177,23 +180,21 @@ func collectHandles(rows *sql.Rows) ([]domain.Handle, error) {
 // from a *sql.Row read maps to domain.ErrNotFound via mapError.
 func scanHandle(s rowScanner) (*domain.Handle, error) {
 	var (
-		h                   domain.Handle
-		state               string
-		quarantineUntil     sql.NullString
-		flaggedForReview    int64
-		quarantineOnRelease int64
-		createdAt           string
-		updatedAt           string
+		h               domain.Handle
+		state           string
+		quarantineUntil sql.NullString
+		createdAt       string
+		updatedAt       string
 	)
+	// The two flags scan straight into bool: they are BOOLEAN columns, unlike
+	// the SQLite adapter's 0/1 INTEGERs which need an int64 hop.
 	if err := s.Scan(
 		&h.ID, &h.OwnerID, &h.Name, &state, &quarantineUntil,
-		&flaggedForReview, &quarantineOnRelease, &createdAt, &updatedAt,
+		&h.FlaggedForReview, &h.QuarantineOnRelease, &createdAt, &updatedAt,
 	); err != nil {
 		return nil, mapError(err)
 	}
 	h.State = domain.NameState(state)
-	h.FlaggedForReview = flaggedForReview != 0
-	h.QuarantineOnRelease = quarantineOnRelease != 0
 
 	var err error
 	if h.QuarantineUntil, err = decNullTime(quarantineUntil); err != nil {
@@ -206,14 +207,4 @@ func scanHandle(s rowScanner) (*domain.Handle, error) {
 		return nil, err
 	}
 	return &h, nil
-}
-
-// encBool encodes a Go bool as the SQLite 0/1 INTEGER the schema's CHECK
-// constraints require, keeping storage explicit rather than relying on driver
-// bool coercion.
-func encBool(b bool) int64 {
-	if b {
-		return 1
-	}
-	return 0
 }
