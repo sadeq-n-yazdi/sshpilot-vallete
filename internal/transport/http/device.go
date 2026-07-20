@@ -10,7 +10,6 @@ import (
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/device"
 )
 
 // DeviceService is the device management dependency, declared at the point of
@@ -235,7 +234,13 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, into any, limit in
 // Everything else -> 500 with the reason logged and never returned.
 func writeDeviceError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error, msg string) {
 	switch {
-	case errors.Is(err, device.ErrNotFound):
+	// Matched on the DOMAIN sentinel rather than device.ErrNotFound, which
+	// wraps it. Both are caught either way, and an unmapped domain.ErrNotFound
+	// reaching here answers 404 instead of falling through to 500. That
+	// fallthrough was the real hazard: this surface answers a uniform 404 so a
+	// stranger's row is indistinguishable from a missing one, and a 500 on one
+	// of those paths would be the difference an observer needs.
+	case errors.Is(err, domain.ErrNotFound):
 		writeDeviceStatus(w, http.StatusNotFound)
 	case errors.Is(err, domain.ErrBlockedName):
 		// A blocked name is a client error, not a server fault: without this
