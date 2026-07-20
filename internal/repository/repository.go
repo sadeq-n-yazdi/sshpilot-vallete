@@ -71,6 +71,7 @@ type Repos struct {
 	LinkedIdentities   LinkedIdentityRepository
 	Audit              AuditRepository
 	Admins             AdministratorRepository
+	OwnerSalts         OwnerSaltRepository
 }
 
 // Store is the unit-of-work root. It hands out repositories for direct

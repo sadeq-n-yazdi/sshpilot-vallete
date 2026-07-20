@@ -18,16 +18,16 @@ const auditColumns = `id, actor_type, actor_id, action, target_type, target_id, 
 
 // auditRepo is the SQLite audit log adapter.
 //
-// It implements exactly the append-and-read surface: Append, Get, and List.
-// There is deliberately no Update and no Delete method here, and their absence
-// is the security property, not an oversight or an unfinished stub. An attacker
-// who reaches this type cannot quietly rewrite or erase history through it,
-// because the capability to do so does not exist on the type. Controlled
-// deletion (retention purge) and controlled rewriting (pseudonymization for
-// crypto-erasure) are specified by ADR-0024 as deliberate, separately reviewed
-// system-maintenance capabilities; they are declared on
-// repository.AuditRepository and are added to this type by that later work, so
-// that granting those powers is an explicit, reviewable act.
+// It implements the append-and-read surface (Append, Get, List) plus exactly
+// two ADR-0024 system-maintenance operations: PurgeOlderThan for retention and
+// Pseudonymize for crypto-erasure. There is deliberately no general Update and
+// no general Delete, and their absence is the security property. The two
+// maintenance methods are narrow by construction rather than by convention:
+// PurgeOlderThan can only remove a whole row that is already older than a
+// caller-supplied cutoff, and Pseudonymize can only overwrite the two identity
+// columns. Neither can alter the substance of a surviving record — its action,
+// its timestamp, or its actor/target kinds — so neither can be turned into a
+// tool for forging or doctoring history. See the per-method notes for why.
 //
 // Unlike every other repository in this package, auditRepo is not owner-scoped.
 // The audit log is a cross-owner system record: its actors may be an
@@ -38,14 +38,19 @@ type auditRepo struct {
 	e execer
 }
 
-// Compile-time assertion that auditRepo satisfies the insert-only appender.
+// Compile-time assertions that auditRepo satisfies both the insert-only
+// appender and the full maintenance port.
 //
-// It is deliberately NOT asserted against repository.AuditRepository: that
-// interface also declares PurgeOlderThan and Pseudonymize, and asserting it
-// here would force this type to grow a delete and a rewrite path as a side
-// effect of a compile check. Request-path services take an AuditAppender, which
-// by construction cannot read, rewrite, or delete audit content.
-var _ repository.AuditAppender = (*auditRepo)(nil)
+// Both are asserted deliberately. The AuditAppender assertion is the load
+// bearing one for the request path: Store.AuditAppender hands out this type
+// behind that narrow interface, so a service that emits events cannot reach
+// Get, List, PurgeOlderThan, or Pseudonymize even though the concrete type has
+// them. Capability is restricted by the interface a caller is given, not by
+// what the adapter can do.
+var (
+	_ repository.AuditAppender   = (*auditRepo)(nil)
+	_ repository.AuditRepository = (*auditRepo)(nil)
+)
 
 // Append inserts a fully populated audit record exactly as given. Per the
 // repository convention the caller supplies the ID and OccurredAt; this method
@@ -298,4 +303,204 @@ func scanAuditRecord(s rowScanner) (*domain.AuditRecord, error) {
 		return nil, err
 	}
 	return &rec, nil
+}
+
+// maxPseudonymizeBatch bounds how many IDs are bound into a single UPDATE.
+// Each ID is bound twice (once against actor_id, once against target_id), so a
+// batch of this size stays well inside SQLite's default limit of 32766 bound
+// variables per statement. Callers pass whole owner ID sets without having to
+// know that limit.
+const maxPseudonymizeBatch = 400
+
+// PurgeOlderThan deletes up to limit records whose occurred_at is at or before
+// cutoff and returns the number deleted.
+//
+// The cutoff is INCLUSIVE, matching the port contract ("at or before cutoff").
+// A record whose timestamp is even one nanosecond after cutoff is out of scope
+// and survives. This direction is the one that matters: an off-by-one that
+// deleted newer records would silently destroy evidence, so the comparison is
+// pinned by boundary tests on both sides of the cutoff.
+//
+// Deletion is bounded by limit so that purging a large backlog runs as a
+// sequence of short transactions rather than one long one that holds a write
+// lock over the whole table. The returned count is how the caller drives that
+// loop: a count equal to limit means the batch was filled and more may remain,
+// a smaller count means the backlog is drained. This method performs exactly
+// one batch and never loops internally, so the caller keeps control of pacing
+// and cancellation.
+//
+// Rows are selected oldest-first so repeated batches make monotonic progress
+// from the back of the log rather than nibbling at an arbitrary middle.
+//
+// Zero rows deleted is a normal outcome (nothing was old enough), not an error,
+// so this method deliberately does not use requireAffected.
+//
+// UNSCOPED: retention is a system-maintenance sweep across all records; the
+// audit log carries no owner column to scope by.
+func (r *auditRepo) PurgeOlderThan(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	// A non-positive limit has no safe interpretation. Treating it as
+	// "unbounded" would turn a caller's zero value into a full-table delete,
+	// which is precisely the accident this API's batching exists to prevent, so
+	// it is rejected as invalid input instead.
+	if limit <= 0 {
+		return 0, fmt.Errorf("%s: purge limit must be positive: %w", errPrefix, domain.ErrInvalidInput)
+	}
+
+	// DELETE ... LIMIT is not available: it requires a SQLite build flag this
+	// driver does not set, and PostgreSQL has no such form at all. The
+	// portable equivalent is to delete the rows named by a bounded subquery,
+	// which is also what makes the oldest-first ordering explicit.
+	const q = `DELETE FROM audit_records WHERE id IN (
+	SELECT id FROM audit_records WHERE occurred_at <= ? ORDER BY occurred_at, id LIMIT ?
+)`
+	res, err := r.e.ExecContext(ctx, q, encTime(cutoff), limit)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return n, nil
+}
+
+// Pseudonymize replaces every occurrence of the given IDs in the actor_id and
+// target_id columns with pseudonym, marks the affected rows pseudonymized, and
+// returns the number of rows rewritten.
+//
+// # What this can and cannot touch
+//
+// The UPDATE sets exactly three columns: actor_id, target_id, and the
+// pseudonymized flag. It cannot reach action, occurred_at, actor_type, or
+// target_type. That is the anti-forgery property stated on the type: this
+// method removes WHO an event was about while leaving WHAT happened and WHEN
+// byte-identical, so a surviving record still proves the event. There is no
+// input to this method that alters the substance of history.
+//
+// # Idempotence
+//
+// The match is on the ORIGINAL IDs, and the new value is a constant supplied by
+// the caller. A second run with the same arguments matches nothing, because
+// those IDs no longer appear in the table, and returns 0. The pseudonym is
+// never derived from the column's current value, so there is no way for a
+// repeated run to double-hash a tombstone or to resurrect a prior value.
+//
+// The WHERE clause is deliberately NOT gated on pseudonymized = 0. A single
+// record can name two different subjects — an administrator actor acting on an
+// owner target, for instance — and each subject's erasure must be able to
+// rewrite its own column independently. A flag gate would let the first
+// erasure lock out the second, leaving a real identity standing in a row that
+// already claims to be pseudonymized.
+//
+// UNSCOPED: as for PurgeOlderThan, records are identified by their polymorphic
+// IDs, not by an owner scope.
+func (r *auditRepo) Pseudonymize(ctx context.Context, ids []string, pseudonym string) (int64, error) {
+	// An empty pseudonym is refused: it is not a tombstone, it would erase the
+	// identity without leaving anything that links the record to the erasure,
+	// and a later run could match "" and sweep in unrelated rows.
+	if pseudonym == "" {
+		return 0, fmt.Errorf("%s: empty pseudonym: %w", errPrefix, domain.ErrInvalidInput)
+	}
+	// An empty ID in the input is refused rather than skipped. actor_id is a
+	// plain NOT NULL string that may legitimately be empty for a system actor,
+	// so binding "" would match every such record and rewrite identities that
+	// were never in scope for this erasure. Failing loudly beats silently
+	// over-erasing.
+	for _, id := range ids {
+		if id == "" {
+			return 0, fmt.Errorf("%s: empty id in pseudonymize set: %w", errPrefix, domain.ErrInvalidInput)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	// All batches commit together: a partial erasure that left some of an
+	// owner's IDs in the clear would be a silent privacy failure, so the whole
+	// set is atomic.
+	var total int64
+	err := withLocalTx(ctx, r.e, func(e execer) error {
+		for start := 0; start < len(ids); start += maxPseudonymizeBatch {
+			end := min(start+maxPseudonymizeBatch, len(ids))
+			n, err := pseudonymizeBatch(ctx, e, ids[start:end], pseudonym)
+			if err != nil {
+				return err
+			}
+			total += n
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+// pseudonymizeBatch rewrites one bounded chunk of IDs. Every ID is bound as a
+// parameter; only the placeholder count is built from the input length, so no
+// caller-supplied text is ever concatenated into the SQL.
+func pseudonymizeBatch(ctx context.Context, e execer, ids []string, pseudonym string) (int64, error) {
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(ids)), ", ")
+
+	// CASE-per-column so that a row matched on only one of the two columns has
+	// only that column rewritten. A blanket assignment of both columns would
+	// erase a bystander identity that happens to share a record with the
+	// subject being erased.
+	q := `UPDATE audit_records SET
+	actor_id = CASE WHEN actor_id IN (` + placeholders + `) THEN ? ELSE actor_id END,
+	target_id = CASE WHEN target_id IN (` + placeholders + `) THEN ? ELSE target_id END,
+	pseudonymized = 1
+WHERE actor_id IN (` + placeholders + `) OR target_id IN (` + placeholders + `)`
+
+	args := make([]any, 0, 4*len(ids)+2)
+	bind := func() {
+		for _, id := range ids {
+			args = append(args, id)
+		}
+	}
+	bind()
+	args = append(args, pseudonym)
+	bind()
+	args = append(args, pseudonym)
+	bind()
+	bind()
+
+	res, err := e.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, mapError(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, mapError(err)
+	}
+	return n, nil
+}
+
+// auditAppenderOnly is the wrapper that makes the request-path sink insert-only
+// at the TYPE level, not merely at the interface level.
+//
+// Returning *auditRepo directly as a repository.AuditAppender would be unsafe
+// once that type gained PurgeOlderThan and Pseudonymize: any holder of the
+// narrow interface could recover the full capability with a single unchecked
+// type assertion —
+//
+//	if full, ok := appender.(repository.AuditRepository); ok { full.PurgeOlderThan(...) }
+//
+// — which the compiler cannot flag, because a type assertion to a wider
+// interface is legal on any interface value. Restricting capability by handing
+// out a narrow interface only works when the dynamic value behind it is also
+// narrow. This struct embeds nothing and forwards exactly one method, so the
+// assertion above fails: the purge and rewrite powers are not reachable from
+// the sink at all.
+type auditAppenderOnly struct {
+	r *auditRepo
+}
+
+// Compile-time assertion that the wrapper satisfies the insert-only port.
+var _ repository.AuditAppender = auditAppenderOnly{}
+
+// Append forwards to the underlying adapter. It is the only method on this
+// type, and that is the point.
+func (a auditAppenderOnly) Append(ctx context.Context, rec *domain.AuditRecord) error {
+	return a.r.Append(ctx, rec)
 }
