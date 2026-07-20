@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,24 @@ func TestNewCertProviderReturnsNilInterfaceOnError(t *testing.T) {
 		// the error it must fail with.
 		setup   func(t *testing.T, dir string) *config.Config
 		wantErr error
+		// wantMsg is a substring identifying WHICH branch refused, for rows
+		// whose sentinel cannot say.
+		//
+		// ErrTLSModeUnsupported is returned from four distinct branches: the
+		// tls.mode default, the acme solver default, the unsupported dns
+		// provider, and the dns mode default. errors.Is therefore cannot tell
+		// them apart, and a row whose config starts failing at a DIFFERENT one
+		// of the four keeps passing while no longer testing the branch it was
+		// written for. That is not hypothetical: the row that used to name
+		// dns_01 as the unimplemented solver migrated exactly this way when
+		// dns_01 was implemented -- it began failing at the dns-mode default
+		// and stayed green, asserting nothing about the solver default.
+		//
+		// Each site's message carries a unique discriminator ("acme solver",
+		// "acme dns mode", "dns provider", or the bare quoted mode), so pinning
+		// it turns a silent migration into a loud failure. This is NOT redundant
+		// belt-and-braces on the sentinel; deleting it restores the trap.
+		wantMsg string
 	}{
 		{
 			// The refusal is the production guard, reached without any I/O.
@@ -116,6 +135,11 @@ func TestNewCertProviderReturnsNilInterfaceOnError(t *testing.T) {
 				return cfg
 			},
 			wantErr: ErrTLSModeUnsupported,
+			// Pins the SOLVER default. Without this the row inherits the trap
+			// that caught its dns_01 predecessor: implement HTTP-01 with its own
+			// sub-dispatch that refuses unset config with the same sentinel, and
+			// this row migrates there and keeps passing.
+			wantMsg: "acme solver",
 		},
 		{
 			// The dns_01 branch is a SECOND source of the typed nil: it calls
@@ -160,6 +184,10 @@ func TestNewCertProviderReturnsNilInterfaceOnError(t *testing.T) {
 				return cfg
 			},
 			wantErr: ErrTLSModeUnsupported,
+			// The tls.mode default renders the mode bare and quoted; every other
+			// site prefixes its own discriminator, so a migration would drop
+			// this substring.
+			wantMsg: `"upstream"`,
 		},
 	}
 
@@ -178,6 +206,12 @@ func TestNewCertProviderReturnsNilInterfaceOnError(t *testing.T) {
 			}
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("newCertProvider(%q) error = %v, want %v", cfg.TLS.Mode, err, tc.wantErr)
+			}
+			// The sentinel alone cannot say which branch refused; see wantMsg.
+			if tc.wantMsg != "" && !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Fatalf("newCertProvider(%q) error = %v, want it to name %q: the row is "+
+					"failing at a different branch than the one it was written for",
+					cfg.TLS.Mode, err, tc.wantMsg)
 			}
 
 			// The assertion under test. A typed nil makes this comparison
