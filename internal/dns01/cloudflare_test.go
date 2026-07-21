@@ -55,7 +55,7 @@ func newCloudflareAPI(t *testing.T) (*cloudflareAPI, Provider) {
 	srv := httptest.NewServer(api)
 	t.Cleanup(srv.Close)
 
-	provider, err := NewCloudflare(secrets.NewRedacted(testToken), srv.Client())
+	provider, err := NewCloudflare(NewSingleCredential(secrets.NewRedacted(testToken)), srv.Client())
 	if err != nil {
 		t.Fatalf("NewCloudflare: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 func TestCloudflareRefusesAnEmptyToken(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewCloudflare(secrets.NewRedacted(""), nil); !errors.Is(err, ErrCloudflareAPI) {
+	if _, err := NewCloudflare(NewSingleCredential(secrets.NewRedacted("")), nil); !errors.Is(err, ErrCloudflareAPI) {
 		t.Errorf("NewCloudflare with an empty token: %v, want ErrCloudflareAPI", err)
 	}
 }
@@ -349,7 +349,7 @@ func TestUnsupportedProviderIsRefused(t *testing.T) {
 	// correct name in the wrong case. Matching is exact, so "CLOUDFLARE" and
 	// "ROUTE53" are refusals rather than case-insensitive hits.
 	for _, name := range []string{"ovh", "rfc2136", "", "CLOUDFLARE", "ROUTE53"} {
-		if _, err := NewAPIProvider(name, secrets.NewRedacted(testToken), nil); !errors.Is(err, ErrUnsupportedProvider) {
+		if _, err := NewAPIProvider(name, NewSingleCredential(secrets.NewRedacted(testToken)), nil); !errors.Is(err, ErrUnsupportedProvider) {
 			t.Errorf("NewAPIProvider(%q) = %v, want ErrUnsupportedProvider", name, err)
 		}
 	}
@@ -431,7 +431,7 @@ func TestCloudflareZoneLookupEscapesTheNameParameter(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	provider, err := NewCloudflare(secrets.NewRedacted(testToken), srv.Client())
+	provider, err := NewCloudflare(NewSingleCredential(secrets.NewRedacted(testToken)), srv.Client())
 	if err != nil {
 		t.Fatalf("NewCloudflare: %v", err)
 	}

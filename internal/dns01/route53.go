@@ -131,12 +131,22 @@ type route53Provider struct {
 
 var _ Provider = (*route53Provider)(nil)
 
-// NewRoute53 builds the provider from a packed "keyID:secret" credential.
+// NewRoute53 builds the provider from the credential set.
+//
+// Route 53 needs two values. The named form supplies them as access_key_id and
+// secret_access_key; the back-compat single form supplies them colon-packed as
+// "ACCESS_KEY_ID:SECRET_ACCESS_KEY". Both are normalized to the packed shape by
+// route53Credential, so the provider keeps exactly one stored value and one
+// unwrap site (do), which is the custody model the type comment describes.
 //
 // A nil client gets a bounded default; the parameter exists so a test can
 // supply a transport pointed at a local fake and so an operator's proxy
 // settings can be honored later.
-func NewRoute53(credential secrets.Redacted, client *http.Client) (Provider, error) {
+func NewRoute53(creds Credentials, client *http.Client) (Provider, error) {
+	credential, err := route53Credential(creds)
+	if err != nil {
+		return nil, err
+	}
 	// Parsed once at construction so a malformed credential fails at startup,
 	// where the operator sees it, rather than at the first renewal months
 	// later. The parsed halves are deliberately NOT stored — only the check
@@ -159,6 +169,43 @@ func NewRoute53(credential secrets.Redacted, client *http.Client) (Provider, err
 		}
 	}
 	return &route53Provider{credential: credential, client: client, now: time.Now}, nil
+}
+
+// route53Credential normalizes the credential set into the single packed
+// "ACCESS_KEY_ID:SECRET_ACCESS_KEY" form the provider stores and splits at
+// signing time.
+//
+// Precedence is explicit rather than a fall-through, because a lenient fallback
+// here would be a security bug:
+//
+//   - Both named halves present -> use them. They are packed with a colon
+//     through secrets.Join so the one downstream unwrap site (splitAWSCredential
+//     in do) is unchanged and this file keeps no Reveal of its own. AWS
+//     access-key IDs and secrets do not contain a colon, so the repack is
+//     unambiguous; an id that does contain one is operator error that fails
+//     visibly at AWS, never a silent cross-credential mix.
+//   - Exactly one named half present -> REFUSE. The missing half cannot be
+//     inferred, and colon-splitting a lone access_key_id would tear an operator
+//     value into the wrong parts. The error names neither half.
+//   - Neither named half -> fall back to the single packed reference via
+//     Single(). An empty set yields ok=false and is refused.
+func route53Credential(creds Credentials) (secrets.Redacted, error) {
+	id, idOK := creds.Get("access_key_id")
+	secret, secretOK := creds.Get("secret_access_key")
+
+	switch {
+	case idOK && secretOK:
+		return secrets.Join(":", id, secret), nil
+	case idOK != secretOK:
+		return "", fmt.Errorf(
+			"%w: named credentials need both access_key_id and secret_access_key", ErrRoute53API)
+	default:
+		packed, ok := creds.Single()
+		if !ok {
+			return "", fmt.Errorf("%w: no credential supplied", ErrRoute53API)
+		}
+		return packed, nil
+	}
 }
 
 // splitAWSCredential parses the packed credential.

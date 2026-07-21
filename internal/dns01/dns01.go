@@ -27,8 +27,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
 // ErrUnsupportedProvider is returned by [NewAPIProvider] for a provider name
@@ -136,22 +134,25 @@ type Provider interface {
 // solver, the ACME flow or the config schema changes. That is the property the
 // per-provider tasks depend on.
 //
-// The credential arrives already resolved through the secret provider and
-// already wrapped, so no caller of this package ever holds it in plain form.
-func NewAPIProvider(name string, credential secrets.Redacted, client *http.Client) (Provider, error) {
+// The credentials arrive already resolved through the secret provider and
+// already wrapped in a [Credentials] set, so no caller of this package ever
+// holds a value in plain form. A single-value provider reads its one value
+// through Credentials.Single; a multi-value provider (Route 53) reads each by
+// name. An empty set fails closed at the provider constructor.
+func NewAPIProvider(name string, creds Credentials, client *http.Client) (Provider, error) {
 	switch name {
 	case "cloudflare":
-		return NewCloudflare(credential, client)
+		return NewCloudflare(creds, client)
 	case "route53":
-		return NewRoute53(credential, client)
+		return NewRoute53(creds, client)
 	case "digitalocean":
-		return NewDigitalOcean(credential, client)
+		return NewDigitalOcean(creds, client)
 	case "dnsimple":
-		return NewDNSimple(credential, client)
+		return NewDNSimple(creds, client)
 	case "gandi":
-		return NewGandi(credential, client)
+		return NewGandi(creds, client)
 	case "arvancloud":
-		return NewArvanCloud(credential, client)
+		return NewArvanCloud(creds, client)
 	default:
 		// The provider NAME is echoed because it came from the operator's own
 		// config file and is the diagnostic. The credential is not touched.

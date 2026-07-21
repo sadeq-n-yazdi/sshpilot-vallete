@@ -91,7 +91,7 @@ func newDNSimpleAPI(t *testing.T) (*dnsimpleAPI, Provider) {
 	srv := httptest.NewServer(api)
 	t.Cleanup(srv.Close)
 
-	provider, err := NewDNSimple(secrets.NewRedacted(dsTestToken), srv.Client())
+	provider, err := NewDNSimple(NewSingleCredential(secrets.NewRedacted(dsTestToken)), srv.Client())
 	if err != nil {
 		t.Fatalf("NewDNSimple: %v", err)
 	}
@@ -872,10 +872,10 @@ func TestDNSimpleRefusesAMalformedZoneCandidate(t *testing.T) {
 }
 
 func TestDNSimpleMissingCredentialRefused(t *testing.T) {
-	if _, err := NewDNSimple(secrets.NewRedacted(""), nil); err == nil {
+	if _, err := NewDNSimple(NewSingleCredential(secrets.NewRedacted("")), nil); err == nil {
 		t.Error("NewDNSimple with an empty token succeeded, want a refusal at construction")
 	}
-	if _, err := NewDNSimple(secrets.NewRedacted(dsTestToken), nil); err != nil {
+	if _, err := NewDNSimple(NewSingleCredential(secrets.NewRedacted(dsTestToken)), nil); err != nil {
 		t.Errorf("NewDNSimple with a token: %v", err)
 	}
 }
@@ -920,7 +920,7 @@ func TestDNSimpleRecordNameUsesTheEmptyApexEncoding(t *testing.T) {
 // secrets.Redacted's redaction methods, so without Format on the containing type
 // "%+v" prints the bearer token in full.
 func TestDNSimpleProviderNeverFormatsItsToken(t *testing.T) {
-	provider, err := NewDNSimple(secrets.NewRedacted(dsTestToken), nil)
+	provider, err := NewDNSimple(NewSingleCredential(secrets.NewRedacted(dsTestToken)), nil)
 	if err != nil {
 		t.Fatalf("NewDNSimple: %v", err)
 	}
@@ -932,7 +932,7 @@ func TestDNSimpleProviderNeverFormatsItsToken(t *testing.T) {
 }
 
 func TestNewAPIProviderBuildsDNSimple(t *testing.T) {
-	provider, err := NewAPIProvider("dnsimple", secrets.NewRedacted(dsTestToken), nil)
+	provider, err := NewAPIProvider("dnsimple", NewSingleCredential(secrets.NewRedacted(dsTestToken)), nil)
 	if err != nil {
 		t.Fatalf("NewAPIProvider: %v", err)
 	}

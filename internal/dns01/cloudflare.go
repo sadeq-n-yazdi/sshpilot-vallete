@@ -89,7 +89,14 @@ var _ Provider = (*cloudflareProvider)(nil)
 // NewCloudflare builds the provider. A nil client gets a bounded default; the
 // parameter exists so a test can supply a transport pointed at a local fake and
 // so an operator's proxy settings can be honored later.
-func NewCloudflare(token secrets.Redacted, client *http.Client) (Provider, error) {
+func NewCloudflare(creds Credentials, client *http.Client) (Provider, error) {
+	// Cloudflare authenticates with one value; an empty set (or one carrying
+	// several values with no lone one) yields ok=false and is refused rather
+	// than guessed at. Fail closed.
+	token, ok := creds.Single()
+	if !ok {
+		return nil, fmt.Errorf("%w: no api token credential", ErrCloudflareAPI)
+	}
 	// A whitespace-only token is refused as firmly as an empty one: it is not a
 	// credential, and accepting it would send "Bearer    " and learn nothing
 	// until Cloudflare rejected the first challenge. IsBlank answers this

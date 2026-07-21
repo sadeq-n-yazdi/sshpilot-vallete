@@ -65,7 +65,7 @@ func TestAPIProvidersRejectBlankCredential(t *testing.T) {
 				t.Run(tc.name, func(t *testing.T) {
 					t.Parallel()
 
-					p, err := NewAPIProvider(prov.name, secrets.Redacted(tc.value), nil)
+					p, err := NewAPIProvider(prov.name, NewSingleCredential(secrets.Redacted(tc.value)), nil)
 					if !errors.Is(err, prov.want) {
 						t.Fatalf("err = %v, want %v", err, prov.want)
 					}
@@ -108,7 +108,7 @@ func TestRoute53RejectsBlankCredentialHalves(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := NewAPIProvider("route53", secrets.Redacted(tt.credential), nil)
+			p, err := NewAPIProvider("route53", NewSingleCredential(secrets.Redacted(tt.credential)), nil)
 			if !errors.Is(err, ErrRoute53API) {
 				t.Fatalf("err = %v, want ErrRoute53API", err)
 			}
@@ -145,7 +145,7 @@ func TestAPIProvidersAcceptCredentialWithSurroundingWhitespace(t *testing.T) {
 		t.Run(tt.provider, func(t *testing.T) {
 			t.Parallel()
 
-			p, err := NewAPIProvider(tt.provider, secrets.Redacted(tt.credential), nil)
+			p, err := NewAPIProvider(tt.provider, NewSingleCredential(secrets.Redacted(tt.credential)), nil)
 			if err != nil {
 				t.Fatalf("a non-blank credential must build a provider: %v", err)
 			}

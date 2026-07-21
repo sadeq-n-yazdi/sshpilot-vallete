@@ -27,6 +27,23 @@ func NewRedacted(value string) Redacted { return Redacted(value) }
 // Redacted; callers must treat the result as sensitive and never log it.
 func (r Redacted) Reveal() string { return string(r) }
 
+// Join composes several resolved secrets into one Redacted, separated by sep.
+//
+// It exists so a provider whose credential is assembled from several separately
+// resolved parts — Route 53's access-key id and secret — can build its stored
+// form WITHOUT a Reveal in the provider package. The plaintext exists only
+// transiently inside this function and the result is a Redacted like any other,
+// redacted through every fmt/log/json/yaml path. Keeping this reveal here, in
+// the package that owns redaction, is what lets each provider file keep its
+// single documented unwrap site.
+func Join(sep string, parts ...Redacted) Redacted {
+	raw := make([]string, len(parts))
+	for i, p := range parts {
+		raw[i] = p.Reveal()
+	}
+	return Redacted(strings.Join(raw, sep))
+}
+
 // IsBlank reports whether the secret is empty or consists only of whitespace.
 //
 // A blank value is not a credential. It carries no authentication material, so

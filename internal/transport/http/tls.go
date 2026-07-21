@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
@@ -334,11 +335,11 @@ func newDNSProvider(ctx context.Context, cfg *config.Config, logger *slog.Logger
 	case "manual":
 		return dns01.NewManualProvider(logger), nil
 	case "api":
-		credential, err := resolveDNSCredential(ctx, cfg)
+		creds, err := resolveDNSCredentials(ctx, cfg)
 		if err != nil {
 			return nil, err
 		}
-		provider, err := dns01.NewAPIProvider(d.Provider, credential, nil)
+		provider, err := dns01.NewAPIProvider(d.Provider, creds, nil)
 		if err != nil {
 			// Mapped onto the transport's existing unsupported-mode sentinel so
 			// an operator naming a provider this build does not implement gets
@@ -356,20 +357,26 @@ func newDNSProvider(ctx context.Context, cfg *config.Config, logger *slog.Logger
 	}
 }
 
-// resolveDNSCredential pulls the DNS API credential through the secret
-// provider (ADR-0015 §3, ADR-0022).
+// resolveDNSCredentials pulls the DNS API credential(s) through the secret
+// provider (ADR-0015 §3, ADR-0022) into a [dns01.Credentials] set.
 //
-// The credential is never read from a config string: tls.acme.dns
-// .credentials_ref holds a REFERENCE like "env:VALLET_DNS_CREDENTIALS", and the
-// value it names is resolved here into a [secrets.Redacted] that renders as the
-// redaction marker through every fmt, log, JSON and YAML path. Nothing between
-// this function and the outbound Authorization header ever holds it in plain
-// form.
+// A credential is never read from a config string: tls.acme.dns.credentials_ref
+// (or each value of tls.acme.dns.credentials_refs) holds a REFERENCE like
+// "env:VALLET_DNS_CREDENTIALS", and the value it names is resolved here into a
+// [secrets.Redacted] that renders as the redaction marker through every fmt,
+// log, JSON and YAML path. Nothing between this function and the outbound
+// Authorization header ever holds it in plain form.
+//
+// Each reference is resolved EXACTLY ONCE and threaded down into the set: the
+// single ref and the named refs are mutually exclusive (config validation
+// refuses both), so there is one resolution per credential and no double
+// resolve (issue #65). The named refs are resolved in sorted key order so a
+// failure is reported deterministically.
 //
 // The file provider's permission mode is strict outside development: a
 // credential file readable by another local account may already have been
 // copied, and a zone-editing token that has leaked is not one to keep using.
-func resolveDNSCredential(ctx context.Context, cfg *config.Config) (secrets.Redacted, error) {
+func resolveDNSCredentials(ctx context.Context, cfg *config.Config) (dns01.Credentials, error) {
 	permMode := secrets.PermError
 	if cfg.Server.Environment != "production" {
 		permMode = secrets.PermWarn
@@ -377,17 +384,36 @@ func resolveDNSCredential(ctx context.Context, cfg *config.Config) (secrets.Reda
 
 	resolver, err := secrets.NewResolver(secrets.Builtin(secrets.FileOptions{PermMode: permMode})...)
 	if err != nil {
-		return "", fmt.Errorf("%w: build secret resolver: %w", ErrTLSCertificateInvalid, err)
+		return dns01.Credentials{}, fmt.Errorf("%w: build secret resolver: %w", ErrTLSCertificateInvalid, err)
 	}
 
-	credential, err := resolver.Resolve(ctx, cfg.TLS.ACME.DNS.CredentialsRef)
-	if err != nil {
-		// The resolver's error names the reference in redacted form and never
-		// the value, so it is safe to wrap and return to a caller that will log
-		// it as a startup failure.
-		return "", fmt.Errorf("%w: tls.acme.dns.credentials_ref: %w", ErrTLSCertificateInvalid, err)
+	d := cfg.TLS.ACME.DNS
+	if len(d.CredentialsRefs) > 0 {
+		names := make([]string, 0, len(d.CredentialsRefs))
+		for name := range d.CredentialsRefs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		named := make(map[string]secrets.Redacted, len(d.CredentialsRefs))
+		for _, name := range names {
+			val, err := resolver.Resolve(ctx, d.CredentialsRefs[name])
+			if err != nil {
+				// The resolver's error names the reference in redacted form and
+				// never the value, so it is safe to wrap into a startup failure.
+				return dns01.Credentials{}, fmt.Errorf(
+					"%w: tls.acme.dns.credentials_refs.%s: %w", ErrTLSCertificateInvalid, name, err)
+			}
+			named[name] = val
+		}
+		return dns01.NewNamedCredentials(named), nil
 	}
-	return credential, nil
+
+	credential, err := resolver.Resolve(ctx, d.CredentialsRef)
+	if err != nil {
+		return dns01.Credentials{}, fmt.Errorf("%w: tls.acme.dns.credentials_ref: %w", ErrTLSCertificateInvalid, err)
+	}
+	return dns01.NewSingleCredential(credential), nil
 }
 
 // tls12CipherSuites is the allowlist of TLS 1.2 cipher suites the server will

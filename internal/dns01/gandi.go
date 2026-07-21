@@ -124,7 +124,13 @@ var _ Provider = (*gandiProvider)(nil)
 // NewGandi builds the provider. A nil client gets a bounded default; the
 // parameter exists so a test can supply a transport pointed at a local fake and
 // so an operator's proxy settings can be honored later.
-func NewGandi(token secrets.Redacted, client *http.Client) (Provider, error) {
+func NewGandi(creds Credentials, client *http.Client) (Provider, error) {
+	// One value authenticates Gandi; an empty or multi-value set yields
+	// ok=false and is refused rather than guessed at. Fail closed.
+	token, ok := creds.Single()
+	if !ok {
+		return nil, fmt.Errorf("%w: no api token credential", ErrGandiAPI)
+	}
 	// The blank check asks the WRAPPED value rather than revealing it, exactly as
 	// the Cloudflare, DigitalOcean and DNSimple constructors do, so this file
 	// keeps a single plaintext-unwrap site. Whitespace-only counts as blank: it

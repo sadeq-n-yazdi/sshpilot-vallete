@@ -72,7 +72,7 @@ func newDigitalOceanAPI(t *testing.T) (*digitalOceanAPI, Provider) {
 	srv := httptest.NewServer(api)
 	t.Cleanup(srv.Close)
 
-	provider, err := NewDigitalOcean(secrets.NewRedacted(doTestToken), srv.Client())
+	provider, err := NewDigitalOcean(NewSingleCredential(secrets.NewRedacted(doTestToken)), srv.Client())
 	if err != nil {
 		t.Fatalf("NewDigitalOcean: %v", err)
 	}
@@ -501,10 +501,10 @@ func TestDigitalOceanPrefersTheMostSpecificDomain(t *testing.T) {
 }
 
 func TestDigitalOceanMissingCredentialRefused(t *testing.T) {
-	if _, err := NewDigitalOcean(secrets.NewRedacted(""), nil); err == nil {
+	if _, err := NewDigitalOcean(NewSingleCredential(secrets.NewRedacted("")), nil); err == nil {
 		t.Error("NewDigitalOcean with an empty token succeeded, want a refusal at construction")
 	}
-	if _, err := NewDigitalOcean(secrets.NewRedacted(doTestToken), nil); err != nil {
+	if _, err := NewDigitalOcean(NewSingleCredential(secrets.NewRedacted(doTestToken)), nil); err != nil {
 		t.Errorf("NewDigitalOcean with a token: %v", err)
 	}
 }
@@ -549,7 +549,7 @@ func TestRelativeRecordNameRejectsNamesOutsideTheDomain(t *testing.T) {
 // secrets.Redacted's redaction methods, so without Format on the containing type
 // "%+v" prints the bearer token in full.
 func TestDigitalOceanProviderNeverFormatsItsToken(t *testing.T) {
-	provider, err := NewDigitalOcean(secrets.NewRedacted(doTestToken), nil)
+	provider, err := NewDigitalOcean(NewSingleCredential(secrets.NewRedacted(doTestToken)), nil)
 	if err != nil {
 		t.Fatalf("NewDigitalOcean: %v", err)
 	}
@@ -561,7 +561,7 @@ func TestDigitalOceanProviderNeverFormatsItsToken(t *testing.T) {
 }
 
 func TestNewAPIProviderBuildsDigitalOcean(t *testing.T) {
-	provider, err := NewAPIProvider("digitalocean", secrets.NewRedacted(doTestToken), nil)
+	provider, err := NewAPIProvider("digitalocean", NewSingleCredential(secrets.NewRedacted(doTestToken)), nil)
 	if err != nil {
 		t.Fatalf("NewAPIProvider: %v", err)
 	}
