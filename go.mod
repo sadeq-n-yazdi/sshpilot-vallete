@@ -14,6 +14,7 @@ go 1.26
 toolchain go1.26.5
 
 require (
+	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/redis/go-redis/v9 v9.21.0
 	golang.org/x/crypto v0.54.0
@@ -44,6 +45,7 @@ require (
 	github.com/prometheus/procfs v0.20.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rogpeppe/go-internal v1.15.0 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.44.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.44.0 // indirect
