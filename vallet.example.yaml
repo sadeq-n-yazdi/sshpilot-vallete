@@ -131,6 +131,15 @@ tls:
   upstream:
     # TLS terminated by an upstream proxy; trust X-Forwarded-Proto from proxies.
     require_forwarded_proto: true
+    # Required for tls.mode: upstream, and refused in every other mode. The
+    # PLAINTEXT address the app listens on behind the proxy: in this mode the
+    # process holds no certificate, so this is its only socket. It MUST bind a
+    # loopback or private address (127.0.0.0/8, ::1, RFC1918, or ULA); a public or
+    # wildcard bind is refused at startup. Requests are additionally rejected
+    # unless they arrive from a server.trusted_proxies peer carrying
+    # X-Forwarded-Proto: https, so a plaintext request that bypassed the proxy is
+    # never served as if it were secure.
+    listen_addr: ""
   # Permit self_signed in production (NOT recommended; production refuses it
   # otherwise).
   allow_self_signed_in_production: false

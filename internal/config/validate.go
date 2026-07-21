@@ -207,10 +207,27 @@ func (c *Config) validateTLS(v *validator, prod bool) {
 		if len(c.Server.TrustedProxies) == 0 {
 			v.add("server.trusted_proxies", "at least one required for upstream TLS mode")
 		}
+		// The plaintext app socket is required in this mode and must be fenced to a
+		// private/loopback interface: the proxy terminates TLS and forwards
+		// plaintext, so this is the app's only listener and it must sit behind the
+		// proxy, never be reachable directly.
+		if t.Upstream.ListenAddr == "" {
+			v.add("tls.upstream.listen_addr", "required for upstream TLS mode (the plaintext address the app listens on behind the proxy)")
+		} else {
+			validatePrivateBindAddr(v, "tls.upstream.listen_addr", t.Upstream.ListenAddr)
+		}
 	case "self_signed":
 		if prod && !t.AllowSelfSignedInProduction {
 			v.add("tls.mode", "self_signed refused in production unless allow_self_signed_in_production is set")
 		}
+	}
+	// The plaintext app socket must not exist outside upstream mode. In every
+	// TLS-terminating mode this process holds a certificate and serves HTTPS, so a
+	// configured plaintext listen address is either a leftover or a mistake, and
+	// binding it would open an unencrypted path this ADR forbids. It is refused
+	// fail-closed rather than ignored.
+	if t.Mode != "upstream" && t.Upstream.ListenAddr != "" {
+		v.add("tls.upstream.listen_addr", "must be empty unless tls.mode is upstream; a plaintext listener is never bound while this process terminates TLS")
 	}
 }
 

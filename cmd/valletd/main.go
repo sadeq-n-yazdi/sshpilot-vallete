@@ -158,7 +158,18 @@ func run(args []string, stdout, stderr io.Writer) error {
 	tel := telemetry.New(cfg, logger)
 	defer shutdownTelemetry(tel, logger)
 
-	srv, err := buildServer(context.Background(), cfg, logger, db, store, tel, counterStore)
+	// The application listener. In every TLS-terminating mode this is the
+	// HTTPS *httpserver.Server. In upstream mode (tls.mode: upstream) the process
+	// holds no certificate -- the proxy terminates TLS -- so there is no HTTPS
+	// listener to bind and the app is served by the guarded plaintext
+	// *httpserver.UpstreamServer instead (ADR-0015, Decision 31). Exactly one is
+	// built; both satisfy appServer, so serve() is agnostic to which.
+	var srv appServer
+	if cfg.TLS.Mode == "upstream" {
+		srv, err = buildUpstreamServer(context.Background(), cfg, logger, db, store, tel, counterStore)
+	} else {
+		srv, err = buildServer(context.Background(), cfg, logger, db, store, tel, counterStore)
+	}
 	if err != nil {
 		return err
 	}
@@ -207,7 +218,19 @@ func shutdownTelemetry(tel *telemetry.Provider, logger *slog.Logger) {
 // signal.NotifyContext restores the default disposition on return, so a second
 // SIGINT during the drain terminates the process immediately -- an operator who
 // asks twice should not have to wait out the grace period.
-func serve(srv *httpserver.Server, metricsSrv *telemetry.MetricsServer, healthSrv *httpserver.HealthServer, logger *slog.Logger, purge *erasure.Scheduler, sweeps *sweep.Runner) error {
+// appServer is the application listener contract serve() drives, satisfied by
+// both *httpserver.Server (HTTPS, the TLS-terminating modes) and
+// *httpserver.UpstreamServer (plaintext behind a proxy, upstream mode). Defining
+// it here lets run() build exactly one of the two and hand it over without serve
+// needing to know which -- and keeps the two concrete types separate, so the
+// HTTPS type never grows a plaintext path.
+type appServer interface {
+	ListenAndServe() error
+	Shutdown(context.Context) error
+	Addr() string
+}
+
+func serve(srv appServer, metricsSrv *telemetry.MetricsServer, healthSrv *httpserver.HealthServer, logger *slog.Logger, purge *erasure.Scheduler, sweeps *sweep.Runner) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

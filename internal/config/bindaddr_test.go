@@ -75,3 +75,79 @@ func TestValidateHealthListenAddrAcceptsPrivateBinds(t *testing.T) {
 		})
 	}
 }
+
+// upstreamConfig returns a Config that passes Validate in upstream TLS mode,
+// which every upstream-listener case mutates in exactly one way.
+func upstreamConfig() Config {
+	c := Default()
+	c.Server.Environment = "production"
+	c.Server.PublicBaseURL = "https://vallet.example.com"
+	c.Server.TrustedProxies = []string{"192.0.2.0/24"}
+	c.TLS.Mode = "upstream"
+	c.TLS.Upstream.ListenAddr = "127.0.0.1:8080"
+	c.Auth.TokenSigningKeyRef = "env:VALLET_SIGNING_KEY"
+	c.Auth.AccessKeyPepperRef = "env:VALLET_ACCESS_KEY_PEPPER"
+	return c
+}
+
+func TestValidateUpstreamBaselineValid(t *testing.T) {
+	c := upstreamConfig()
+	if err := c.Validate(); err != nil {
+		t.Fatalf("upstream baseline should be valid, got: %v", err)
+	}
+}
+
+// TestValidateUpstreamListenAddr fences the plaintext upstream listener
+// (ADR-0015, Decision 31): the bind is required in upstream mode, must be
+// private, and must NOT be set in any other mode. The failure cases are the
+// misconfigurations that would either fail to start a proxied deployment or open
+// an unencrypted socket where TLS is terminated locally.
+func TestValidateUpstreamListenAddr(t *testing.T) {
+	tests := []struct {
+		name  string
+		mut   func(c *Config)
+		field string
+	}{
+		{"upstream missing bind", func(c *Config) {
+			c.TLS.Upstream.ListenAddr = ""
+		}, "tls.upstream.listen_addr"},
+		{"upstream wildcard bind", func(c *Config) {
+			c.TLS.Upstream.ListenAddr = "0.0.0.0:8080"
+		}, "tls.upstream.listen_addr"},
+		{"upstream public bind", func(c *Config) {
+			c.TLS.Upstream.ListenAddr = "203.0.113.9:8080"
+		}, "tls.upstream.listen_addr"},
+		{"upstream bind not host:port", func(c *Config) {
+			c.TLS.Upstream.ListenAddr = "127.0.0.1"
+		}, "tls.upstream.listen_addr"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := upstreamConfig()
+			tc.mut(&c)
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("expected refusal for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("error %q does not name %s", err, tc.field)
+			}
+		})
+	}
+}
+
+// TestValidateUpstreamListenAddrRefusedOutsideUpstreamMode proves the plaintext
+// socket cannot exist while this process terminates TLS: setting the upstream
+// bind in a TLS-terminating mode is refused, so it cannot linger as a leftover
+// that would open an unencrypted listener.
+func TestValidateUpstreamListenAddrRefusedOutsideUpstreamMode(t *testing.T) {
+	c := validConfig() // acme mode: this process terminates TLS
+	c.TLS.Upstream.ListenAddr = "127.0.0.1:8080"
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("expected refusal: upstream listen_addr set outside upstream mode")
+	}
+	if !strings.Contains(err.Error(), "tls.upstream.listen_addr") {
+		t.Errorf("error %q does not name tls.upstream.listen_addr", err)
+	}
+}

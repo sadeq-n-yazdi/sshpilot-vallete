@@ -242,6 +242,23 @@ type CSRTLSConfig struct {
 // UpstreamTLSConfig configures TLS termination by an upstream proxy.
 type UpstreamTLSConfig struct {
 	RequireForwardedProto bool `yaml:"require_forwarded_proto"`
+
+	// ListenAddr is the PLAINTEXT address the app listens on when TLS is
+	// terminated upstream (ADR-0015, Decision 31). In this mode the process holds
+	// no certificate -- the proxy terminates TLS and forwards plaintext HTTP -- so
+	// there is no HTTPS listener to bind; this address is the app's only socket.
+	//
+	// It is REQUIRED for upstream mode and REFUSED in every other mode (a
+	// plaintext app socket must not exist while this process terminates TLS
+	// itself). It MUST bind a loopback or private address, enforced by the same
+	// fence the health listener uses (validatePrivateBindAddr): the socket is
+	// plaintext, so it must sit behind the proxy on a private interface and never
+	// be reachable directly from the internet. Requests on it are additionally
+	// refused unless they arrive from a trusted proxy carrying
+	// X-Forwarded-Proto: https (see server.trusted_proxies and the transport's
+	// requireSecureTransport gate), so a plaintext request that bypassed the proxy
+	// is rejected rather than served as if it were secure.
+	ListenAddr string `yaml:"listen_addr"`
 }
 
 // DatabaseConfig selects and configures the data store.
