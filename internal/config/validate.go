@@ -564,6 +564,25 @@ func (c *Config) validateRetention(v *validator) {
 	if c.Retention.HandleQuarantineSweepBatch < 1 {
 		v.add("retention.handle_quarantine_sweep_batch", "must be >= 1, got %d", c.Retention.HandleQuarantineSweepBatch)
 	}
+	// 0 disables the grace sweep and is the default; negative is a mistake.
+	if c.Retention.AccessKeyGraceSweepInterval.Std() < 0 {
+		v.add("retention.access_key_grace_sweep_interval", "must be >= 0 (0 disables the access key grace sweep)")
+	}
+	// Strictly positive even when disabled, and unlike the handle batch this is
+	// not merely tidiness: the access key repository rejects a non-positive
+	// limit rather than coercing it, so a 0 here would make every pass fail.
+	if c.Retention.AccessKeyGraceSweepBatch < 1 {
+		v.add("retention.access_key_grace_sweep_batch", "must be >= 1, got %d", c.Retention.AccessKeyGraceSweepBatch)
+	}
+	// The pepper is required exactly when the sweep is on, and this is checked
+	// at validation rather than left to fail at construction so that an
+	// operator who enables the sweep learns the requirement from a config error
+	// naming the field, not from a startup crash. Failing closed at startup
+	// either way is the point: a sweep the operator switched on must not run
+	// with the process quietly deciding it could not be built.
+	if c.Retention.AccessKeyGraceSweepInterval.Std() > 0 && c.Auth.AccessKeyPepperRef.IsZero() {
+		v.add("auth.access_key_pepper_ref", "is required when retention.access_key_grace_sweep_interval is set")
+	}
 	if c.Retention.MaxSetsPerOwner < 1 {
 		v.add("retention.max_sets_per_owner", "must be >= 1, got %d", c.Retention.MaxSetsPerOwner)
 	}
