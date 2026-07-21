@@ -67,8 +67,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 
 	f := &fixture{t: t, db: db, store: sqlite.NewStore(db), audit: &fakeAuditor{}, now: fixedNow}
-	repos := f.store.Repos()
-	svc, err := New(repos.AccessKeys, repos.KeySets, f.audit, testPepper, WithClock(func() time.Time { return f.now }))
+	svc, err := New(f.store, f.audit, testPepper, WithClock(func() time.Time { return f.now }))
 	if err != nil {
 		t.Fatalf("accesskey.New: %v", err)
 	}

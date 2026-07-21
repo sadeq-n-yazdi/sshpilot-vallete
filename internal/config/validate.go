@@ -348,6 +348,17 @@ func (c *Config) validateAuth(v *validator, prod bool) {
 	if a.RefreshTokenMaxAge.Std() <= ttl {
 		v.add("auth.refresh_token_max_age", "must be greater than access_token_ttl (%v)", ttl)
 	}
+	// A non-positive grace window is rejected here rather than normalized to a
+	// default, because both of its plausible silent readings are wrong: zero
+	// as "no deadline" leaves a rotated credential live forever, and zero as
+	// "no overlap" quietly turns rotation into something the operator did not
+	// ask for. Neither is a value to guess at, so a misconfigured window stops
+	// startup. The upper bound exists for the same reason the token TTL has
+	// one: a window measured in months is a second live credential nobody is
+	// tracking, which defeats the point of rotating.
+	if w := a.AccessKeyGraceWindow.Std(); w <= 0 || w > 30*24*time.Hour {
+		v.add("auth.access_key_grace_window", "must be in (0, 720h], got %v", w)
+	}
 	if !a.Providers.APIToken.Enabled && !a.Providers.Passkey.Enabled && !a.Providers.OIDC.Enabled {
 		v.add("auth.providers", "at least one authentication provider must be enabled")
 	}

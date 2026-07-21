@@ -53,6 +53,14 @@ func Default() Config {
 		Auth: AuthConfig{
 			AccessTokenTTL:     Duration(15 * time.Minute),
 			RefreshTokenMaxAge: Duration(90 * day),
+			// 24 hours is long enough for a deployment on a daily cadence to
+			// pick up the replacement credential and short enough that a
+			// rotation performed because a secret leaked actually ends the
+			// leaked credential's usefulness within a day. It is deliberately
+			// not measured in weeks: a grace window is a migration allowance,
+			// and one long enough to forget about is one that turns every
+			// rotation into a second live credential nobody is tracking.
+			AccessKeyGraceWindow: Duration(24 * time.Hour),
 			Providers: AuthProviders{
 				APIToken: APITokenProvider{Enabled: true},
 				Passkey:  PasskeyProvider{Enabled: false},
