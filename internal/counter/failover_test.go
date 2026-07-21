@@ -312,6 +312,43 @@ func TestNextInterval(t *testing.T) {
 	}
 }
 
+// errFallbackClose is the sentinel a closableFallback returns from Close so a
+// test can prove the fallback's close error is surfaced.
+var errFallbackClose = errors.New("fallback close failed")
+
+// closableFallback is a Store that also holds a releasable resource, so the
+// fallback branch of FailoverStore.Close is exercised (the production fallback,
+// *MemoryStore, has no Close).
+type closableFallback struct {
+	Store
+	closed bool
+}
+
+func (c *closableFallback) Close() error {
+	c.closed = true
+	return errFallbackClose
+}
+
+// TestCloseAggregatesFallbackCloseError proves Close closes a fallback that
+// holds resources and joins its error, so a fallback cleanup failure is neither
+// skipped nor able to hide the primary's outcome.
+func TestCloseAggregatesFallbackCloseError(t *testing.T) {
+	t.Parallel()
+	p := newFakePrimary(t)
+	fb := &closableFallback{Store: newMemFallback(t)}
+	f, err := NewFailoverStore(p, fb)
+	if err != nil {
+		t.Fatalf("NewFailoverStore: %v", err)
+	}
+	err = f.Close()
+	if !errors.Is(err, errFallbackClose) {
+		t.Fatalf("Close error = %v, want it to join errFallbackClose", err)
+	}
+	if !fb.closed {
+		t.Fatal("Close did not close the fallback")
+	}
+}
+
 // TestCloseStopsReprobeAndClosesPrimary proves Close is clean: it stops the
 // goroutine (the -race and goroutine-leak checks would catch a leak) and closes
 // the primary. It is also idempotent.
