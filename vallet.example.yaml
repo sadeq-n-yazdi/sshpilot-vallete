@@ -37,6 +37,8 @@ tls:
       # manual | api
       mode: ""
       # Required for dns_01 + api: cloudflare | route53 | digitalocean | dnsimple | gandi
+      # Required for dns_01 + api: cloudflare | route53 | digitalocean |
+      #   dnsimple | arvancloud
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -55,6 +57,9 @@ tls:
       #                 deprecated by Gandi and not accepted. Scope the PAT to
       #                 the one organization holding the domain and to DNS
       #                 management only; see the doc below.
+      #   arvancloud -> the API key from the machine-user API keys page (the
+      #                 bare key; valletd adds the "Apikey " prefix). This key
+      #                 is account-wide; see the doc below.
       #
       # See docs/dns01-provider-credentials.md for the least-privilege policy
       # each provider needs. These credentials can rewrite your zone, so scope

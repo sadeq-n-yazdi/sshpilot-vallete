@@ -317,6 +317,38 @@ Give DNS-01 its own token rather than reusing one, store it in the secret
 provider, and rotate it if it is ever exposed. If your threat model cannot accept
 an organization-wide credential on this host, use a provider whose API supports
 finer scoping, or run DNS-01 in `manual` mode.
+## ArvanCloud
+
+Set `credentials_ref` to an ArvanCloud **API key**, issued from *Machine User →
+API keys* (or *Profile → API keys*). Supply the **bare key**: valletd sends it in
+the documented `Authorization: Apikey <key>` header and adds the `Apikey ` prefix
+itself, so do not include that prefix in the stored value.
+
+The API base is fixed at `https://napi.arvancloud.ir/cdn/4.0` and is never
+configurable — a settable endpoint would be a way to point this
+zone-editing key at another host. See the ArvanCloud CDN 4.0 DNS API reference:
+<https://docs.arvancloud.ir/en/developer-tools/api/api-usage> and
+<https://docs.arvancloud.ir/en/cdn/dns-records/adding-records>.
+
+### The scope is coarse
+
+ArvanCloud's API keys are **account-wide**. There is no way to narrow one to a
+single domain, record type, or record name, so a key that can edit DNS can edit
+every domain in the account — and the same key reaches the rest of the CDN, DNS,
+and object-storage APIs it is entitled to. That is a limit of the API, not
+something this code can close, and none of the safety below comes from the key:
+
+- The program only ever deletes a record whose **value it published itself**,
+  matched exactly, so it cannot remove a record it did not create — including
+  your own TXT record at the same name, and including the second challenge of a
+  wildcard certificate. That is a property of *this program*, not a limit the
+  key enforces.
+- Anything else holding the same key is unconstrained by any of that.
+
+Give DNS-01 its own key rather than reusing one, store it in the secret provider,
+and rotate it if it is ever exposed. If your threat model cannot accept an
+account-wide credential on this host, use a provider whose API supports scoping,
+or run DNS-01 in `manual` mode.
 
 ### Domains: what will be refused
 
@@ -347,3 +379,21 @@ own TTL is preserved when the program merges a challenge into it.
 The program does not poll Gandi for the change to be applied. The solver already
 waits until every authoritative nameserver for the zone serves the value, which
 is a strictly stronger condition.
+  domain in this account. A domain absent from the account answers `404`, which
+  is what advances the search to the parent; guessing would write the challenge
+  somewhere the CA never queries.
+- **There is no ambiguity to resolve.** A domain name is the API's own path key,
+  so an account cannot hold two domains with the same name — unlike Route 53,
+  where duplicate hosted zones are possible and are refused.
+
+Record names are stored **relative** to the domain, and the program computes that
+split itself; a name that does not sit inside the resolved domain is refused
+rather than written. Sending the fully qualified name would create the record at
+`_acme-challenge.example.com.example.com`, which the API accepts and no CA ever
+queries. The TXT value is carried in the nested `{"value":{"text":"..."}}` object
+the API requires, and the cleanup listing is matched on name, type and exact
+value in code rather than trusting the API's `search` filter.
+
+The program does not poll ArvanCloud for the change to be applied. The solver
+already waits until every authoritative nameserver for the zone serves the value,
+which is a strictly stronger condition.
