@@ -546,7 +546,7 @@ func TestKeySetListExpiredQuarantine(t *testing.T) {
 	mustCreateKeySet(t, s, quarantined("ks-future", "o-sweep-a", "future", now.Add(72*time.Hour)))
 	mustCreateKeySet(t, s, newKeySet("ks-active", "o-sweep-a", "active"))
 
-	got, err := s.Repos().KeySets.ListExpiredQuarantine(ctx, now, 0)
+	got, err := s.Repos().KeySets.ListExpiredQuarantine(ctx, now, 10)
 	if err != nil {
 		t.Fatalf("ListExpiredQuarantine: %v", err)
 	}
@@ -579,6 +579,18 @@ func TestKeySetListExpiredQuarantineEmptyReturnsNilSlice(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("result = %#v, want nil slice", got)
+	}
+}
+
+func TestKeySetListExpiredQuarantineRejectsNonPositiveLimit(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	for _, limit := range []int{0, -1} {
+		_, err := s.Repos().KeySets.ListExpiredQuarantine(context.Background(), testClock, limit)
+		if !errors.Is(err, domain.ErrInvalidInput) {
+			t.Errorf("ListExpiredQuarantine(limit %d) = %v, want ErrInvalidInput", limit, err)
+		}
 	}
 }
 

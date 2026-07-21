@@ -158,8 +158,12 @@ WHERE id = $6 AND owner_id = $7`
 // UNSCOPED: a system-maintenance sweep across all owners; the release job acts
 // on behalf of no single owner.
 func (r *handleRepo) ListExpiredQuarantine(ctx context.Context, now time.Time, limit int) ([]domain.Handle, error) {
+	// A non-positive limit has no safe interpretation. Reading it as "unbounded"
+	// would turn a caller's zero value into a full-table scan, which is the
+	// accident this API's batching exists to prevent, so it is rejected as
+	// invalid input instead.
 	if limit <= 0 {
-		limit = defaultPageLimit
+		return nil, fmt.Errorf("%s: list limit must be positive: %w", errPrefix, domain.ErrInvalidInput)
 	}
 	q := `SELECT ` + handleColumns + ` FROM handles
 WHERE state = $1 AND quarantine_until IS NOT NULL AND quarantine_until <= $2

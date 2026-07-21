@@ -344,6 +344,18 @@ func TestHandleListExpiredQuarantine(t *testing.T) {
 	}
 }
 
+func TestHandleListExpiredQuarantineRejectsNonPositiveLimit(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	for _, limit := range []int{0, -1} {
+		_, err := s.Repos().Handles.ListExpiredQuarantine(context.Background(), testClock, limit)
+		if !errors.Is(err, domain.ErrInvalidInput) {
+			t.Errorf("ListExpiredQuarantine(limit %d) = %v, want ErrInvalidInput", limit, err)
+		}
+	}
+}
+
 // TestHandleQueryErrorsMapped drives the driver-error branches of the read
 // paths with an already-canceled context: every method must surface a wrapped
 // error (never a nil error with partial data) through mapError.
