@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // newTestLogger returns a JSON logger writing into a buffer, so tests can
@@ -443,5 +444,41 @@ func TestSanitizeLogPathStillReplacesControlBytes(t *testing.T) {
 	// Multi-byte runes must survive the byte-level scan intact.
 	if got := sanitizeLogPath("/naïve\n"); !strings.Contains(got, "naïve") {
 		t.Fatalf("multi-byte rune corrupted: %q", got)
+	}
+}
+
+// TestSanitizeLogPathTruncationKeepsValidUTF8 covers an over-length path whose
+// byte cap falls inside a character. The path is chosen by the client, so a
+// remote party picks where the cut lands; a naive byte slice there emits
+// invalid UTF-8 into the access log, which the JSON handler then mangles.
+//
+// The first assertion proves a NAIVE cut of this fixture would be invalid. It
+// is not decoration: the original fix for this defect elsewhere in the tree
+// shipped with a test whose hand-computed offset landed on a character
+// boundary, so it passed against unfixed code. Without this precondition the
+// fixture could quietly stop exercising the case it exists for.
+//
+// The fixture carries no control characters on purpose, so a failure here is
+// attributable to the truncation path rather than to the de-fanging scan the
+// tests above already cover.
+func TestSanitizeLogPathTruncationKeepsValidUTF8(t *testing.T) {
+	// One byte of "世" sits before the bound and two after it.
+	p := "/" + strings.Repeat("a", maxLoggedPathLen-2) + "世" + strings.Repeat("b", 50)
+	if utf8.ValidString(p[:maxLoggedPathLen]) {
+		t.Fatalf("fixture no longer splits a rune at the %d-byte cut", maxLoggedPathLen)
+	}
+
+	got := sanitizeLogPath(p)
+
+	if !utf8.ValidString(got) {
+		t.Errorf("truncated path is not valid UTF-8: %q", got)
+	}
+	if len(got) > maxLoggedPathLen {
+		t.Errorf("logged path length %d exceeds the %d cap", len(got), maxLoggedPathLen)
+	}
+	// The repair must cost at most the bytes a partial rune can be, so the
+	// logged path is not silently gutted.
+	if len(got) < maxLoggedPathLen-utf8.UTFMax {
+		t.Errorf("truncation discarded more than a partial rune: %d bytes", len(got))
 	}
 }
