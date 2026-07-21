@@ -365,7 +365,7 @@ func TestProtectedSetEndToEnd(t *testing.T) {
 	e := newE2E(t, publish.WithVerifier(lazyVerifier{svc: &keySvc}))
 
 	repos := e.store.Repos()
-	built, err := accesskey.New(repos.AccessKeys, repos.KeySets, e2eAuditor{}, e2ePepper)
+	built, err := accesskey.New(e.store, e2eAuditor{}, e2ePepper)
 	if err != nil {
 		t.Fatalf("accesskey.New: %v", err)
 	}

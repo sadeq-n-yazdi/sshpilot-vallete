@@ -193,8 +193,7 @@ func (f *gateFixture) seedProtectedSet(ownerID domain.OwnerID, name, comment str
 func (f *gateFixture) mint(ownerID domain.OwnerID, setID domain.KeySetID) string {
 	f.t.Helper()
 
-	repos := f.store.Repos()
-	svc, err := accesskey.New(repos.AccessKeys, repos.KeySets, gateAuditor{}, []byte(gatePepper))
+	svc, err := accesskey.New(f.store, gateAuditor{}, []byte(gatePepper))
 	if err != nil {
 		f.t.Fatalf("accesskey.New: %v", err)
 	}
