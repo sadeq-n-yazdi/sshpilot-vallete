@@ -117,7 +117,13 @@ func Default() Config {
 			// the sweep a meaningful load.
 			HandleQuarantineSweepInterval: Duration(time.Hour),
 			HandleQuarantineSweepBatch:    200,
-			MaxSetsPerOwner:               100,
+			// Off by default: see the field. The batch is still a real number
+			// so that an operator who enables the sweep gets a working bound
+			// without having to discover a second setting, and so validation
+			// has something positive to check either way.
+			AccessKeyGraceSweepInterval: 0,
+			AccessKeyGraceSweepBatch:    200,
+			MaxSetsPerOwner:             100,
 		},
 		Install: InstallConfig{
 			// Enabled and unauthenticated by default, per ADR-0013: the
