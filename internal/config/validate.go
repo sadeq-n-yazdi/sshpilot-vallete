@@ -348,6 +348,17 @@ func (c *Config) validateAuth(v *validator, prod bool) {
 	if a.RefreshTokenMaxAge.Std() <= ttl {
 		v.add("auth.refresh_token_max_age", "must be greater than access_token_ttl (%v)", ttl)
 	}
+	// A non-positive grace window is rejected here rather than normalized to a
+	// default, because both of its plausible silent readings are wrong: zero
+	// as "no deadline" leaves a rotated credential live forever, and zero as
+	// "no overlap" quietly turns rotation into something the operator did not
+	// ask for. Neither is a value to guess at, so a misconfigured window stops
+	// startup. The upper bound exists for the same reason the token TTL has
+	// one: a window measured in months is a second live credential nobody is
+	// tracking, which defeats the point of rotating.
+	if w := a.AccessKeyGraceWindow.Std(); w <= 0 || w > 30*24*time.Hour {
+		v.add("auth.access_key_grace_window", "must be in (0, 720h], got %v", w)
+	}
 	if !a.Providers.APIToken.Enabled && !a.Providers.Passkey.Enabled && !a.Providers.OIDC.Enabled {
 		v.add("auth.providers", "at least one authentication provider must be enabled")
 	}
@@ -563,6 +574,25 @@ func (c *Config) validateRetention(v *validator) {
 	// a batch nobody chose.
 	if c.Retention.HandleQuarantineSweepBatch < 1 {
 		v.add("retention.handle_quarantine_sweep_batch", "must be >= 1, got %d", c.Retention.HandleQuarantineSweepBatch)
+	}
+	// 0 disables the grace sweep and is the default; negative is a mistake.
+	if c.Retention.AccessKeyGraceSweepInterval.Std() < 0 {
+		v.add("retention.access_key_grace_sweep_interval", "must be >= 0 (0 disables the access key grace sweep)")
+	}
+	// Strictly positive even when disabled, and unlike the handle batch this is
+	// not merely tidiness: the access key repository rejects a non-positive
+	// limit rather than coercing it, so a 0 here would make every pass fail.
+	if c.Retention.AccessKeyGraceSweepBatch < 1 {
+		v.add("retention.access_key_grace_sweep_batch", "must be >= 1, got %d", c.Retention.AccessKeyGraceSweepBatch)
+	}
+	// The pepper is required exactly when the sweep is on, and this is checked
+	// at validation rather than left to fail at construction so that an
+	// operator who enables the sweep learns the requirement from a config error
+	// naming the field, not from a startup crash. Failing closed at startup
+	// either way is the point: a sweep the operator switched on must not run
+	// with the process quietly deciding it could not be built.
+	if c.Retention.AccessKeyGraceSweepInterval.Std() > 0 && c.Auth.AccessKeyPepperRef.IsZero() {
+		v.add("auth.access_key_pepper_ref", "is required when retention.access_key_grace_sweep_interval is set")
 	}
 	if c.Retention.MaxSetsPerOwner < 1 {
 		v.add("retention.max_sets_per_owner", "must be >= 1, got %d", c.Retention.MaxSetsPerOwner)
