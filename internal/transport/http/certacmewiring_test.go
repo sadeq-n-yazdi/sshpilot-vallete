@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme"
+
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/dns01"
 )
 
 // challengeFakeProvider is a provider that solves in band, used to test the
@@ -95,7 +97,7 @@ func TestBuildTLSConfigKeepsStrictProbeForOperatorModes(t *testing.T) {
 	cfg.TLS.Manual.CertFile = certFile
 	cfg.TLS.Manual.KeyFile = keyFile
 
-	_, _, err := buildTLSConfig(t.Context(), cfg, staticClock(base.Add(48*time.Hour)))
+	_, _, err := buildTLSConfig(t.Context(), cfg, staticClock(base.Add(48*time.Hour)), nil)
 	if !errors.Is(err, ErrTLSCertificateExpired) {
 		t.Fatalf("err = %v, want ErrTLSCertificateExpired: the startup probe was "+
 			"skipped for a mode that must keep it", err)
@@ -162,21 +164,70 @@ func TestACMEProviderDeclaresChallengeALPN(t *testing.T) {
 	}
 }
 
-// TestDNS01SolverIsRefusedRatherThanSubstituted proves a configured but
+// TestUnknownACMESolverIsRefusedRatherThanSubstituted proves a configured but
 // unimplemented solver fails closed.
 //
-// Falling back to TLS-ALPN-01 would issue through a challenge the operator did
-// not select — for a deployment whose port 443 is unreachable from the CA, that
-// is a silent, permanent issuance failure instead of an immediate, legible one.
-func TestDNS01SolverIsRefusedRatherThanSubstituted(t *testing.T) {
+// Falling back to a solver that IS implemented would issue through a challenge
+// the operator did not select — for a deployment whose port 443 is unreachable
+// from the CA, that is a silent, permanent issuance failure instead of an
+// immediate, legible one.
+func TestUnknownACMESolverIsRefusedRatherThanSubstituted(t *testing.T) {
 	t.Parallel()
 
 	cfg := acmeTestConfig(t)
-	cfg.TLS.ACME.Solver = "dns_01"
-	cfg.TLS.ACME.DNS.Mode = "manual"
+	cfg.TLS.ACME.Solver = "http_01"
 
-	_, err := newACMEProviderForSolver(t.Context(), cfg, time.Now)
+	_, err := newACMEProviderForSolver(t.Context(), cfg, time.Now, nil)
 	if !errors.Is(err, ErrTLSModeUnsupported) {
 		t.Errorf("error = %v, want ErrTLSModeUnsupported", err)
+	}
+}
+
+// TestUnsupportedDNSProviderIsRefused proves that naming a DNS provider this
+// build does not implement refuses instead of falling through.
+//
+// The tail of ADR-0015's phase-1 provider list is not compiled in yet. An
+// operator who names one must get a startup refusal: the alternatives are
+// solving through some other provider's credentials or silently downgrading to
+// another challenge type, and both are security decisions taken by an error
+// path rather than by the operator.
+func TestUnsupportedDNSProviderIsRefused(t *testing.T) {
+	t.Setenv("VALLET_TEST_DNS_TOKEN", "unused-but-resolvable")
+
+	cfg := acmeTestConfig(t)
+	cfg.TLS.ACME.Solver = "dns_01"
+	cfg.TLS.ACME.DNS.Mode = "api"
+	cfg.TLS.ACME.DNS.Provider = "arvancloud"
+	cfg.TLS.ACME.DNS.CredentialsRef = "env:VALLET_TEST_DNS_TOKEN"
+
+	_, err := newDNSProvider(t.Context(), cfg, nil)
+	if !errors.Is(err, ErrTLSModeUnsupported) {
+		t.Errorf("error = %v, want ErrTLSModeUnsupported", err)
+	}
+}
+
+// TestDNS01ProviderDefersIssuanceAndAdvertisesNoALPN pins the two wiring
+// properties DNS-01 depends on, in the directions that break silently.
+//
+// A DNS-01 provider must be exempt from the startup probe — manual mode cannot
+// have a certificate before an operator publishes a record, so probing would
+// make the mode impossible to start — and it must advertise NO challenge ALPN,
+// because it answers nothing on the acme-tls/1 path and offering the protocol
+// would let a client negotiate a path with no answer behind it.
+func TestDNS01ProviderDefersIssuanceAndAdvertisesNoALPN(t *testing.T) {
+	t.Parallel()
+
+	p := acmeTestProvider(t, time.Now())
+	p.solver = newDNS01Solver(dns01.NewManualProvider(nil), nil, nil)
+
+	if got := challengeALPNProtos(p); len(got) != 0 {
+		t.Errorf("challengeALPNProtos() = %v, want none: dns-01 answers nothing over acme-tls/1", got)
+	}
+	if startupProbeRequired(p) {
+		t.Error("a dns-01 provider must not be probed at startup; manual mode " +
+			"cannot hold a certificate before the operator publishes the record")
+	}
+	if got, want := p.Name(), "acme_dns_01"; got != want {
+		t.Errorf("Name() = %q, want %q", got, want)
 	}
 }

@@ -354,6 +354,15 @@ func (c *Config) validateAuth(v *validator, prod bool) {
 	if prod && a.TokenSigningKeyRef.IsZero() {
 		v.add("auth.token_signing_key_ref", "required in production")
 	}
+	// Without a pepper no access key can be verified, so every protected key set
+	// answers 404 to everyone. That is safe but it is also silent, and a
+	// production deployment that believes it is serving protected sets and is
+	// not should be told at startup rather than by a consumer's ticket.
+	// Development is allowed the verifier-less mode so a checkout runs with no
+	// secret material at all.
+	if prod && a.AccessKeyPepperRef.IsZero() {
+		v.add("auth.access_key_pepper_ref", "required in production")
+	}
 }
 
 func (c *Config) validateRateLimit(v *validator) {
@@ -543,6 +552,18 @@ func (c *Config) validateRetention(v *validator) {
 	if c.Retention.AuditPurgeMaxPerRun < 1 {
 		v.add("retention.audit_purge_max_per_run", "must be >= 1, got %d", c.Retention.AuditPurgeMaxPerRun)
 	}
+	// 0 disables the release sweep; negative is a mistake, not a mode. See the
+	// field for why an off switch is safe on this sweep specifically.
+	if c.Retention.HandleQuarantineSweepInterval.Std() < 0 {
+		v.add("retention.handle_quarantine_sweep_interval", "must be >= 0 (0 disables the quarantine release sweep)")
+	}
+	// Strictly positive even when the sweep is disabled: a non-positive batch
+	// has no safe reading, and the repository would coerce it to a page-size
+	// default rather than refuse it, so an operator's 0 would silently become
+	// a batch nobody chose.
+	if c.Retention.HandleQuarantineSweepBatch < 1 {
+		v.add("retention.handle_quarantine_sweep_batch", "must be >= 1, got %d", c.Retention.HandleQuarantineSweepBatch)
+	}
 	if c.Retention.MaxSetsPerOwner < 1 {
 		v.add("retention.max_sets_per_owner", "must be >= 1, got %d", c.Retention.MaxSetsPerOwner)
 	}
@@ -583,6 +604,7 @@ func (c *Config) allRefs() []refField {
 		{"tls.cloudflare_origin.api_token_ref", c.TLS.CloudflareOrigin.APITokenRef},
 		{"database.postgres.dsn_ref", c.Database.Postgres.DSNRef},
 		{"auth.token_signing_key_ref", c.Auth.TokenSigningKeyRef},
+		{"auth.access_key_pepper_ref", c.Auth.AccessKeyPepperRef},
 		{"rate_limit.shared.password_ref", c.RateLimit.Shared.PasswordRef},
 		{"telemetry.metrics.otlp.headers_ref", c.Telemetry.Metrics.OTLP.HeadersRef},
 	}

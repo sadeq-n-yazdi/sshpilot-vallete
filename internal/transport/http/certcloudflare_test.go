@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
@@ -478,7 +479,7 @@ func TestOriginCAWiringResolvesCredentialsThroughTheRealPath(t *testing.T) {
 	// mode, this one included, is pinned by
 	// TestNewCertProviderReturnsNilInterfaceOnError. That claim IS one the
 	// package makes now: every case returns through asCertProvider.
-	_, err := newCertProvider(context.Background(), cfg, time.Now)
+	_, err := newCertProvider(context.Background(), cfg, time.Now, slog.New(slog.DiscardHandler))
 	if !errors.Is(err, ErrOriginCACredential) {
 		t.Fatalf("err = %v, want ErrOriginCACredential", err)
 	}
