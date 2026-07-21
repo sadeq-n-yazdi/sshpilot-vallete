@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -144,6 +145,51 @@ func TestRunRefusesHostileKeySets(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRunRefusesEmptyingTheBlock proves the flag wires through and that an empty
+// published set (a would-be full revocation of a populated block) is refused
+// with a non-zero exit -- including under -dry-run/-check so CI and monitoring
+// catch a pending forced revocation -- while -allow-empty applies it.
+func TestRunRefusesEmptyingTheBlock(t *testing.T) {
+	populated := managedblock.BeginMarker + "\n" + keyLine(t, 50, "k") + "\n" + managedblock.EndMarker + "\n"
+
+	// An empty body is a would-be full revocation.
+	for _, args := range [][]string{nil, {"-dry-run"}, {"-check"}} {
+		t.Run("refused"+strings.Join(args, ""), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "authorized_keys")
+			if err := os.WriteFile(path, []byte(populated), 0o600); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			url, client := keyServer(t, http.StatusOK, "")
+
+			var stdout, stderr bytes.Buffer
+			err := run(append([]string{"-url", url, "-path", path}, args...), &stdout, &stderr, client)
+			if !errors.Is(err, managedblock.ErrWouldEmpty) {
+				t.Fatalf("run error = %v, want ErrWouldEmpty", err)
+			}
+			if got := readFile(t, path); got != populated {
+				t.Fatalf("the file was modified despite the refusal: %q", got)
+			}
+		})
+	}
+
+	t.Run("allow-empty applies the revocation", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "authorized_keys")
+		if err := os.WriteFile(path, []byte(populated), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		url, client := keyServer(t, http.StatusOK, "")
+
+		var stdout, stderr bytes.Buffer
+		if err := run([]string{"-url", url, "-path", path, "-allow-empty"}, &stdout, &stderr, client); err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		want := managedblock.BeginMarker + "\n" + managedblock.EndMarker + "\n"
+		if got := readFile(t, path); got != want {
+			t.Fatalf("file = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestRunFlagErrors(t *testing.T) {

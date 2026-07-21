@@ -14,6 +14,13 @@
 // user's own keys, is left byte for byte as it was. See internal/managedblock
 // for the marker format and the fail-closed rules.
 //
+// An apply that would take a non-empty managed block down to zero keys is
+// refused with a non-zero exit unless -allow-empty is passed. This guards
+// against an accidentally emptied key set silently wiping every host's access;
+// -allow-empty is the explicit opt-in for a genuine full revocation. The
+// refusal is loud on purpose, including under -dry-run/-check, so a pending
+// forced revocation is visible to CI and monitoring rather than swallowed.
+//
 // The exit code is 0 on success, 1 on any failure. In -dry-run mode nothing is
 // written and the report says whether a real run would change the file.
 package main
@@ -79,6 +86,8 @@ func run(args []string, stdout, stderr io.Writer, client *http.Client) error {
 	path := fs.String("path", "", "authorized_keys file to maintain (default ~/.ssh/authorized_keys)")
 	dryRun := fs.Bool("dry-run", false, "report what would change and write nothing")
 	check := fs.Bool("check", false, "alias for -dry-run")
+	allowEmpty := fs.Bool("allow-empty", false,
+		"permit clearing the managed block when the published set is empty (a full revocation)")
 	timeout := fs.Duration("timeout", defaultTimeout, "bound on the fetch")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	if err := fs.Parse(args); err != nil {
@@ -106,7 +115,11 @@ func run(args []string, stdout, stderr io.Writer, client *http.Client) error {
 		return err
 	}
 
-	return apply(managedblock.Options{Path: target, DryRun: *dryRun || *check}, pubkeys, stdout)
+	return apply(managedblock.Options{
+		Path:       target,
+		DryRun:     *dryRun || *check,
+		AllowEmpty: *allowEmpty,
+	}, pubkeys, stdout)
 }
 
 // apply performs the merge and prints a one-line report.

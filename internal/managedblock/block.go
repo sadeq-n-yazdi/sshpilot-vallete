@@ -185,6 +185,32 @@ func locate(existing []byte) (start, stop int, found bool, err error) {
 	}
 }
 
+// blockKeyCount returns the number of key lines inside the managed block of b,
+// or 0 when b has no well-formed block. It counts only the lines between the
+// BEGIN and END markers, skipping the markers themselves and any blank line, so
+// keys elsewhere in the file are never counted. A malformed marker state counts
+// as 0 here; Merge is the choke point that rejects such a file, so this is only
+// ever consulted for a file whose markers Merge accepts.
+func blockKeyCount(b []byte) int {
+	start, stop, found, err := locate(b)
+	if err != nil || !found {
+		return 0
+	}
+	inner := b[start:stop]
+	n := 0
+	for _, s := range lineSpans(inner) {
+		line := string(inner[s.start:s.end])
+		if isMarker(line, BeginMarker) || isMarker(line, EndMarker) {
+			continue
+		}
+		if strings.Trim(strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), " \t") == "" {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // Merge splices block into existing and returns the new file contents.
 //
 // When a well-formed block is present it is replaced where it stands. When no
