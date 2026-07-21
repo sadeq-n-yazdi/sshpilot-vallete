@@ -67,8 +67,9 @@ revocation.
 The original Decision above returned `403` for "a valid token for a different
 set/scope (authenticated but not authorized for this set)". That clause is
 **dropped**: the publish path now returns the **uniform `404`** for *every*
-not-authorized case — unknown handle or set, no token, malformed/invalid/
-expired/revoked token, **and** a valid access key minted for a different one of
+not-authorized case — unknown handle or set, no token, a
+malformed/invalid/expired/revoked token, **and** a valid access key minted for a
+different one of
 the owner's sets.
 
 Rationale: the dropped `403` was itself an existence oracle. A consumer holding
