@@ -109,6 +109,12 @@ var ErrMissingDependency = errors.New("accesskey: missing dependency")
 // here rather than left to the column definition.
 const maxNameLen = 64
 
+// defaultGraceWindow matches the shipped auth.access_key_grace_window default.
+// It exists so the field's zero value is never what a rotation runs under: a
+// caller that forgot WithGraceWindow gets the documented default, and a caller
+// that passed a non-positive one gets a construction error.
+const defaultGraceWindow = 24 * time.Hour
+
 // Auditor is the audit dependency, declared at the point of use so this package
 // depends on a method set rather than a concrete type. *audit.Emitter satisfies
 // it.
@@ -120,11 +126,21 @@ type Auditor interface {
 // immutable after construction and safe for concurrent use if its collaborators
 // are.
 type Service struct {
+	// store is held for the one operation that must not be separable: Rotate
+	// mints a replacement and moves the outgoing credential into its grace
+	// window, and a partial application of that pair is a fail-open. Every
+	// other method here touches one entity and uses the auto-commit
+	// repositories below.
+	store   repository.Store
 	keys    repository.AccessKeyRepository
 	keySets repository.KeySetRepository
 	auditor Auditor
 	hasher  *hasher
-	now     func() time.Time
+	// graceWindow is how long a rotated credential stays usable. It is
+	// operator configuration reaching this service through WithGraceWindow,
+	// and New refuses a non-positive one.
+	graceWindow time.Duration
+	now         func() time.Time
 }
 
 // Option customizes a Service.
@@ -138,6 +154,21 @@ func WithClock(now func() time.Time) Option {
 		if now != nil {
 			s.now = now
 		}
+	}
+}
+
+// WithGraceWindow sets how long a rotated credential remains usable after its
+// replacement is minted. It comes from auth.access_key_grace_window.
+//
+// Unlike WithClock this IS a security control, so a non-positive value is not
+// silently ignored the way a nil clock is: it is stored as given and rejected
+// by New. Skipping it would leave a Service that looks configured and rotates
+// under the default window instead of the one the operator wrote, and a
+// rotation whose window is not the configured window is exactly the surprise
+// this option exists to prevent.
+func WithGraceWindow(d time.Duration) Option {
+	return func(s *Service) {
+		s.graceWindow = d
 	}
 }
 
@@ -156,26 +187,48 @@ func WithClock(now func() time.Time) Option {
 // and happens in cmd/valletd, not here; this package only refuses to operate
 // without an adequate one.
 //
-// The key set repository is required rather than optional because it is what
-// makes Mint's owner check a query rather than a hope — see the package doc on
-// the non-composite foreign key. The auditor likewise: a Service without one
-// would look wired up and would mint and revoke credentials leaving no trace,
-// which is worse than failing to start.
-func New(keys repository.AccessKeyRepository, keySets repository.KeySetRepository, auditor Auditor, pepper []byte, opts ...Option) (*Service, error) {
-	if keys == nil {
-		return nil, fmt.Errorf("%w: access key repository", ErrMissingDependency)
-	}
-	if keySets == nil {
-		return nil, fmt.Errorf("%w: key set repository", ErrMissingDependency)
+// The store is taken rather than the two repositories because Rotate needs the
+// transaction seam: minting a replacement and moving the outgoing credential
+// into grace must commit together or not at all. The auto-commit repositories
+// every other method uses are derived from it once here, so there is no way to
+// hand this Service a store and a set of repositories that disagree about which
+// database they address.
+//
+// The key set repository reached through it is what makes Mint's owner check a
+// query rather than a hope — see the package doc on the non-composite foreign
+// key. The auditor likewise: a Service without one would look wired up and
+// would mint and revoke credentials leaving no trace, which is worse than
+// failing to start.
+func New(store repository.Store, auditor Auditor, pepper []byte, opts ...Option) (*Service, error) {
+	if store == nil {
+		return nil, fmt.Errorf("%w: store", ErrMissingDependency)
 	}
 	if auditor == nil {
 		return nil, fmt.Errorf("%w: auditor", ErrMissingDependency)
+	}
+	repos := store.Repos()
+	if repos.AccessKeys == nil {
+		return nil, fmt.Errorf("%w: access key repository", ErrMissingDependency)
+	}
+	if repos.KeySets == nil {
+		return nil, fmt.Errorf("%w: key set repository", ErrMissingDependency)
 	}
 	h, err := newHasher(pepper)
 	if err != nil {
 		return nil, err
 	}
-	s := &Service{keys: keys, keySets: keySets, auditor: auditor, hasher: h, now: time.Now}
+	s := &Service{
+		store:   store,
+		keys:    repos.AccessKeys,
+		keySets: repos.KeySets,
+		auditor: auditor,
+		hasher:  h,
+		// The default matches the shipped config default. It is a real window
+		// rather than zero so that the zero value of this field can never be
+		// mistaken for a deliberate choice — see the check below.
+		graceWindow: defaultGraceWindow,
+		now:         time.Now,
+	}
 	for i, opt := range opts {
 		// A nil option is rejected rather than skipped, matching the other
 		// services: skipping it would leave a Service that looks configured and
@@ -184,6 +237,15 @@ func New(keys repository.AccessKeyRepository, keySets repository.KeySetRepositor
 			return nil, fmt.Errorf("%w: nil option at index %d", ErrMissingDependency, i)
 		}
 		opt(s)
+	}
+	// Checked after the options so an operator's non-positive window fails
+	// construction. This is the fail-closed direction: the alternative is a
+	// Service that rotates by writing a grace deadline at or before the instant
+	// it was written, or — worse, if a later reader treated the zero duration as
+	// "unset" — no deadline at all, which leaves the credential the owner
+	// rotated away from usable forever.
+	if s.graceWindow <= 0 {
+		return nil, fmt.Errorf("%w: grace window must be positive, got %v", ErrMissingDependency, s.graceWindow)
 	}
 	return s, nil
 }

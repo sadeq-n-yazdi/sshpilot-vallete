@@ -122,8 +122,9 @@ func newPublisher(ctx context.Context, cfg *config.Config, logger *slog.Logger, 
 
 	repos := store.Repos()
 	// accesskey.New copies the pepper, so nothing here retains a second live
-	// reference to the key material past this call.
-	keySvc, err := accesskey.New(repos.AccessKeys, repos.KeySets, emitter, []byte(pepper.Reveal()))
+	// reference to the key material past this call. It takes the whole store so
+	// the rotate-with-grace path can run its read and update in one transaction.
+	keySvc, err := accesskey.New(store, emitter, []byte(pepper.Reveal()))
 	if err != nil {
 		// This is where an under-length pepper lands. The error names the
 		// requirement, and pepper is a secrets.Redacted, so nothing here can

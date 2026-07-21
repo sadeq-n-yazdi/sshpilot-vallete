@@ -253,6 +253,32 @@ type AuthConfig struct {
 	// answer the same 404 an absent set gets, for everyone.
 	AccessKeyPepperRef secrets.Ref `yaml:"access_key_pepper_ref"`
 
+	// AccessKeyGraceWindow is how long a rotated access key keeps working
+	// after its replacement has been minted. It is the operator's answer to
+	// "how long do my deployments have to pick up the new credential", and it
+	// is configuration rather than a literal in the service because that
+	// answer is a property of a deployment, not of this program.
+	//
+	// It must be POSITIVE. Zero is not "no deadline" and is not "rotate with
+	// no grace at all": both readings are dangerous in opposite directions,
+	// and rather than pick one silently the service refuses to be constructed
+	// with a non-positive window. That refusal is the fail-closed direction —
+	// the alternative, a zero that meant "never expires", would write a grace
+	// row with a deadline no clock ever passes and leave the rotated
+	// credential live forever, which is precisely the outcome rotation exists
+	// to prevent.
+	//
+	// An operator who wants rotation with no overlap at all has that already,
+	// and it is spelled Mint followed by Revoke: two explicit calls, each
+	// audited, rather than a window whose degenerate value happens to mean
+	// something different from every other value it can take.
+	//
+	// Shortening this value does not shorten a window already in flight: a
+	// grace deadline is stamped onto the row at the moment of rotation and is
+	// evaluated from the row thereafter. Ending an in-flight window early is
+	// what Revoke is for.
+	AccessKeyGraceWindow Duration `yaml:"access_key_grace_window"`
+
 	Providers AuthProviders `yaml:"providers"`
 }
 

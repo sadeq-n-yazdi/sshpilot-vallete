@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
@@ -172,7 +173,7 @@ func addAccessKeyGraceSweep(
 		return false, nil
 	}
 
-	svc, err := newAccessKeySweepService(store, sink, pepper)
+	svc, err := newAccessKeySweepService(store, sink, pepper, cfg.Auth.AccessKeyGraceWindow.Std())
 	if err != nil {
 		return false, fmt.Errorf("access key grace expiry sweep: %w", err)
 	}
@@ -235,6 +236,7 @@ func newAccessKeySweepService(
 	store repository.Store,
 	sink repository.AuditAppender,
 	pepper secrets.Redacted,
+	graceWindow time.Duration,
 ) (*accesskey.Service, error) {
 	// The insert-only appender, not the full audit repository, for the same
 	// reason as the handle sweep: the code that accounts for a retirement has no
@@ -244,12 +246,20 @@ func newAccessKeySweepService(
 		return nil, fmt.Errorf("audit sink: %w", err)
 	}
 
-	repos := store.Repos()
 	// Reveal at the point of use and nowhere else. accesskey.New copies the
 	// bytes, so this slice is not retained; the value traveled here as a
 	// secrets.Redacted so that any log line touching it on the way printed a
 	// marker.
-	return accesskey.New(repos.AccessKeys, repos.KeySets, emitter, []byte(pepper.Reveal()))
+	//
+	// The grace window is passed even though this instance only sweeps. The
+	// sweep never rotates, so the value provably does not change what this
+	// caller does -- but the note above about the pepper applies in the same
+	// shape: this is the type that rotates and verifies, and an instance built
+	// under a window nobody chose is one whose rotations would run on a
+	// deadline the operator did not write. Configuration that reached the
+	// constructor is configuration that cannot be wrong later.
+	return accesskey.New(store, emitter, []byte(pepper.Reveal()),
+		accesskey.WithGraceWindow(graceWindow))
 }
 
 // newHandleSweepService builds the handle service used by the release sweep.

@@ -36,11 +36,24 @@ func (nilKeySetRepo) Get(context.Context, domain.OwnerID, domain.KeySetID) (*dom
 	return nil, nil
 }
 
+// nilRowStore hands out the contract-violating repositories on both seams, so a
+// method that does its work inside a transaction meets the same nil rows as one
+// that does not.
+type nilRowStore struct{}
+
+func (nilRowStore) Repos() repository.Repos {
+	return repository.Repos{AccessKeys: nilKeyRepo{}, KeySets: nilKeySetRepo{}}
+}
+
+func (s nilRowStore) WithTx(ctx context.Context, fn func(context.Context, repository.Repos) error) error {
+	return fn(ctx, s.Repos())
+}
+
 // serviceOverNilRows builds a service whose repositories both violate the port
 // contract in the one way these tests care about.
 func serviceOverNilRows(t *testing.T) *Service {
 	t.Helper()
-	s, err := New(nilKeyRepo{}, nilKeySetRepo{}, &fakeAuditor{}, testPepper)
+	s, err := New(nilRowStore{}, &fakeAuditor{}, testPepper)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -80,5 +93,23 @@ func TestRevokeRefusesNilCredentialWithoutPanicking(t *testing.T) {
 	err := s.Revoke(context.Background(), "owner-1", "key-1", "req-1")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("Revoke error = %v, want one wrapping ErrNotFound", err)
+	}
+}
+
+// TestRotateRefusesNilCredentialWithoutPanicking covers the read that decides
+// whether a rotation may proceed at all. It runs inside the transaction, and a
+// nil dereference there would panic through WithTx.
+func TestRotateRefusesNilCredentialWithoutPanicking(t *testing.T) {
+	s := serviceOverNilRows(t)
+
+	k, secret, err := s.Rotate(context.Background(), "owner-1", "key-1", "req-1")
+	if k != nil {
+		t.Errorf("Rotate returned a credential %+v, want nil", k)
+	}
+	if secret.Reveal() != "" {
+		t.Error("Rotate returned a secret for a credential it could not resolve")
+	}
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Rotate error = %v, want one wrapping ErrNotFound", err)
 	}
 }
