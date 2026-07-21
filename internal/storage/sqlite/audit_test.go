@@ -1229,6 +1229,39 @@ func TestAuditRecordsForErasureMatchesActorOrTarget(t *testing.T) {
 	}
 }
 
+// TestAuditRecordsForErasureDedupsAcrossBatches pins that a record whose actor
+// and target land in different batches is returned once, not once per batch. It
+// seeds one more ID than a single batch can carry and puts that record's actor
+// in the first batch and its target in the last, the exact case the read's seen
+// set exists to fold.
+func TestAuditRecordsForErasureDedupsAcrossBatches(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	ids := make([]string, maxPseudonymizeBatch+1)
+	for i := range ids {
+		ids[i] = "id-" + strconv.Itoa(i)
+	}
+	// Actor in the first batch (ids[0]), target in the second (last id).
+	rec := newAuditRecord("aud-split", ids[0], ids[len(ids)-1], testClock)
+	if err := sink.Append(ctx, rec); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	got, err := repo.RecordsForErasure(ctx, ids)
+	if err != nil {
+		t.Fatalf("RecordsForErasure: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("returned %d records, want 1 (cross-batch duplicate not folded)", len(got))
+	}
+	if got[0].ID != "aud-split" {
+		t.Errorf("returned %q, want aud-split", got[0].ID)
+	}
+}
+
 // TestAuditScrubMetadataTouchesOnlyMetadata is the anti-forgery test for the
 // write half: it replaces the metadata column and leaves every other column —
 // action, timestamp, the type and identity columns, and the pseudonymized flag

@@ -483,14 +483,18 @@ WHERE actor_id IN (` + placeholders + `) OR target_id IN (` + placeholders + `)`
 //
 // Reads are batched on the same bound-variable ceiling as Pseudonymize (each ID
 // is bound twice here, against actor_id and target_id), so an owner with more
-// identifiers than one statement can carry is read across several. Duplicate
-// rows cannot arise across batches because the batches partition ids, and
-// within a batch a row matching on both columns is still one row.
+// identifiers than one statement can carry is read across several. Results are
+// deduplicated by record ID: a record naming one identifier as its actor and a
+// different identifier as its target can match in two separate batches, so
+// without the seen set the caller would scrub — and count — it twice. That is
+// harmless given a deterministic scrub, but the dedup keeps the returned set a
+// true one-per-record census.
 func (r *auditRepo) RecordsForErasure(ctx context.Context, ids []string) ([]domain.AuditRecord, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	var out []domain.AuditRecord
+	seen := map[domain.AuditRecordID]bool{}
 	for start := 0; start < len(ids); start += maxPseudonymizeBatch {
 		end := min(start+maxPseudonymizeBatch, len(ids))
 		batch := ids[start:end]
@@ -512,7 +516,13 @@ WHERE actor_id IN (` + placeholders + `) OR target_id IN (` + placeholders + `)`
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, recs...)
+		for _, rec := range recs {
+			if seen[rec.ID] {
+				continue
+			}
+			seen[rec.ID] = true
+			out = append(out, rec)
+		}
 	}
 	return out, nil
 }

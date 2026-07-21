@@ -599,14 +599,17 @@ WHERE actor_id IN (` + whereActorIn + `) OR target_id IN (` + whereTargetIn + `)
 //
 // It is kept line-for-line comparable with the SQLite adapter: same batching on
 // the shared bound-variable ceiling (each ID bound twice, against actor_id and
-// target_id), same statement shape. Only the placeholders differ — $-numbered
-// here, computed from a single counter so the numbering and the argument order
-// cannot drift, the same discipline pseudonymizeBatch uses.
+// target_id), same statement shape, same dedup by record ID (a record whose
+// actor and target fall in different batches would otherwise be returned twice).
+// Only the placeholders differ — $-numbered here, computed from a single counter
+// so the numbering and the argument order cannot drift, the same discipline
+// pseudonymizeBatch uses.
 func (r *auditRepo) RecordsForErasure(ctx context.Context, ids []string) ([]domain.AuditRecord, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
 	var out []domain.AuditRecord
+	seen := map[domain.AuditRecordID]bool{}
 	for start := 0; start < len(ids); start += maxPseudonymizeBatch {
 		end := min(start+maxPseudonymizeBatch, len(ids))
 		batch := ids[start:end]
@@ -638,7 +641,13 @@ WHERE actor_id IN (` + actorIn + `) OR target_id IN (` + targetIn + `)`
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, recs...)
+		for _, rec := range recs {
+			if seen[rec.ID] {
+				continue
+			}
+			seen[rec.ID] = true
+			out = append(out, rec)
+		}
 	}
 	return out, nil
 }
