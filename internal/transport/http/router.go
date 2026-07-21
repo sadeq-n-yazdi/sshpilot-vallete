@@ -243,9 +243,9 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// PUT rather than PATCH: each request carries the complete new state of the
 	// one thing it addresses, and repeating it is idempotent.
 	mux.Handle("PUT /api/v1/keysets/{keySetID}/default",
-		guardian.Protect(AccountAccess, setDefaultKeySetHandler(o.keySets, logger)))
+		guardian.Protect(AccountAccess, mgmt(setDefaultKeySetHandler(o.keySets, logger))))
 	mux.Handle("PUT /api/v1/keysets/{keySetID}/visibility",
-		guardian.Protect(KeySetAccess, setVisibilityKeySetHandler(o.keySets, logger)))
+		guardian.Protect(KeySetAccess, mgmt(setVisibilityKeySetHandler(o.keySets, logger))))
 
 	// Outermost first: every response carries the transport policy, then every
 	// request gets an ID, then a span and a metric, then is logged, then is

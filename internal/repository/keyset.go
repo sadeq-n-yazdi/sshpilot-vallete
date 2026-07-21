@@ -30,8 +30,33 @@ type KeySetRepository interface {
 	ListByOwner(ctx context.Context, ownerID domain.OwnerID) ([]domain.KeySet, error)
 
 	// CountByOwner returns the number of the owner's key sets. The service uses
-	// it inside a WithTx to enforce the per-owner cap of 100.
+	// it inside a WithTx, immediately after LockOwnerForCreate, to enforce the
+	// per-owner cap (config.Retention.MaxSetsPerOwner, default 100).
 	CountByOwner(ctx context.Context, ownerID domain.OwnerID) (int, error)
+
+	// LockOwnerForCreate serializes concurrent key-set creates for one owner so
+	// that a CountByOwner/Create pair cannot interleave with another
+	// transaction's.
+	//
+	// SECURITY: the per-owner cap is a check-then-insert, which is only an
+	// invariant if no other transaction can insert between the two statements.
+	// Engines differ in whether that is already true. SQLite opens every
+	// transaction as BEGIN IMMEDIATE (_txlock=immediate), so writers are
+	// already serialized database-wide and this method has nothing left to do.
+	// PostgreSQL runs transactions at READ COMMITTED, where two concurrent
+	// creates can both count cap-1 and both insert, leaving the owner over the
+	// cap; there this method takes a row lock that holds until the transaction
+	// ends, so the second create's count observes the first's committed insert.
+	//
+	// It MUST be called inside a Store.WithTx and before the count, and it MUST
+	// be the transaction's first lock on the owner's data: taking it after a
+	// key_sets write would invert the lock order that keeps concurrent creates
+	// and renames deadlock-free.
+	//
+	// An owner with no row is not an error. Nothing exists to lock, and the
+	// key_sets.owner_id foreign key refuses the insert that would follow, so
+	// the cap cannot be exceeded through that path.
+	LockOwnerForCreate(ctx context.Context, ownerID domain.OwnerID) error
 
 	// Update persists changes to the mutable fields of a key set, scoped by
 	// s.OwnerID and s.ID. Only Visibility, State, QuarantineUntil,

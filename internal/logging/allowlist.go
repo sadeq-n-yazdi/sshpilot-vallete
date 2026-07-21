@@ -62,6 +62,28 @@ var defaultAllowedKeys = []string{
 	"version",
 	"component",
 
+	// --- Periodic maintenance jobs ---------------------------------------
+	// "sweep" is the name of a background maintenance job. Names are
+	// compile-time constants chosen at the registration site
+	// ("handle_quarantine_release", "access_key_grace_expiry"); a sweep runs
+	// with no request and no principal behind it, so nothing here can be
+	// caller-controlled. Without this entry the job name -- the only field
+	// that says WHICH sweep a line is about -- renders "[REDACTED]", which
+	// leaves an operator unable to tell a stalled sweep from a healthy one
+	// running beside it, the exact failure the runner is shaped to surface.
+	//
+	// "interval" is the configured cadence between passes, an operator-set
+	// duration from config that is already visible in the config file the
+	// operator wrote. It is generic enough that a future caller could put
+	// something richer under it, so the value rules matter more than the key:
+	// leafValue redacts any structured value under an allowlisted key, and
+	// scrubURLCredentials runs over anything that renders as a string. The
+	// list already carries "duration" and "grace" on the same reasoning -- a
+	// time quantity is not a category that carries key material -- and this
+	// entry is no wider than those.
+	"sweep",
+	"interval",
+
 	// --- Diagnostics -----------------------------------------------------
 	// "error" and "panic" hold causes, which operators cannot work without.
 	// leafValue restricts what may render under them: an error renders via
@@ -96,4 +118,16 @@ var defaultAllowedKeys = []string{
 	"count",
 	"visibility",
 	"audit_action",
+
+	// The name of a periodic maintenance job ("handle_quarantine_release",
+	// "access_key_grace_expiry"). It is a compile-time constant chosen by the
+	// registration site, never derived from a request or a row, so the set of
+	// values it can take is fixed and public. It is allowlisted because a
+	// redacted job name makes every sweep log line interchangeable -- an
+	// operator asking "which sweep stopped" or "which one is failing" gets
+	// "[REDACTED]" from both, which is the one question these lines exist to
+	// answer. "interval" is its companion on the same lines and is likewise an
+	// operator's own configured cadence.
+	"sweep",
+	"interval",
 }
