@@ -119,11 +119,9 @@ func addHandleQuarantineSweep(
 	}
 
 	// Batch is read from config here rather than passed as 0 and left to the
-	// repository, whose ListExpiredQuarantine coerces a non-positive limit to
-	// its page-size default instead of rejecting it. Config validation already
-	// requires >= 1, so this is a positive number the operator chose; relying
-	// on the coercion would mean the effective bound was set by a storage
-	// constant nobody configured.
+	// repository: ListExpiredQuarantine REJECTS a non-positive limit as invalid
+	// input, so a 0 would fail every pass. Config validation already requires
+	// >= 1, so this is a positive number the operator chose.
 	batch := r.HandleQuarantineSweepBatch
 
 	// Concurrent instances are safe on this sweep. Two servers sweeping the
@@ -178,11 +176,10 @@ func addAccessKeyGraceSweep(
 		return false, fmt.Errorf("access key grace expiry sweep: %w", err)
 	}
 
-	// As above, an explicit operator-chosen bound. Here it is not merely
-	// preferable to passing 0: ListExpiredGrace REJECTS a non-positive limit as
-	// invalid input rather than coercing it, so a 0 would fail every pass. The
-	// two families of sweep primitive in this tree disagree on that, which is
-	// exactly why neither caller relies on the repository's reading of a zero.
+	// As above, an explicit operator-chosen bound. ListExpiredGrace REJECTS a
+	// non-positive limit as invalid input, so a 0 would fail every pass. Every
+	// sweep primitive in this tree agrees on that contract, which is why no
+	// caller relies on the repository's reading of a zero.
 	batch := r.AccessKeyGraceSweepBatch
 
 	// Concurrent instances are safe but not perfectly clean, and the difference

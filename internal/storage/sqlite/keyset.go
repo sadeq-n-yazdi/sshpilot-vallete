@@ -333,8 +333,12 @@ ORDER BY ks.id ASC`
 // UNSCOPED: a system-maintenance sweep across all owners; the quarantine-release
 // job acts on behalf of no single owner.
 func (r *keySetRepo) ListExpiredQuarantine(ctx context.Context, now time.Time, limit int) ([]domain.KeySet, error) {
+	// A non-positive limit has no safe interpretation. Reading it as "unbounded"
+	// would turn a caller's zero value into a full-table scan, which is the
+	// accident this API's batching exists to prevent, so it is rejected as
+	// invalid input instead.
 	if limit <= 0 {
-		limit = defaultPageLimit
+		return nil, fmt.Errorf("%s: list limit must be positive: %w", errPrefix, domain.ErrInvalidInput)
 	}
 	q := `SELECT ` + keySetColumns + ` FROM key_sets
 WHERE state = ? AND quarantine_until IS NOT NULL AND quarantine_until <= ?

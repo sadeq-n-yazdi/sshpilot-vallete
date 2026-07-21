@@ -529,6 +529,18 @@ func TestKeySetListExpiredQuarantineEmptyReturnsNilSlice(t *testing.T) {
 	}
 }
 
+func TestKeySetListExpiredQuarantineRejectsNonPositiveLimit(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	for _, limit := range []int{0, -1} {
+		_, err := s.Repos().KeySets.ListExpiredQuarantine(context.Background(), testClock, limit)
+		if !errors.Is(err, domain.ErrInvalidInput) {
+			t.Errorf("ListExpiredQuarantine(limit %d) = %v, want ErrInvalidInput", limit, err)
+		}
+	}
+}
+
 // TestKeySetQueryErrorsMapped drives the driver-error branches of the read and
 // write paths with an already-canceled context.
 func TestKeySetQueryErrorsMapped(t *testing.T) {
