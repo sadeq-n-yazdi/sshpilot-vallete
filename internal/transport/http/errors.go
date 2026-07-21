@@ -175,4 +175,13 @@ var (
 	// rather than a startup refusal, because the management routes are mounted
 	// unconditionally so that they always exist and always refuse.
 	ErrNilKeySetService = errors.New("httpserver: nil key set service")
+
+	// ErrNilListAdminService is logged when a reserved-identifier list edit
+	// route is reached with no service behind it. Like the services above it is
+	// a 500 on the route rather than a startup refusal, because the admin list
+	// routes are mounted unconditionally so that they always exist. A missing
+	// AdminIdentifier is a different, softer case: those routes still refuse
+	// every edit through denyAllAdminIdentifier, so an absent identity fails
+	// closed rather than 500.
+	ErrNilListAdminService = errors.New("httpserver: nil list admin service")
 )

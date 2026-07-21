@@ -159,6 +159,19 @@ tags:
       owner carried by the bearer token. Creating and listing address the
       account; renaming and deleting address one set, so a set-bound token
       reaches only the set it was issued for.
+  - name: admin
+    description: |
+      Instance administration of the reserved-identifier lists (ADR-0017, Fb4).
+      These edit GLOBAL service policy — which identifiers every owner may
+      claim — so they are not owner-scoped and do not use an owner bearer token.
+      Each edit is authorized against an administrator, audited, and persisted
+      before it takes effect (ADR-0007).
+
+      The administrator credential scheme (`adminAuth`) is provisional: the
+      transport binding for administrator identity is a separate decision with
+      its own ADR and is not finalized. Until it is wired every edit fails
+      closed — the routes exist and answer `403` to everyone — so no list is
+      ever edited on nobody's authority.
 paths:
   /healthz:
     get:
@@ -940,6 +953,136 @@ paths:
           $ref: "#/components/responses/KeySetNotFound"
         "500":
           $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/admin/reserved/allowlist:
+    post:
+      tags: [admin]
+      operationId: addAllowlistEntry
+      summary: Exempt an identifier from the reserved-identifier blocklist.
+      description: |
+        Adds an allowlist entry: an identifier the blocklist would otherwise
+        refuse becomes claimable. This is a deliberate hole in a security
+        control, so it is authorized against an administrator, audited, and made
+        durable before it takes effect — and, because it weakens the control,
+        the audit record is written before the exemption is applied (ADR-0017).
+
+        The entry is the administrator's own spelling; a `409` means it is
+        already present. The response names no reason and echoes no entry.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminListEntryRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/AdminEditApplied"
+        "400":
+          $ref: "#/components/responses/AdminEditBadRequest"
+        "403":
+          $ref: "#/components/responses/AdminRefused"
+        "409":
+          $ref: "#/components/responses/AdminEntryConflict"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+    delete:
+      tags: [admin]
+      operationId: removeAllowlistEntry
+      summary: Withdraw an allowlist exemption.
+      description: |
+        Removes an allowlist entry, re-blocking the identifier for future
+        creates and renames. Identifiers already claimed under the entry are not
+        affected — the blocklist is enforced at creation and rename only
+        (ADR-0017). Removal strengthens the control, so it is persisted before
+        it is reported as done.
+
+        The entry is matched on its skeleton, so a removal withdraws an entry
+        added under any confusable spelling of the same word. A `404` means no
+        such entry is present.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminListEntryRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/AdminEditApplied"
+        "400":
+          $ref: "#/components/responses/AdminEditBadRequest"
+        "403":
+          $ref: "#/components/responses/AdminRefused"
+        "404":
+          $ref: "#/components/responses/AdminEntryNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/admin/reserved/blocklist:
+    post:
+      tags: [admin]
+      operationId: addBlocklistTerm
+      summary: Reserve an additional identifier at runtime.
+      description: |
+        Adds an administrator-chosen term to the reserved-identifier blocklist,
+        refused from that point on for creates and renames. The term is
+        whole-skeleton and its confusable spellings are refused with it;
+        substring terms are not offered at runtime, because one mistaken
+        substring could refuse a large share of the namespace (ADR-0017).
+
+        A `409` means the term is already present. The response names no reason.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminListEntryRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/AdminEditApplied"
+        "400":
+          $ref: "#/components/responses/AdminEditBadRequest"
+        "403":
+          $ref: "#/components/responses/AdminRefused"
+        "409":
+          $ref: "#/components/responses/AdminEntryConflict"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+    delete:
+      tags: [admin]
+      operationId: removeBlocklistTerm
+      summary: Withdraw an administrator-added reserved term.
+      description: |
+        Removes a term previously added at runtime. Curated terms from the
+        built-in lists are not reachable here: they are reviewed data, and a
+        runtime operation that could silently disable a shipped impersonation
+        term would be a larger hole than the allowlist it complements
+        (ADR-0017). Removal weakens the control, so the audit record is written
+        before the term stops being enforced.
+
+        A `404` means no such administrator-added term is present.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminListEntryRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/AdminEditApplied"
+        "400":
+          $ref: "#/components/responses/AdminEditBadRequest"
+        "403":
+          $ref: "#/components/responses/AdminRefused"
+        "404":
+          $ref: "#/components/responses/AdminEntryNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
 components:
   securitySchemes:
     bearerAuth:
@@ -949,6 +1092,18 @@ components:
         An access token issued by the enrollment flow. Exactly one
         `Authorization` header is accepted; two is a request-smuggling shape and
         is refused rather than resolved.
+    adminAuth:
+      type: http
+      scheme: bearer
+      description: |
+        The administrator credential for the reserved-identifier list routes.
+
+        PROVISIONAL: how an administrator authenticates is a separate security
+        decision with its own ADR and is not finalized. Until it is wired the
+        server resolves no administrator from any request, so every edit is
+        attributed to no one and refused with `403`. The scheme is documented
+        here so the routes' authorization requirement is explicit, not so a
+        token of this shape is accepted today.
   parameters:
     Handle:
       name: handle
@@ -1638,6 +1793,54 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
           example: { status: error }
+    AdminEditApplied:
+      description: |
+        The reserved-identifier list edit was authorized, audited, persisted,
+        and applied. The response carries no body: the fact of the transition is
+        the whole report, and a body would be a place for detail this surface
+        deliberately does not disclose.
+    AdminRefused:
+      description: |
+        The edit was refused because the request did not establish an active
+        administrator — no administrator identity, an unknown one, or a disabled
+        one. These cases are deliberately indistinguishable: telling them apart
+        would let a caller enumerate which administrator IDs exist. The body is
+        fixed text and names nothing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    AdminEditBadRequest:
+      description: |
+        The request body is unreadable, oversized, carries an unrecognized
+        field, or names an entry that is empty or has no comparable skeleton. It
+        reports only on what the caller sent, and names no field and no reason.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    AdminEntryConflict:
+      description: |
+        The entry is already present in the list, so adding it would record a
+        change that changed nothing. Reached only by an authorized administrator,
+        who can see the same fact in the list; it names no reserved term.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    AdminEntryNotFound:
+      description: |
+        No such entry is present, so there is nothing to remove. Reached only by
+        an authorized administrator; it names no reserved term and echoes no
+        entry.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
     InternalError:
       description: |
         An internal fault. The body is fixed text; the cause is in the server
@@ -1837,6 +2040,26 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PublicKey"
+      additionalProperties: false
+    AdminListEntryRequest:
+      type: object
+      description: |
+        A single reserved-identifier list entry, in the administrator's own
+        spelling. It is stored and audited exactly as written; the server
+        derives the comparison skeleton itself and never accepts or returns one.
+        `additionalProperties: false` refuses any other field rather than
+        ignoring it.
+      required: [entry]
+      properties:
+        entry:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: |
+            The word to add or remove. Bounded at 256 bytes, the same limit the
+            match engine applies, so an entry that could never be compared
+            against an identifier cannot be stored. An empty entry, or one whose
+            skeleton is empty, is refused with `400`.
       additionalProperties: false
     CreateKeySetRequest:
       type: object
