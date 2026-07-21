@@ -172,6 +172,34 @@ func (e *Emitter) Emit(ctx context.Context, ev Event) error {
 	return e.sink.Append(ctx, rec)
 }
 
+// EmitTo validates and stamps ev exactly as Emit does, then appends the record
+// through the SUPPLIED sink instead of the Emitter's own. It exists for a caller
+// running inside a repository.Store.WithTx that wants the record written on the
+// transaction-bound appender (repository.Repos.Audit), so the record and the
+// state change it describes commit or roll back together: a committed change can
+// no longer be left with no audit line by a failure — or a shutdown — landing
+// between the two writes.
+//
+// The record is built through the same record path Emit uses, so the same
+// validation and credential screening apply; only the destination differs. The
+// distinction from Emit is the whole point: Emit appends to e.sink, which the
+// store hands out as an auto-commit appender, so a record it writes commits on
+// its own and would survive a rollback of the transaction it was meant to
+// witness. EmitTo writes to sink, and when that sink is the transaction-bound
+// r.Audit the record shares the transaction's fate. A nil sink is a programming
+// error and is refused here rather than deferred to a nil dereference in the
+// middle of that transaction.
+func (e *Emitter) EmitTo(ctx context.Context, sink repository.AuditAppender, ev Event) error {
+	if sink == nil {
+		return fmt.Errorf("audit: nil appender: %w", domain.ErrInvalidInput)
+	}
+	rec, err := e.record(ev)
+	if err != nil {
+		return err
+	}
+	return sink.Append(ctx, rec)
+}
+
 // record validates ev and builds the domain record Emit appends. It is split
 // out so the validation is testable without a sink.
 func (e *Emitter) record(ev Event) (*domain.AuditRecord, error) {

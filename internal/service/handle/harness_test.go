@@ -59,6 +59,23 @@ func (a *recordingAuditor) Emit(_ context.Context, ev audit.Event) error {
 	return nil
 }
 
+// EmitTo records ev the same way Emit does and ignores the sink: this fake
+// stands in for the auditor, not for the transaction, so a test can still
+// observe a release event through captured(). Its err honoring is the point for
+// the failure-injection tests — returning it makes the release transaction roll
+// back, which is exactly the atomicity the fix provides. The record's actual
+// arrival on the real transaction-bound sink is proven separately, by a test
+// wired with a real emitter that reads the audit table back.
+func (a *recordingAuditor) EmitTo(_ context.Context, _ repository.AuditAppender, ev audit.Event) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.err != nil {
+		return a.err
+	}
+	a.events = append(a.events, ev)
+	return nil
+}
+
 func (a *recordingAuditor) captured() []audit.Event {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -332,6 +349,22 @@ func (s nilRowStore) WithTx(ctx context.Context, fn func(context.Context, reposi
 		r.Handles = s.decor(r.Handles)
 		return fn(ctx, r)
 	})
+}
+
+// nilAuditStore returns a Repos with the Audit repository removed. A Service
+// built on it is one that could free a public name inside a transaction with no
+// way to record it there, which is the wiring New must refuse rather than defer
+// to a nil dereference mid-release.
+type nilAuditStore struct{ inner repository.Store }
+
+func (s nilAuditStore) Repos() repository.Repos {
+	r := s.inner.Repos()
+	r.Audit = nil
+	return r
+}
+
+func (s nilAuditStore) WithTx(ctx context.Context, fn func(context.Context, repository.Repos) error) error {
+	return s.inner.WithTx(ctx, fn)
 }
 
 // withNilRows returns a service backed by f's store with the handle reads

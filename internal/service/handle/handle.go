@@ -92,8 +92,15 @@ var ErrMissingDependency = errors.New("handle: missing dependency")
 // Auditor is the audit dependency, declared at the point of use so this package
 // depends on a method set rather than a concrete type. *audit.Emitter satisfies
 // it.
+//
+// Emit appends on the auditor's own auto-commit sink; EmitTo appends on a sink
+// the caller supplies. ReleaseExpired uses the latter to hand it the
+// transaction-bound r.Audit, so the release and its record commit as one — see
+// that method for why a release in particular cannot afford the gap the
+// auto-commit path leaves.
 type Auditor interface {
 	Emit(ctx context.Context, ev audit.Event) error
+	EmitTo(ctx context.Context, sink repository.AuditAppender, ev audit.Event) error
 }
 
 // Service implements handle lifecycle management. It is immutable after
@@ -178,6 +185,16 @@ func New(store repository.Store, guard *nameguard.Guard, auditor Auditor, opts .
 	// refusal at construction, which is the promise the doc above already makes.
 	if store.Repos().Handles == nil {
 		return nil, fmt.Errorf("%w: handle repository", ErrMissingDependency)
+	}
+	// The audit repository is read for the same reason and checked here for the
+	// same one. ReleaseExpired writes each release's record through the
+	// transaction-bound r.Audit so the two commit atomically; a store assembled
+	// with that repository left nil satisfies every check above, starts, and
+	// nil-panics in the middle of a release transaction — the exact place this
+	// package works to keep a freed name and its record inseparable. Reading it
+	// once here turns that into a refusal at construction.
+	if store.Repos().Audit == nil {
+		return nil, fmt.Errorf("%w: audit repository", ErrMissingDependency)
 	}
 	s := &Service{
 		store:      store,
@@ -414,22 +431,33 @@ func (s *Service) claim(
 // ReleaseExpired ends the quarantines that have elapsed, returning those names
 // to the pool, and reports how many it released.
 //
-// Each release is a separate call rather than one bulk delete because each one
-// is separately audited: the moment a name becomes claimable by a stranger is
-// the moment an incident review needs to be able to place in time.
+// Each release is a separate transaction rather than one bulk delete because
+// each one is separately audited: the moment a name becomes claimable by a
+// stranger is the moment an incident review needs to be able to place in time.
 //
-// The record is written after the delete, not with it, so an emitter failure
-// leaves a name already released and no audit line saying so. That ordering is
-// deliberate and matches the rest of the services here: emitting first would
-// risk the opposite failure, a record asserting a release that never happened,
-// and a missing record is the safer of the two to reconcile against the row
-// that is demonstrably gone. The sweep stops on that failure rather than
-// continuing, so the gap is bounded to a single name.
+// The delete and its audit record commit TOGETHER, in one transaction, through
+// the transaction-bound appender the store hands the closure (r.Audit). This is
+// the stronger of the two orderings a service here can take, and a release can
+// take it because it is one delete and one record. The retention scheduler in
+// package erasure cannot: it writes one summary record for many already-
+// committed batch deletes, so it has nothing left to bind the record to and
+// instead detaches the write from shutdown with a WithoutCancel context,
+// accepting that a hard crash may still lose that one record. Here there is
+// nothing to detach — the record shares the delete's transaction, so neither
+// can exist without the other.
+//
+// A shutdown, or an emitter failure, landing between the two therefore no
+// longer frees a public name with no audit line: the transaction rolls back and
+// the name stays quarantined for the next sweep, which is the safe direction —
+// a name held a little too long, never a name freed with no record that it was.
+// The sweep stops on such a failure rather than continuing, so a persistent
+// fault is bounded to the run rather than freeing the rest of the batch
+// unrecorded.
 //
 // The repository re-checks the state and the deadline inside the DELETE, so a
 // hold the owner reclaimed between this sweep's read and its write is not
-// deleted out from under them; that row simply reports ErrNotFound and the
-// sweep moves on.
+// deleted out from under them; that row simply reports ErrNotFound, its empty
+// transaction rolls back, and the sweep moves on.
 func (s *Service) ReleaseExpired(ctx context.Context, limit int) (int, error) {
 	now := s.now().UTC()
 
@@ -442,7 +470,7 @@ func (s *Service) ReleaseExpired(ctx context.Context, limit int) (int, error) {
 	for i := range expired {
 		h := expired[i]
 
-		// Details are built before the delete so a value the audit screen
+		// Details are built before the transaction so a value the audit screen
 		// refuses stops this release rather than freeing a name with no record
 		// that it was freed.
 		details, err := handleDetails(h.Name, "")
@@ -450,16 +478,23 @@ func (s *Service) ReleaseExpired(ctx context.Context, limit int) (int, error) {
 			return released, err
 		}
 
-		if err := s.store.Repos().Handles.Release(ctx, h.ID, now); err != nil {
+		if err := s.store.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
+			if err := r.Handles.Release(ctx, h.ID, now); err != nil {
+				return err
+			}
+			// Recorded on r.Audit, the transaction-bound appender, so this
+			// record and the delete above are one atomic unit. A failure here
+			// returns non-nil, which rolls the delete back with it.
+			return s.emitTx(ctx, r.Audit, domain.AuditActionHandleReleased, h.OwnerID, h.ID, details)
+		}); err != nil {
 			if errors.Is(err, domain.ErrNotFound) {
 				// Reclaimed, retired, or already swept between the list and
-				// here. Not an error: the row is exactly where it should be.
+				// here. The re-checked delete matched no row and the empty
+				// transaction rolled back; the row is exactly where it should
+				// be.
 				continue
 			}
 			return released, fmt.Errorf("handle: release %s: %w", h.ID, err)
-		}
-		if err := s.emit(ctx, domain.AuditActionHandleReleased, h.OwnerID, h.ID, details); err != nil {
-			return released, err
 		}
 		released++
 	}
@@ -494,6 +529,28 @@ func (s *Service) emit(
 	details audit.Details,
 ) error {
 	return s.auditor.Emit(ctx, audit.Event{
+		ActorType:  domain.ActorTypeOwner,
+		ActorID:    string(ownerID),
+		Action:     action,
+		TargetType: domain.TargetTypeHandle,
+		TargetID:   string(id),
+		Details:    details,
+	})
+}
+
+// emitTx records the same audited transition as emit but on a caller-supplied
+// sink rather than the auditor's own. ReleaseExpired passes the transaction-
+// bound r.Audit so the record commits or rolls back with the state change it
+// witnesses; it is otherwise identical to emit.
+func (s *Service) emitTx(
+	ctx context.Context,
+	sink repository.AuditAppender,
+	action domain.AuditAction,
+	ownerID domain.OwnerID,
+	id domain.HandleID,
+	details audit.Details,
+) error {
+	return s.auditor.EmitTo(ctx, sink, audit.Event{
 		ActorType:  domain.ActorTypeOwner,
 		ActorID:    string(ownerID),
 		Action:     action,

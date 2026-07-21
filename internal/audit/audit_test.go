@@ -102,6 +102,58 @@ func TestEmitAppendsRecord(t *testing.T) {
 	}
 }
 
+// TestEmitToUsesTheSuppliedSink is the load-bearing check behind the durable-
+// release fix: EmitTo must append to the sink it is GIVEN, never the emitter's
+// own. The two sinks here stand in for the transaction-bound r.Audit and the
+// auto-commit e.sink; a record written to the latter would auto-commit on its
+// own and defeat the atomicity the caller reached for EmitTo to get. The record
+// must still be minted and stamped exactly as Emit does it.
+func TestEmitToUsesTheSuppliedSink(t *testing.T) {
+	t.Parallel()
+	e, own := newTestEmitter(t)
+	txSink := &fakeSink{}
+
+	if err := e.EmitTo(context.Background(), txSink, validEvent()); err != nil {
+		t.Fatalf("EmitTo: %v", err)
+	}
+	if len(own.records) != 0 {
+		t.Fatalf("EmitTo wrote %d records to the emitter's own sink, want 0: it "+
+			"must append only to the supplied sink", len(own.records))
+	}
+	if len(txSink.records) != 1 {
+		t.Fatalf("supplied sink got %d records, want 1", len(txSink.records))
+	}
+	got := txSink.records[0]
+	if got.ID != "aud-1" {
+		t.Errorf("ID = %q, want the emitter-minted aud-1", got.ID)
+	}
+	if !got.OccurredAt.Equal(testClock) || got.OccurredAt.Location() != time.UTC {
+		t.Errorf("OccurredAt = %v, want %v in UTC", got.OccurredAt, testClock)
+	}
+}
+
+// TestEmitToStillValidatesAndScreens confirms EmitTo shares Emit's record path,
+// so the credential screen and validation are not bypassed by routing a record
+// to a different sink. A rejected event must reach neither sink.
+func TestEmitToStillValidatesAndScreens(t *testing.T) {
+	t.Parallel()
+	e, own := newTestEmitter(t)
+	txSink := &fakeSink{}
+
+	bad := validEvent()
+	bad.ActorID = "" // a non-system actor with no id fails validation
+	if err := e.EmitTo(context.Background(), txSink, bad); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("EmitTo(invalid) = %v, want ErrInvalidInput", err)
+	}
+	if len(txSink.records) != 0 || len(own.records) != 0 {
+		t.Fatal("a rejected event was appended to a sink")
+	}
+
+	if err := e.EmitTo(context.Background(), nil, validEvent()); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("EmitTo(nil sink) = %v, want ErrInvalidInput", err)
+	}
+}
+
 // TestEmitMintsIDAndTimestamp confirms the caller cannot choose either: Event
 // has no field for them, so a caller can neither backdate a record nor pick an
 // ID that collides with an existing one to force an append failure.
@@ -309,8 +361,12 @@ func TestEmitterHoldsOnlyTheAppendOnlyPort(t *testing.T) {
 			"that can read, rewrite, or delete audit content", field.Type, want)
 	}
 
-	// And the emitter must expose no mutating operation of its own.
-	allowed := map[string]bool{"Emit": true}
+	// And the emitter must expose no operation beyond appending. EmitTo is
+	// allowed because it is still append-only: its sink parameter is the
+	// insert-only repository.AuditAppender, so like Emit it can add a record and
+	// can neither read, rewrite, nor delete one — it only changes which appender
+	// the record lands on.
+	allowed := map[string]bool{"Emit": true, "EmitTo": true}
 	et := reflect.TypeOf(&Emitter{})
 	for i := range et.NumMethod() {
 		if name := et.Method(i).Name; !allowed[name] {
