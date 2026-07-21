@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -194,20 +195,21 @@ func TestFailoverServesFromFallbackWithoutSurfacingOutage(t *testing.T) {
 }
 
 // fakeTimer drives the reprobe loop deterministically. after records the
-// interval the loop asked to wait, and the loop unblocks only when the test
-// sends on fire.
+// interval the loop asked to wait and counts stop calls, and the loop unblocks
+// only when the test sends on fire.
 type fakeTimer struct {
-	reqs chan time.Duration
-	fire chan time.Time
+	reqs  chan time.Duration
+	fire  chan time.Time
+	stops atomic.Int64
 }
 
 func newFakeTimer() *fakeTimer {
 	return &fakeTimer{reqs: make(chan time.Duration, 8), fire: make(chan time.Time)}
 }
 
-func (ft *fakeTimer) after(d time.Duration) <-chan time.Time {
+func (ft *fakeTimer) after(d time.Duration) (<-chan time.Time, func() bool) {
 	ft.reqs <- d
-	return ft.fire
+	return ft.fire, func() bool { ft.stops.Add(1); return true }
 }
 
 // waitInterval reports the next interval the reprobe loop requested, failing if
@@ -331,6 +333,37 @@ func TestCloseStopsReprobeAndClosesPrimary(t *testing.T) {
 	p.mu.Unlock()
 	if !closed {
 		t.Fatal("Close did not close the primary")
+	}
+}
+
+// TestCloseStopsPendingReprobeTimer proves Close releases a timer the reprobe
+// loop is currently waiting on, rather than leaving it to fire out its (up to
+// one-hour) interval after Close returns. It degrades the store so the loop
+// enters its wait, waits for the scheduled interval, then closes and asserts
+// the timer's stop was called.
+func TestCloseStopsPendingReprobeTimer(t *testing.T) {
+	t.Parallel()
+	p := newFakePrimary(t)
+	p.setDown(true)
+	ft := newFakeTimer()
+	inject := FailoverOption(func(f *FailoverStore) { f.after = ft.after })
+	f, err := NewFailoverStore(p, newMemFallback(t), WithReprobeInterval(time.Hour), inject)
+	if err != nil {
+		t.Fatalf("NewFailoverStore: %v", err)
+	}
+
+	// A request during the outage degrades the store, waking the reprobe loop,
+	// which schedules a probe and blocks on the timer.
+	if _, err := f.Increment(context.Background(), "k", 1, time.Minute); err != nil {
+		t.Fatalf("Increment during outage must be served from fallback: %v", err)
+	}
+	ft.waitInterval(t) // the loop is now blocked on the pending timer.
+
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if ft.stops.Load() == 0 {
+		t.Fatal("Close did not stop the pending reprobe timer; it would outlive Close for up to the interval")
 	}
 }
 

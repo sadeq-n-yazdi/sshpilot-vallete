@@ -91,10 +91,14 @@ type FailoverStore struct {
 	baseInterval time.Duration
 	maxInterval  time.Duration
 
-	// after returns a channel that fires after d. It is a field so a test can
-	// drive the reprobe schedule without waiting real minutes; it defaults to
-	// time.After.
-	after func(d time.Duration) <-chan time.Time
+	// after returns a channel that fires after d together with a stop function
+	// that releases the underlying timer. It is a field so a test can drive the
+	// reprobe schedule without waiting real minutes; it defaults to a
+	// time.NewTimer pair. Returning the stop function -- rather than the bare
+	// channel time.After would give -- lets the loop release a pending timer
+	// when Close races the wait, so a long (up to one-hour) interval does not
+	// leave a timer alive well past Close.
+	after func(d time.Duration) (<-chan time.Time, func() bool)
 
 	// degradedCh carries the healthy->degraded transition to the reprobe loop.
 	// It is buffered with one slot and sent to non-blockingly, so a failover
@@ -138,10 +142,13 @@ func NewFailoverStore(primary Primary, fallback Store, opts ...FailoverOption) (
 		fallback:     fallback,
 		baseInterval: defaultReprobeInterval,
 		maxInterval:  maxReprobeInterval,
-		after:        time.After,
-		degradedCh:   make(chan struct{}, 1),
-		done:         make(chan struct{}),
-		stopped:      make(chan struct{}),
+		after: func(d time.Duration) (<-chan time.Time, func() bool) {
+			t := time.NewTimer(d)
+			return t.C, t.Stop
+		},
+		degradedCh: make(chan struct{}, 1),
+		done:       make(chan struct{}),
+		stopped:    make(chan struct{}),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -206,16 +213,21 @@ func (f *FailoverStore) Delete(ctx context.Context, key string) error {
 // It is exported for tests and as the natural gauge to export as a metric.
 func (f *FailoverStore) Degraded() bool { return f.degraded.Load() }
 
-// Close stops the reprobe goroutine and closes the Primary if it holds
-// releasable resources (a connection pool). It is idempotent: the primary is
-// closed inside the once, so a second call is a no-op rather than a double close.
+// Close stops the reprobe goroutine and closes the Primary and, when it too
+// holds releasable resources, the fallback -- each only if it implements
+// Close() error. The two close errors are joined so neither is hidden by the
+// other. It is idempotent: the closes run inside the once, so a second call is
+// a no-op rather than a double close.
 func (f *FailoverStore) Close() error {
 	var err error
 	f.closeOnce.Do(func() {
 		close(f.done)
 		<-f.stopped // wait for the goroutine to exit so no probe outlives Close.
 		if c, ok := f.primary.(interface{ Close() error }); ok {
-			err = c.Close()
+			err = errors.Join(err, c.Close())
+		}
+		if c, ok := f.fallback.(interface{ Close() error }); ok {
+			err = errors.Join(err, c.Close())
 		}
 	})
 	return err
@@ -247,10 +259,14 @@ func (f *FailoverStore) reprobe() {
 
 		interval := f.baseInterval
 		for f.degraded.Load() {
+			ch, stop := f.after(interval)
 			select {
 			case <-f.done:
+				// Release the pending timer rather than let it live out a
+				// possibly hour-long interval after Close has returned.
+				stop()
 				return
-			case <-f.after(interval):
+			case <-ch:
 			}
 			if f.probeHealthy() {
 				// Switch back: the Primary is authoritative again, and the
