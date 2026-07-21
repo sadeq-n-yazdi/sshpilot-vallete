@@ -428,7 +428,13 @@ func decodeKeySetJSON(w http.ResponseWriter, r *http.Request, into any) error {
 // Everything else -> 500 with the reason logged at Error and never returned.
 func writeKeySetError(w http.ResponseWriter, r *http.Request, logger *slog.Logger, err error, msg string) {
 	switch {
-	case errors.Is(err, keyset.ErrNotFound):
+	// Matched on the DOMAIN sentinel rather than keyset.ErrNotFound, which
+	// wraps it. Both are caught either way, and an unmapped domain.ErrNotFound
+	// reaching here answers 404 instead of falling through to 500. That
+	// fallthrough was the real hazard: this surface answers a uniform 404 so a
+	// stranger's row is indistinguishable from a missing one, and a 500 on one
+	// of those paths would be the difference an observer needs.
+	case errors.Is(err, domain.ErrNotFound):
 		writeKeySetStatus(w, http.StatusNotFound)
 	case errors.Is(err, keyset.ErrDuplicate):
 		writeKeySetConflict(w, reasonNameTaken)
