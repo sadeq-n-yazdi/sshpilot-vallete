@@ -21,6 +21,7 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/erasure"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/logging"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/sweep"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
@@ -50,10 +51,13 @@ func main() {
 // run performs the full startup sequence and blocks until shutdown completes.
 //
 // The order matters and is fail-closed at every step: configuration is
-// validated before anything is opened, the datastore is opened before the
-// listener binds, and the server is constructed (which is where TLS policy is
-// enforced) before a single connection is accepted. Any failure returns an
-// error and the process exits non-zero rather than serving degraded.
+// validated before anything is opened, the datastore is opened before its
+// schema is brought up to date, the schema is migrated before the store is
+// built on top of it, and the server is constructed (which is where TLS policy
+// is enforced) before a single connection is accepted. Any failure returns an
+// error and the process exits non-zero rather than serving degraded. In
+// particular a database whose schema cannot be migrated is a startup failure,
+// never something a live server discovers at the first request.
 func run(args []string, stdout, stderr io.Writer) error {
 	// Subcommands are dispatched before flag parsing so their own flag sets own
 	// their arguments. Only a leading bare word is treated as a subcommand, so
@@ -92,6 +96,15 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer func() { _ = db.Close() }()
+
+	// Bring the schema up to date before anything is built on top of it. A live
+	// server must never serve traffic against a database it does not match, so a
+	// migration that cannot be applied fails startup here rather than surfacing
+	// as errors at the first request. This mirrors the bootstrap subcommand,
+	// which runs the same migrations through the same helper.
+	if err := migrateDatabase(context.Background(), cfg, db); err != nil {
+		return err
+	}
 
 	store := sqlite.NewStore(db)
 
@@ -265,6 +278,24 @@ func newLogger(cfg *config.Config, w io.Writer) (*slog.Logger, error) {
 		return nil, fmt.Errorf("telemetry.log: %w", err)
 	}
 	return logger, nil
+}
+
+// migrateDatabase applies pending forward migrations to db using the dialect
+// for the configured driver, reusing the same applyMigrations helper the
+// bootstrap subcommand runs. Only forward migrations are applied: nothing here
+// reverts, and destructive gating is never enabled.
+//
+// The driver switch mirrors openDatabase: sqlite is the one driver the server
+// can open today, and any other driver fails closed. When openDatabase learns
+// to open Postgres, its matching case (postgres.NewMigrateDB + EnginePostgres)
+// is added here in the one place the wiring lives.
+func migrateDatabase(ctx context.Context, cfg *config.Config, db *sql.DB) error {
+	switch cfg.Database.Driver {
+	case "sqlite":
+		return applyMigrations(ctx, sqlite.NewMigrateDB(db), migrate.EngineSQLite)
+	default:
+		return fmt.Errorf("database driver %q is not supported yet", cfg.Database.Driver)
+	}
 }
 
 // openDatabase opens the configured datastore and verifies it answers before

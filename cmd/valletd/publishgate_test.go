@@ -20,6 +20,7 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/keys"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
@@ -68,7 +69,7 @@ func newGateFixture(t *testing.T, pepperRef string) *gateFixture {
 		t.Fatalf("sqlite.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := applyMigrations(context.Background(), sqlite.NewMigrateDB(db)); err != nil {
+	if err := applyMigrations(context.Background(), sqlite.NewMigrateDB(db), migrate.EngineSQLite); err != nil {
 		t.Fatalf("applyMigrations: %v", err)
 	}
 

@@ -76,7 +76,7 @@ func runBootstrapOwner(args []string, stdout, stderr io.Writer) error {
 	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
-	if err := applyMigrations(ctx, sqlite.NewMigrateDB(db)); err != nil {
+	if err := applyMigrations(ctx, sqlite.NewMigrateDB(db), migrate.EngineSQLite); err != nil {
 		return err
 	}
 
@@ -144,13 +144,16 @@ func readLimited(r io.Reader) ([]byte, error) {
 	return b, nil
 }
 
-// applyMigrations brings the database schema up to date.
-func applyMigrations(ctx context.Context, db migrate.DB) error {
+// applyMigrations brings the database schema up to date using the dialect for
+// engine. It is the single runner-wiring site shared by the bootstrap
+// subcommand and normal server startup, so the two can never drift in how the
+// schema is brought up.
+func applyMigrations(ctx context.Context, db migrate.DB, engine migrate.Engine) error {
 	reg, err := schema.Registry()
 	if err != nil {
 		return fmt.Errorf("build migration registry: %w", err)
 	}
-	runner, err := migrate.NewRunner(db, migrate.EngineSQLite, reg)
+	runner, err := migrate.NewRunner(db, engine, reg)
 	if err != nil {
 		return fmt.Errorf("build migration runner: %w", err)
 	}
