@@ -15,12 +15,14 @@ import (
 // authenticated management surface, which an embedder serving only the publish
 // path does not need.
 type handlerOptions struct {
-	authorizer Authorizer
-	devices    DeviceService
-	keys       PublicKeyService
-	keySets    KeySetService
-	telemetry  *telemetry.Provider
-	counter    counter.Store
+	authorizer      Authorizer
+	devices         DeviceService
+	keys            PublicKeyService
+	keySets         KeySetService
+	listAdmin       ListAdminService
+	adminIdentifier AdminIdentifier
+	telemetry       *telemetry.Provider
+	counter         counter.Store
 }
 
 // HandlerOption configures NewHandler.
@@ -77,6 +79,23 @@ func WithPublicKeyService(s PublicKeyService) HandlerOption {
 // WithKeySetService supplies the key set management service.
 func WithKeySetService(s KeySetService) HandlerOption {
 	return func(o *handlerOptions) { o.keySets = s }
+}
+
+// WithListAdminService supplies the reserved-identifier list editing service.
+// Without it the admin list routes are mounted but answer 500, the same
+// unconditional-mount-then-refuse shape the other management services take.
+func WithListAdminService(s ListAdminService) HandlerOption {
+	return func(o *handlerOptions) { o.listAdmin = s }
+}
+
+// WithAdminIdentifier supplies the administrator identity resolver for the admin
+// list routes. Without it those routes run behind denyAllAdminIdentifier, which
+// authenticates nobody, so every edit is attributed to the empty ID and refused
+// by the service -- the fail-closed default, mirroring how a missing Authorizer
+// leaves the owner surface refusing everyone. Production wiring MUST pass this
+// once an admin authenticator exists; see the SEAM note in cmd/valletd.
+func WithAdminIdentifier(id AdminIdentifier) HandlerOption {
+	return func(o *handlerOptions) { o.adminIdentifier = id }
 }
 
 // managementGuardian builds the Guardian for the management routes.

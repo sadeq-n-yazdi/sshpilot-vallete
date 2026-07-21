@@ -135,5 +135,9 @@ func reposFor(e execer) repository.Repos {
 		// system-axis principal, so adminRepo takes the same execer but has no
 		// owner axis to filter on. See adminRepo.
 		Admins: &adminRepo{e: e},
+		// ListOverrides is unscoped for the same reason as Admins: the
+		// reserved-identifier lists are global service policy, not owner-owned
+		// data. See listOverrideRepo and repository.ListOverrideRepository.
+		ListOverrides: &listOverrideRepo{e: e},
 	}
 }

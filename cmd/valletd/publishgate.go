@@ -12,6 +12,7 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/counter"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/accesskey"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/listadmin"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
@@ -66,27 +67,66 @@ func buildServer(
 	// annotates when the publish gate was wired; the publish-side SEAM it used
 	// to sit beside is resolved.)
 	//
-	// SEAM: the key set service needs a *nameguard.Guard, which is the ONLY way
-	// the reserved-identifier blocklist (ADR-0017, Fb4) reaches a set-name
-	// create or rename. keyset.New refuses a nil one, so the service cannot be
-	// built without it and there is no unchecked path to build. But no matcher
-	// is constructed in this function today -- nameguard.Default() is called
-	// only by the bootstrap-owner subcommand -- and constructing one here would
-	// pick a source (the curated defaults, or the defaults plus the operator's
-	// configured extra and allow lists via listadmin.ApplySeed) that is a
-	// deployment decision tracked separately. So the choice is deliberately not
-	// made here; setSvc above is built by whoever completes this wiring, with
-	// the guard the blocklist-wiring task settles on.
+	// The reserved-identifier policy (ADR-0017, Fb4) is composed ONCE here:
+	// newNamePolicy builds one blocklist.Matcher from the curated defaults, the
+	// operator's seed, and the persisted runtime overrides, and pairs it with a
+	// nameguard.Guard reading that same matcher. This is what closes the
+	// disconnected-matcher seam the SEAM above used to describe: there is no
+	// longer a deferred "pick a source" decision -- it is made here, and both
+	// the enforcement guard and the runtime editor share the one matcher.
+	policy, err := newNamePolicy(ctx, cfg, store.Repos().ListOverrides)
+	if err != nil {
+		return nil, err
+	}
+
+	// The runtime list editor. It edits policy.Matcher through the matcher's
+	// own atomic swappers, so an edit is observed by policy.Guard with no
+	// re-wiring, and it authorizes+audits+persists every edit. The insert-only
+	// appender is used, not the full audit port: this code accounts for policy
+	// changes and has no business being able to erase the record of them.
+	emitter, err := audit.NewEmitter(store.AuditAppender())
+	if err != nil {
+		return nil, fmt.Errorf("audit sink: %w", err)
+	}
+	listAdmin, err := listadmin.New(listadmin.Params{
+		Admins:    store.Repos().Admins,
+		Overrides: store.Repos().ListOverrides,
+		Emitter:   emitter,
+		Matcher:   policy.Matcher,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list admin service: %w", err)
+	}
+
+	// SEAM: the authenticated management surface (device / public key / key set
+	// services) is still not wired -- it needs the *auth.Guard whose adapters
+	// are in review. When it lands, this call gains
 	//
-	// The behavior described above is pinned by
-	// TestManagementRoutesFailClosedWithoutAnAuthorizer, which builds a handler
-	// with no authorizer -- this function's exact option set -- and asserts every
-	// management route answers 401.
+	//	httpserver.WithAuthorizer(guard),
+	//	httpserver.WithDeviceService(deviceSvc),
+	//	httpserver.WithPublicKeyService(keySvc),
+	//	httpserver.WithKeySetService(setSvc),
+	//
+	// and setSvc/deviceSvc are built with policy.Guard -- the shared guard is
+	// ready now, so completing that wiring is only "inject policy.Guard here".
+	// Until then keyset/handle/device request services do not exist on this mux;
+	// the guard's enforcement reaches only the bootstrap-owner path (#36 closes
+	// end to end the day those services mount through policy.Guard).
+	//
+	// The admin list routes ARE mounted below via WithListAdminService. Their
+	// administrator identity seam is left at its fail-closed default (no
+	// WithAdminIdentifier): every edit is refused until an admin authenticator
+	// exists, which is a separate decision with its own ADR. Pinned by
+	// TestManagementRoutesFailClosedWithoutAnAuthorizer (owner surface) and
+	// TestAdminListRoutesFailClosedWithoutAnIdentifier (admin surface).
 	//
 	// counterStore is appended only when the shared backend is configured; a nil
 	// one (the single-node default) leaves the option set unchanged, so the
-	// fail-closed test above is unaffected.
-	opts := []httpserver.HandlerOption{httpserver.WithTelemetry(tel)}
+	// fail-closed tests above are unaffected.
+	opts := []httpserver.HandlerOption{
+		httpserver.WithTelemetry(tel),
+		httpserver.WithListAdminService(listAdmin),
+	}
 	if counterStore != nil {
 		opts = append(opts, httpserver.WithCounterStore(counterStore))
 	}

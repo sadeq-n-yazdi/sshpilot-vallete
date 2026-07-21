@@ -254,6 +254,33 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	mux.Handle("PUT /api/v1/keysets/{keySetID}/visibility",
 		guardian.Protect(KeySetAccess, mgmt(setVisibilityKeySetHandler(o.keySets, logger))))
 
+	// The reserved-identifier list administration surface (ADR-0017, Fb4).
+	//
+	// These edit GLOBAL service policy -- which identifiers every owner may
+	// claim -- so they are not owner-scoped and do NOT pass through the owner
+	// Guardian above. Their authority is an administrator's, resolved by
+	// adminID and enforced by the ListAdminService, which authorizes, audits,
+	// and persists each edit before it takes effect.
+	//
+	// Mounted unconditionally, like the owner management routes, so the surface
+	// is constant. With no AdminIdentifier wired they run behind
+	// denyAllAdminIdentifier and refuse every edit; with no service wired they
+	// answer 500. Both are the fail-closed directions, and neither depends on
+	// how the process was configured being readable off the route table.
+	//
+	// The ADMIN rate-limit tier (ADR-0023) is deliberately still not attached:
+	// it keys per authenticated administrator, and that identity arrives with
+	// the admin authenticator these routes await. It is wired with that adapter,
+	// the same day a real AdminIdentifier replaces the deny-all stand-in.
+	adminID := o.adminIdentifier
+	if adminID == nil {
+		adminID = denyAllAdminIdentifier{}
+	}
+	mux.Handle("POST /api/v1/admin/reserved/allowlist", addAllowlistEntryHandler(o.listAdmin, adminID, logger))
+	mux.Handle("DELETE /api/v1/admin/reserved/allowlist", removeAllowlistEntryHandler(o.listAdmin, adminID, logger))
+	mux.Handle("POST /api/v1/admin/reserved/blocklist", addBlocklistTermHandler(o.listAdmin, adminID, logger))
+	mux.Handle("DELETE /api/v1/admin/reserved/blocklist", removeBlocklistTermHandler(o.listAdmin, adminID, logger))
+
 	// Outermost first: every response carries the transport policy, then every
 	// request gets an ID, then a span and a metric, then is logged, then is
 	// protected from panics.

@@ -11,7 +11,6 @@ import (
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/schema"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/bootstrap"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
@@ -80,22 +79,31 @@ func runBootstrapOwner(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	// Build the guard BEFORE opening the seed. If the curated lists cannot be
-	// compiled the command must stop rather than seed an unchecked handle: the
+	store := sqlite.NewStore(db)
+
+	// Build the guard BEFORE opening the seed. If the composed lists cannot be
+	// built the command must stop rather than seed an unchecked handle: the
 	// handle claimed here is global and permanent, so proceeding without
 	// enforcement is the one outcome no later fix undoes.
-	guard, err := nameguard.Default()
+	//
+	// The guard comes from newNamePolicy, not nameguard.Default(): the first
+	// handle must be checked against the SAME composed policy the running server
+	// enforces -- the curated defaults, the operator's seed, and any runtime
+	// overrides already recorded -- rather than the curated defaults alone. A
+	// handle the operator's blocklist would refuse must not be claimable merely
+	// because it was claimed through bootstrap.
+	policy, err := newNamePolicy(ctx, cfg, store.Repos().ListOverrides)
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
 
-	res, err := bootstrap.Seed(ctx, sqlite.NewStore(db), bootstrap.Params{
+	res, err := bootstrap.Seed(ctx, store, bootstrap.Params{
 		Handle:     *handle,
 		SetName:    *setName,
 		DeviceName: *deviceName,
 		KeyLine:    keyLine,
 		Now:        time.Now().UTC(),
-		Guard:      guard,
+		Guard:      policy.Guard,
 	})
 	if err != nil {
 		return err
