@@ -81,6 +81,54 @@ func (c *Config) validateServer(v *validator, prod bool) {
 		}
 	}
 	c.validateTrustedProxies(v)
+	if c.Server.HealthListenAddr != "" {
+		validatePrivateBindAddr(v, "server.health_listen_addr", c.Server.HealthListenAddr)
+	}
+}
+
+// validatePrivateBindAddr is the single fence shared by the two guarded
+// plaintext listeners (ADR-0015, Decisions 31 and 43): the loopback health
+// probe endpoint and the upstream-termination request listener. Both open a
+// PLAINTEXT socket, so both must refuse to bind anywhere an unauthenticated
+// request could reach from the internet, and factoring the check here means the
+// two exceptions cannot drift into two different definitions of "private".
+//
+// It fails closed: the host must classify as loopback or private, and anything
+// it cannot classify — a wildcard, a public address, a bare hostname it cannot
+// resolve to a category — is refused rather than assumed safe. The one non-IP
+// host allowed is the literal "localhost", which every platform maps to a
+// loopback interface; any other name is rejected because a rule that accepts
+// names would depend on resolution the validator deliberately never performs.
+func validatePrivateBindAddr(v *validator, field, addr string) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		v.add(field, "must be a host:port address, got %q", addr)
+		return
+	}
+	// Hostnames are case-insensitive (RFC 4343), so "LocalHost" is the same
+	// loopback name as "localhost" and must be accepted identically.
+	if strings.EqualFold(host, "localhost") {
+		return
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// An empty host is the ":8080" wildcard form; any other unparseable host
+		// is a name the fence will not resolve. Both are refused, and the message
+		// names the safe forms rather than guessing what the operator meant.
+		v.add(field, "must bind a loopback or private address (127.0.0.0/8, ::1, "+
+			"RFC1918, or ULA), got %q", addr)
+		return
+	}
+	if ip.IsUnspecified() {
+		v.add(field, "must not bind a wildcard address (%q reaches every interface); "+
+			"use a loopback or private address", addr)
+		return
+	}
+	if ip.IsLoopback() || ip.IsPrivate() {
+		return
+	}
+	v.add(field, "must bind a loopback or private address (127.0.0.0/8, ::1, "+
+		"RFC1918, or ULA), got a globally-routable address %q", addr)
 }
 
 // validateTrustedProxies fails closed on malformed reverse-proxy trust entries:
@@ -161,10 +209,27 @@ func (c *Config) validateTLS(v *validator, prod bool) {
 		if len(c.Server.TrustedProxies) == 0 {
 			v.add("server.trusted_proxies", "at least one required for upstream TLS mode")
 		}
+		// The plaintext app socket is required in this mode and must be fenced to a
+		// private/loopback interface: the proxy terminates TLS and forwards
+		// plaintext, so this is the app's only listener and it must sit behind the
+		// proxy, never be reachable directly.
+		if t.Upstream.ListenAddr == "" {
+			v.add("tls.upstream.listen_addr", "required for upstream TLS mode (the plaintext address the app listens on behind the proxy)")
+		} else {
+			validatePrivateBindAddr(v, "tls.upstream.listen_addr", t.Upstream.ListenAddr)
+		}
 	case "self_signed":
 		if prod && !t.AllowSelfSignedInProduction {
 			v.add("tls.mode", "self_signed refused in production unless allow_self_signed_in_production is set")
 		}
+	}
+	// The plaintext app socket must not exist outside upstream mode. In every
+	// TLS-terminating mode this process holds a certificate and serves HTTPS, so a
+	// configured plaintext listen address is either a leftover or a mistake, and
+	// binding it would open an unencrypted path this ADR forbids. It is refused
+	// fail-closed rather than ignored.
+	if t.Mode != "upstream" && t.Upstream.ListenAddr != "" {
+		v.add("tls.upstream.listen_addr", "must be empty unless tls.mode is upstream; a plaintext listener is never bound while this process terminates TLS")
 	}
 }
 
