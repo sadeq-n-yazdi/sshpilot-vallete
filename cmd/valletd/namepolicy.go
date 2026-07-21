@@ -49,6 +49,18 @@ type namePolicy struct {
 func newNamePolicy(
 	ctx context.Context, cfg *config.Config, overrides repository.ListOverrideRepository,
 ) (*namePolicy, error) {
+	// Both dependencies are required, and a nil one is refused with an error
+	// rather than dereferenced. A nil cfg would panic reading cfg.Blocklist, and
+	// a nil overrides repository would reach LoadPolicy's own refusal a step
+	// later; failing here keeps the startup fault a clear error at the point the
+	// dependency is missing instead of a panic on the composition path.
+	if cfg == nil {
+		return nil, fmt.Errorf("name policy: configuration is required")
+	}
+	if overrides == nil {
+		return nil, fmt.Errorf("name policy: override repository is required")
+	}
+
 	// A FRESH matcher over the curated lists, not blocklist.DefaultMatcher().
 	// DefaultMatcher returns a process-wide singleton, and this matcher is
 	// mutated at runtime through SetAllowlist/SetExtraTerms: installing the

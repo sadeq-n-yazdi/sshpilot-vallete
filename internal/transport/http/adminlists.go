@@ -82,6 +82,16 @@ func adminListEdit(
 			writeAdminListMisconfigured(w, r, logger)
 			return
 		}
+		// A nil identifier is a caller contract violation (NewHandler coerces it
+		// to denyAllAdminIdentifier). Coerce it again here rather than trusting
+		// that: an authorization path must never depend on a value nobody
+		// promised, and calling AdministratorID on a nil interface would panic.
+		// The stand-in resolves the empty ID, so the request takes the SAME
+		// uniform refusal an unknown administrator gets -- no new status, no
+		// enumeration oracle.
+		if id == nil {
+			id = denyAllAdminIdentifier{}
+		}
 
 		var body adminEntryRequest
 		if err := decodeStrictJSON(w, r, &body, maxAdminEntryBody); err != nil {

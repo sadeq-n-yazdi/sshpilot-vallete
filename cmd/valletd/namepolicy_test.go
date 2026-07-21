@@ -102,6 +102,18 @@ func TestNewNamePolicyGuardReadsTheSharedMatcher(t *testing.T) {
 	}
 }
 
+// TestNewNamePolicyRefusesNilDependencies proves a missing dependency is a
+// clear startup error rather than a panic on the composition path.
+func TestNewNamePolicyRefusesNilDependencies(t *testing.T) {
+	t.Parallel()
+	if _, err := newNamePolicy(context.Background(), nil, stubOverrides{}); err == nil {
+		t.Error("newNamePolicy(nil cfg) returned no error, want a startup failure")
+	}
+	if _, err := newNamePolicy(context.Background(), blockCfg(), nil); err == nil {
+		t.Error("newNamePolicy(nil overrides) returned no error, want a startup failure")
+	}
+}
+
 // TestNewNamePolicyFailsClosedOnOverrideReadError proves a startup that cannot
 // read the persisted overrides refuses to build a policy rather than falling
 // back to the seed alone -- the fallback would resurrect a removed allowlist
