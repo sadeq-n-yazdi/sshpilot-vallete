@@ -130,4 +130,51 @@ var defaultAllowedKeys = []string{
 	// operator's own configured cadence.
 	"sweep",
 	"interval",
+
+	// --- Audit retention purge (ADR-0024) -------------------------------
+	//
+	// The purge is the one irreversible path in this service: it destroys
+	// audit evidence, and once a pass has run there is nothing left to
+	// reconstruct its scope from. These keys are what an operator reads to
+	// confirm a destructive run did what was intended and no more --
+	// "records_deleted" and "cutoff" say what was removed, "retention",
+	// "batch" and "max_per_run" say under what policy, and "first_cutoff"
+	// says what the very first pass will target before it targets it.
+	// Redacted, the purge runs with no legible record of its own scope,
+	// which is the failure this allowlist's own doctrine calls worse than
+	// the missing diagnostic it is meant to cost.
+	//
+	// Every one is safe by the value's type AND its provenance, not by
+	// analogy to a neighbor:
+	//
+	//   - "retention" is a time.Duration, the configured window
+	//     (Retention.AuditRetention), logged via slog.Duration.
+	//   - "configured_retention" is the same Duration on the warning that
+	//     announces purging is switched off entirely.
+	//   - "first_cutoff" and "cutoff" are time.Time, computed as
+	//     now-minus-retention by Purger.Cutoff, logged via slog.Time.
+	//   - "batch" (int) and "max_per_run" (int64) are the configured
+	//     transaction size and per-pass ceiling.
+	//   - "records_deleted" (int64) is a row count returned by the purge.
+	//
+	// None is derived from a request, a row, or any owner: a Purger takes
+	// no owner and audit records carry none, and the purge never reads the
+	// content of what it deletes. Config is validated positive before any
+	// of these can be constructed, so the values are bounded as well as
+	// non-secret.
+	//
+	// RESIDUAL RISK, stated plainly because the argument above is about the
+	// call sites that exist today: this allowlist is keyed by name, and
+	// leafValue lets a KindString through (URL-scrubbed, nothing more). A
+	// future slog.String("batch", someSecret) would therefore render. The
+	// names are counts, cutoffs and durations, which do not attract
+	// secrets, so the exposure is small -- but it is real, and it is the
+	// reason each addition here names the constructor it was cleared for.
+	"retention",
+	"configured_retention",
+	"first_cutoff",
+	"cutoff",
+	"batch",
+	"max_per_run",
+	"records_deleted",
 }

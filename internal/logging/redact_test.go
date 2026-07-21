@@ -640,3 +640,83 @@ func (m mixedValuer) LogValue() slog.Value {
 }
 
 func sprintf(verb string, v any) string { return fmt.Sprintf(verb, v) }
+
+// TestAuditRetentionPurgeLinesStayLegible pins the audit retention purge's log
+// vocabulary against the allowlist, one key per subtest.
+//
+// It is the same class of test as TestSecretsFilePermissionWarningStaysUseful,
+// and it exists for a sharper reason. The purge is irreversible: it destroys
+// audit evidence, and "records_deleted", "cutoff" and "batch" are what an
+// operator reads to confirm a destructive pass did what was intended and no
+// more. Redacted, a purge runs with no legible record of its own scope, and
+// nothing else in the system can reconstruct it afterwards.
+//
+// The attribute constructor in each case is the one the production call site
+// actually uses (internal/erasure/scheduler.go and cmd/valletd/retention.go),
+// so the allowlist is exercised against the values it was cleared for rather
+// than against a convenient string stand-in. Each key is emitted alone so a
+// missing allowlist entry can only fail its own case.
+func TestAuditRetentionPurgeLinesStayLegible(t *testing.T) {
+	t.Parallel()
+
+	cutoff := time.Date(2025, 3, 4, 5, 6, 7, 0, time.UTC)
+
+	cases := []struct {
+		key  string
+		attr slog.Attr
+		want string
+	}{
+		{"retention", slog.Duration("retention", 365*24*time.Hour), "31536000000000000"},
+		{"configured_retention", slog.Duration("configured_retention", 48*time.Hour), "172800000000000"},
+		{"first_cutoff", slog.Time("first_cutoff", cutoff), "2025-03-04T05:06:07Z"},
+		{"cutoff", slog.Time("cutoff", cutoff), "2025-03-04T05:06:07Z"},
+		{"batch", slog.Int("batch", 500), "500"},
+		{"max_per_run", slog.Int64("max_per_run", 100000), "100000"},
+		{"records_deleted", slog.Int64("records_deleted", 4217), "4217"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			t.Parallel()
+
+			out := render(t, func(l *slog.Logger) {
+				l.Info("audit retention purge removed records", tc.attr)
+			})
+
+			if strings.Contains(out, RedactedMarker) {
+				t.Errorf("key %q rendered as %s; the purge would have no legible record of its scope\n  output: %s",
+					tc.key, RedactedMarker, out)
+			}
+			if !strings.Contains(out, `"`+tc.key+`":`) {
+				t.Errorf("key %q is missing from the rendered line entirely: %s", tc.key, out)
+			}
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("key %q did not render its value %q: %s", tc.key, tc.want, out)
+			}
+		})
+	}
+}
+
+// TestPurgeAdjacentUnlistedKeyStillRedacts is the other half, and the reason
+// the addition above is not a hole. A key that merely looks like it belongs to
+// the retention vocabulary is still redacted, so widening the allowlist for
+// seven named keys cannot be mistaken for switching the control off around
+// them.
+func TestPurgeAdjacentUnlistedKeyStillRedacts(t *testing.T) {
+	t.Parallel()
+
+	const secret = "purge_token_9f3ad20c"
+	out := render(t, func(l *slog.Logger) {
+		l.Info("audit retention purge removed records",
+			slog.Int64("records_deleted", 12),
+			slog.String("purge_credential", secret))
+	})
+
+	mustNotContain(t, out, secret, "unlisted key alongside the purge vocabulary")
+	if !strings.Contains(out, `"purge_credential":"`+RedactedMarker+`"`) {
+		t.Errorf("unlisted key should render as the marker, got: %s", out)
+	}
+	if !strings.Contains(out, `"records_deleted":12`) {
+		t.Errorf("the allowlisted neighbor must still render: %s", out)
+	}
+}
