@@ -61,6 +61,7 @@ func TestValidateHealthListenAddrAcceptsPrivateBinds(t *testing.T) {
 		{"ipv4 loopback range", "127.9.9.9:8080"},
 		{"ipv6 loopback", "[::1]:8080"},
 		{"localhost literal", "localhost:8080"},
+		{"localhost mixed case", "LocalHost:8080"},
 		{"rfc1918 ten", "10.1.2.3:8080"},
 		{"rfc1918 192", "192.168.1.10:8080"},
 		{"rfc1918 172", "172.16.0.1:8080"},

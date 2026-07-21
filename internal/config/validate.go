@@ -105,7 +105,9 @@ func validatePrivateBindAddr(v *validator, field, addr string) {
 		v.add(field, "must be a host:port address, got %q", addr)
 		return
 	}
-	if host == "localhost" {
+	// Hostnames are case-insensitive (RFC 4343), so "LocalHost" is the same
+	// loopback name as "localhost" and must be accepted identically.
+	if strings.EqualFold(host, "localhost") {
 		return
 	}
 	ip := net.ParseIP(host)
