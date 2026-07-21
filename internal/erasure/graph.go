@@ -41,6 +41,16 @@ import (
 //     pairs, and both of those IDs are already collected from key_sets and
 //     public_keys. It contributes no identifier that is not already covered, so
 //     traversing it would add a query and no coverage.
+//   - reserved-list edits (internal/service/listadmin) are not owner data and
+//     are out of erasure scope by the same principle as administrators, plus
+//     one more. Their audit records name an administrator as actor and a
+//     reserved TERM as target — a policy decision about which words may be
+//     registered, not a fact about any owner — and they carry no metadata. A
+//     term can coincide with some owner's handle, but the record is still the
+//     administrator's act, must outlive every owner for accountability, and is
+//     reached by neither this traversal (which collects owner-row IDs, never
+//     name strings) nor the metadata scrub (there is no metadata). ADR-0024's
+//     "Open items" records this conclusion; the erasure_test suite proves it.
 //
 // # Why this cannot erase across owners
 //

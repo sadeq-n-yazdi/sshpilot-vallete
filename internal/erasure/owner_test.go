@@ -332,3 +332,77 @@ func TestEraseOwnerRejectsEmptyOwner(t *testing.T) {
 		t.Fatal("EraseOwner(\"\") succeeded, want an invalid-input error")
 	}
 }
+
+// TestEraseOwnerLeavesListAdminRecordsStanding is the proof for gap #38: a
+// reserved-list edit is NOT owner personal data and must survive an owner's
+// erasure, even when the term it names coincides with that owner's handle.
+//
+// The brief framed these records as carrying owner handle strings in metadata
+// that the traversal might miss. Reading the emit path shows otherwise: a
+// listadmin record names an administrator as actor and the reserved TERM as
+// target, with no metadata. It is an administrator's policy act about a word,
+// not a fact about a person, and must outlive every owner for accountability
+// (ADR-0024). This test seeds exactly such a record, with a term equal to the
+// owner's own handle name, and asserts the erasure neither collects the term
+// nor rewrites the record.
+func TestEraseOwnerLeavesListAdminRecordsStanding(t *testing.T) {
+	t.Parallel()
+	_, store := newStore(t)
+	ctx := context.Background()
+
+	// Seed the owner and its own audit trail. seedOwner registers the handle
+	// with name "aname"; the administrator below allowlists that very term, the
+	// coincidence gap #38 is about.
+	seedWithAudit(t, store, "owner-a", "a")
+	const term = "aname"
+
+	em, err := audit.NewEmitter(store.AuditAppender())
+	if err != nil {
+		t.Fatalf("audit.NewEmitter: %v", err)
+	}
+	if eerr := em.Emit(ctx, audit.Event{
+		ActorType:  domain.ActorTypeAdministrator,
+		ActorID:    "admin-1",
+		Action:     domain.AuditActionAllowlistEntryAdded,
+		TargetType: domain.TargetTypeAllowlistEntry,
+		TargetID:   term,
+	}); eerr != nil {
+		t.Fatalf("emit listadmin record: %v", eerr)
+	}
+
+	// The term must not even be discovered by the traversal: it collects owner
+	// row IDs, never name strings, so a handle's display name is never in scope.
+	collected, err := newGraph(t, store.Repos()).Collect(ctx, "owner-a")
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for _, id := range collected {
+		if id == term {
+			t.Fatalf("traversal collected the reserved term %q: a policy record would be erased with the owner", term)
+		}
+	}
+
+	if _, err := newOwnerEraser(t, store).EraseOwner(ctx, "owner-a"); err != nil {
+		t.Fatalf("EraseOwner: %v", err)
+	}
+
+	// The administrator's record survives, naming the administrator and the term
+	// in the clear: erasing the owner did not reach it.
+	var found *domain.AuditRecord
+	for _, rec := range listAll(t, store) {
+		if rec.Action == domain.AuditActionAllowlistEntryAdded {
+			r := rec
+			found = &r
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("the listadmin record vanished: an administrator's policy act was destroyed by an owner erasure")
+	}
+	if found.ActorID != "admin-1" {
+		t.Errorf("listadmin actor = %q, want admin-1 untouched: the administrator was tombstoned", found.ActorID)
+	}
+	if found.TargetID != term {
+		t.Errorf("listadmin target = %q, want the term %q untouched", found.TargetID, term)
+	}
+}
