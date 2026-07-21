@@ -127,6 +127,7 @@ func bindings() []binding {
 		{"VALLET_SERVER_LISTEN_ADDR", setString(func(c *Config) *string { return &c.Server.ListenAddr })},
 		{"VALLET_SERVER_PUBLIC_BASE_URL", setString(func(c *Config) *string { return &c.Server.PublicBaseURL })},
 		{"VALLET_SERVER_TRUSTED_PROXIES", setStringSlice(func(c *Config) *[]string { return &c.Server.TrustedProxies })},
+		{"VALLET_SERVER_HEALTH_LISTEN_ADDR", setString(func(c *Config) *string { return &c.Server.HealthListenAddr })},
 
 		// tls
 		{"VALLET_TLS_MODE", setString(func(c *Config) *string { return &c.TLS.Mode })},

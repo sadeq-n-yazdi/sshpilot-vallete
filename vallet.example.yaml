@@ -23,6 +23,13 @@ server:
   public_base_url: ""
   # Source IPs/CIDRs of trusted reverse proxies (required for tls.mode upstream).
   trusted_proxies: []
+  # Optional PLAINTEXT health-probe listener (ADR-0015, Decision 43). When set it
+  # serves ONLY /healthz and /readyz on this address so an orchestrator that dials
+  # the pod/instance IP can probe a server whose certificate its client does not
+  # trust (Cloudflare Origin CA, self-signed) and could not TLS-handshake. It MUST
+  # bind a loopback or private address (127.0.0.0/8, ::1, RFC1918, or ULA); a
+  # public or wildcard bind is refused at startup. Empty (default) = not started.
+  health_listen_addr: ""
 
 tls:
   # REQUIRED, no default. One of:

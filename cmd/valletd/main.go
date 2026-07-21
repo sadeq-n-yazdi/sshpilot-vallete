@@ -168,6 +168,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 	// there is no arrangement of config that puts it on srv's listener.
 	metricsSrv := telemetry.NewMetricsServer(cfg, tel, logger)
 
+	// The plaintext health-probe listener (ADR-0015, Decision 43). It is nil
+	// unless the operator named a loopback/private address for it, and it serves
+	// ONLY /healthz and /readyz -- a probe-friendly path for orchestrators that
+	// dial the pod/instance IP and cannot complete a TLS handshake against a
+	// certificate their client does not trust (Cloudflare Origin CA, self-signed).
+	// Its readiness reflects the same database ping the HTTPS listener reports.
+	healthSrv := httpserver.NewHealthServer(cfg, logger, db)
+
 	logger.Info("starting valletd",
 		slog.String("version", version.String()),
 		slog.String("environment", cfg.Server.Environment),
@@ -175,7 +183,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		slog.String("tls_mode", cfg.TLS.Mode),
 	)
 
-	return serve(srv, metricsSrv, logger, purge, sweeps)
+	return serve(srv, metricsSrv, healthSrv, logger, purge, sweeps)
 }
 
 // shutdownTelemetry flushes the exporters on the way out, under its own bounded
@@ -199,7 +207,7 @@ func shutdownTelemetry(tel *telemetry.Provider, logger *slog.Logger) {
 // signal.NotifyContext restores the default disposition on return, so a second
 // SIGINT during the drain terminates the process immediately -- an operator who
 // asks twice should not have to wait out the grace period.
-func serve(srv *httpserver.Server, metricsSrv *telemetry.MetricsServer, logger *slog.Logger, purge *erasure.Scheduler, sweeps *sweep.Runner) error {
+func serve(srv *httpserver.Server, metricsSrv *telemetry.MetricsServer, healthSrv *httpserver.HealthServer, logger *slog.Logger, purge *erasure.Scheduler, sweeps *sweep.Runner) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -243,6 +251,21 @@ func serve(srv *httpserver.Server, metricsSrv *telemetry.MetricsServer, logger *
 		}
 	}()
 
+	// The health-probe listener runs alongside the API listener under the same
+	// rule as the scrape endpoint: it is NOT allowed to decide the process's
+	// fate. If it cannot bind, that is logged and the API keeps serving -- a
+	// probe listener that took down the service would be the monitoring path
+	// causing the outage it exists to detect. A nil healthSrv serves nothing and
+	// returns nil, which is the default deployment.
+	go func() {
+		if err := healthSrv.ListenAndServe(); err != nil {
+			logger.Error("health probe endpoint stopped; the API is unaffected",
+				slog.String("component", "health"),
+				slog.String("addr", healthSrv.Addr()),
+				slog.String("error", err.Error()))
+		}
+	}()
+
 	select {
 	case err := <-errCh:
 		// The listener stopped on its own; that is always a failure here,
@@ -260,6 +283,10 @@ func serve(srv *httpserver.Server, metricsSrv *telemetry.MetricsServer, logger *
 	if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
 		logger.Warn("metrics scrape endpoint shutdown incomplete",
 			slog.String("component", "telemetry"), slog.String("error", err.Error()))
+	}
+	if err := healthSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Warn("health probe endpoint shutdown incomplete",
+			slog.String("component", "health"), slog.String("error", err.Error()))
 	}
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)

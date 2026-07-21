@@ -44,6 +44,21 @@ type ServerConfig struct {
 	ListenAddr     string   `yaml:"listen_addr"`
 	PublicBaseURL  string   `yaml:"public_base_url"`
 	TrustedProxies []string `yaml:"trusted_proxies"`
+
+	// HealthListenAddr, when set, opens a SEPARATE plaintext HTTP listener that
+	// serves ONLY /healthz and /readyz (ADR-0015, Decision 43). It exists because
+	// a non-public server certificate (Cloudflare Origin CA, self-signed) makes a
+	// direct TLS probe fail the handshake, so an orchestrator that dials the pod
+	// or instance IP cannot health-check the HTTPS listener. This plaintext path
+	// carries no publish, management, or secret surface — only liveness and
+	// readiness — so opening it discloses nothing an unauthenticated probe should
+	// not see.
+	//
+	// It MUST bind a loopback or private address (validation refuses a public or
+	// wildcard bind, fail-closed): the endpoint is unauthenticated and must not be
+	// reachable from the internet. Empty (the default) means no such listener is
+	// started, and probes fall back to whatever the deployment already exposes.
+	HealthListenAddr string `yaml:"health_listen_addr"`
 }
 
 // TLSConfig configures transport security and certificate provisioning. It is a
