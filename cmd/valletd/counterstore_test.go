@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -113,6 +114,33 @@ func TestSharedCounterStorePasswordNotLogged(t *testing.T) {
 		if out := fmt.Sprintf(verb, store); strings.Contains(out, secret) {
 			t.Fatalf("store rendered with %q leaked the password", verb)
 		}
+	}
+}
+
+// TestSharedCounterStoreAddressPasswordNotLogged proves a password embedded in
+// the address itself (redis://:secret@host, a form go-redis honors) is redacted
+// before the startup log line, so an inline credential never reaches the log.
+func TestSharedCounterStoreAddressPasswordNotLogged(t *testing.T) {
+	t.Parallel()
+	const secret = "inline-address-secret"
+	cfg := config.Default()
+	cfg.RateLimit.Store = "shared"
+	cfg.RateLimit.Shared.Address = "redis://:" + secret + "@127.0.0.1:6379"
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	_, closer, err := newSharedCounterStore(&cfg, logger, nil)
+	if err != nil {
+		t.Fatalf("newSharedCounterStore: %v", err)
+	}
+	t.Cleanup(func() { _ = closer() })
+
+	if out := buf.String(); strings.Contains(out, secret) {
+		t.Fatalf("startup log leaked the inline address password: %q", out)
+	}
+	if out := buf.String(); !strings.Contains(out, "xxxxx") {
+		t.Fatalf("startup log did not carry the redacted address; got %q", out)
 	}
 }
 

@@ -305,3 +305,55 @@ func TestPasswordNeverRendered(t *testing.T) {
 		t.Fatal("password was not applied to redis.Options at the dial site")
 	}
 }
+
+// TestRedactAddress proves an inline AUTH password in the address is masked, and
+// that a bare host or a credential-free URL passes through unharmed.
+func TestRedactAddress(t *testing.T) {
+	t.Parallel()
+	const secret = "inline-secret"
+	tests := []struct {
+		name, in         string
+		wantNotContains  string
+		wantContainsMask bool
+	}{
+		{"inline password redis", "redis://:" + secret + "@host:6379", secret, true},
+		{"inline user and password", "redis://user:" + secret + "@host:6379/0", secret, true},
+		{"inline password rediss", "rediss://:" + secret + "@host:6379", secret, true},
+		{"bare host password", "user:" + secret + "@host:6379", secret, true},
+		{"no credentials", "redis://host:6379", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := RedactAddress(tt.in)
+			if tt.wantNotContains != "" && strings.Contains(got, tt.wantNotContains) {
+				t.Fatalf("RedactAddress(%q) = %q, leaked %q", tt.in, got, tt.wantNotContains)
+			}
+			if tt.wantContainsMask && !strings.Contains(got, "xxxxx") {
+				t.Fatalf("RedactAddress(%q) = %q, want a masked password", tt.in, got)
+			}
+		})
+	}
+}
+
+// TestBuildOptionsErrorRedactsInlinePassword proves the fail-closed parse-error
+// path -- reached by an address that carries an inline password AND is otherwise
+// malformed -- never echoes the secret, neither through the redacted address nor
+// through the underlying parse error.
+func TestBuildOptionsErrorRedactsInlinePassword(t *testing.T) {
+	t.Parallel()
+	const secret = "malformed-url-secret"
+	// A bad database number makes redis.ParseURL fail while net/url still parses
+	// it, so the error path runs with a password-bearing address.
+	addr := "redis://:" + secret + "@host:6379/notanumber"
+	_, err := buildOptions(addr, "")
+	if err == nil {
+		t.Fatal("buildOptions accepted a malformed address")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("parse error leaked the inline password: %v", err)
+	}
+	if !errors.Is(err, domain.ErrInvalidInput) {
+		t.Fatalf("err = %v, want Is domain.ErrInvalidInput", err)
+	}
+}

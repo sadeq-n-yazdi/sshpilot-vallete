@@ -59,11 +59,13 @@ func newSharedCounterStore(cfg *config.Config, logger *slog.Logger, resolved map
 	}
 
 	if logger != nil {
-		// The address may name a host but carries no secret, so it is safe to
-		// log; the password is never rendered (see redisstore).
+		// The address is credential-bearing: a Redis URL may embed the AUTH
+		// password inline (redis://:pass@host), so it is redacted before it
+		// reaches the log. The separate password_ref secret is never rendered
+		// either (see redisstore).
 		logger.Info("rate limit: shared counter store enabled with in-memory failover",
 			slog.String("component", "ratelimit"),
-			slog.String("address", cfg.RateLimit.Shared.Address))
+			slog.String("address", redisstore.RedactAddress(cfg.RateLimit.Shared.Address)))
 	}
 	return store, store.Close, nil
 }

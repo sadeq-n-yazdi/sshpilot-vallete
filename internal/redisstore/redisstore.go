@@ -40,6 +40,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -135,9 +136,11 @@ func buildOptions(address string, password secrets.Redacted) (*redis.Options, er
 	opt, err := redis.ParseURL(url)
 	if err != nil {
 		// Fail closed at startup: an unparseable address is an operator error,
-		// not something to discover at the first request. The address may name
-		// a host but carries no secret, so it is safe to echo.
-		return nil, fmt.Errorf("redisstore: invalid address %q: %w: %w", address, err, domain.ErrInvalidInput)
+		// not something to discover at the first request. The address is a
+		// credential-bearing value -- a Redis URL may embed an AUTH password
+		// inline (redis://:pass@host) -- so it is redacted before it reaches the
+		// error, never echoed raw.
+		return nil, fmt.Errorf("redisstore: invalid address %q: %w: %w", RedactAddress(address), err, domain.ErrInvalidInput)
 	}
 	// The sole reveal site. Reveal returns the underlying string, which is
 	// handed straight to redis.Options and retained in no field of Store.
@@ -161,6 +164,27 @@ func buildOptions(address string, password secrets.Redacted) (*redis.Options, er
 		}
 	}
 	return opt, nil
+}
+
+// RedactAddress returns address with any inline AUTH password masked, safe to
+// put in a log line or an error. A Redis URL can carry credentials in its
+// userinfo (redis://user:pass@host:6379); url.Redacted replaces the password
+// with "xxxxx" so neither a log nor an error ever echoes it. The same
+// bare-host normalization New applies is applied here so a "host:port" address
+// redacts identically. An address that will not parse even leniently is
+// reported as a fixed placeholder rather than echoed, because the standard
+// library's own parse error quotes the raw string -- which would defeat the
+// redaction.
+func RedactAddress(address string) string {
+	raw := address
+	if !strings.Contains(raw, "://") {
+		raw = "redis://" + raw
+	}
+	u, err := neturl.Parse(raw)
+	if err != nil {
+		return "[unparseable redis address]"
+	}
+	return u.Redacted()
 }
 
 // newStore wraps a client. It is the seam the tests construct Store through.
