@@ -252,6 +252,26 @@ func TestOriginCAFailsClosedOnMissingCredential(t *testing.T) {
 			name:    "reference resolves to an empty value",
 			resolve: staticSecret(""),
 		},
+		// The whitespace forms below used to pass this gate, which compared the
+		// revealed token against "" alone: the process started, reported
+		// healthy, and failed at the first certificate request. They are named
+		// rather than written inline so the bytes stay out of test output.
+		{
+			name:    "reference resolves to a space",
+			resolve: staticSecret(" "),
+		},
+		{
+			name:    "reference resolves to a tab",
+			resolve: staticSecret("\t"),
+		},
+		{
+			name:    "reference resolves to a newline",
+			resolve: staticSecret("\n"),
+		},
+		{
+			name:    "reference resolves to a no-break space",
+			resolve: staticSecret("\u00a0"),
+		},
 	}
 
 	for _, tt := range tests {
