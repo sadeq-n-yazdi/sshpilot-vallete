@@ -310,13 +310,15 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	//     Authorization header. Its constructor's emptiness check compares the
 	//     wrapped value against "" for the same reason Cloudflare's does.
 	//   - gandi.go: in do, where the bearer PAT is written into the
+	//   - arvancloud.go: in do, where the API key is written into the
 	//     Authorization header. Its constructor's emptiness check compares the
 	//     wrapped value against "" for the same reason Cloudflare's does.
 	//
 	// Any other file, or a second site in any of these, means a new path to
 	// plaintext and must be justified by editing this list.
 	want := map[string]int{
-		"cloudflare.go": 1, "route53.go": 1, "digitalocean.go": 1, "dnsimple.go": 1, "gandi.go": 1,
+		"cloudflare.go": 1, "route53.go": 1, "digitalocean.go": 1, "dnsimple.go": 1,
+		"gandi.go": 1, "arvancloud.go": 1,
 	}
 	if !maps.Equal(reveals, want) {
 		t.Errorf("Reveal() call sites = %v, want %v: the plaintext credential must "+
@@ -346,7 +348,7 @@ func TestUnsupportedProviderIsRefused(t *testing.T) {
 	// the two shapes that must never be accepted: the empty name, and a
 	// correct name in the wrong case. Matching is exact, so "CLOUDFLARE" and
 	// "ROUTE53" are refusals rather than case-insensitive hits.
-	for _, name := range []string{"arvancloud", "rfc2136", "", "CLOUDFLARE", "ROUTE53"} {
+	for _, name := range []string{"ovh", "rfc2136", "", "CLOUDFLARE", "ROUTE53"} {
 		if _, err := NewAPIProvider(name, secrets.NewRedacted(testToken), nil); !errors.Is(err, ErrUnsupportedProvider) {
 			t.Errorf("NewAPIProvider(%q) = %v, want ErrUnsupportedProvider", name, err)
 		}
