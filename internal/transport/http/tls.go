@@ -284,6 +284,13 @@ func newACMEProviderForSolver(
 		// not itself a conversion site — but it is routed through the same
 		// guard so that every branch of this switch reads identically and a
 		// later solver cannot be added as the one case that skips it.
+		//
+		// This guard and the one inside newDNS01ACMEProvider are therefore
+		// REDUNDANT, and they mask each other under mutation: removing either
+		// one alone still passes, because the other catches it. Only removing
+		// both is caught. That is a known and accepted survivor, not an
+		// oversight — deleting either because "mutation says it is covered"
+		// removes a guard while the matrix stays green.
 		return asCertProvider(newDNS01ACMEProvider(ctx, cfg, now, logger))
 	default:
 		return nil, fmt.Errorf("%w: acme solver %q", ErrTLSModeUnsupported, cfg.TLS.ACME.Solver)
