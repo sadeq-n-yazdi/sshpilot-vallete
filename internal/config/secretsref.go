@@ -24,7 +24,7 @@ type RefRequirement struct {
 //   - tls mode cloudflare_origin   -> tls.cloudflare_origin.api_token_ref
 //   - acme + dns_01 + dns api mode -> tls.acme.dns.credentials_ref
 //   - production environment       -> auth.token_signing_key_ref
-//   - access key grace sweep on    -> auth.access_key_pepper_ref
+//   - production, or ref set       -> auth.access_key_pepper_ref
 //   - shared rate-limit store      -> rate_limit.shared.password_ref (if set)
 //   - otlp metrics enabled         -> telemetry.metrics.otlp.headers_ref (if set)
 //
@@ -51,13 +51,17 @@ func (c *Config) RequiredSecretRefs() []RefRequirement {
 	if c.Server.Environment == "production" {
 		add("auth.token_signing_key_ref", c.Auth.TokenSigningKeyRef)
 	}
-	// Gated on the sweep being enabled, not on the ref being set: an operator
-	// who turned the sweep on and named an unresolvable ref must fail startup
-	// rather than serve with the sweep silently unbuilt. Validate has already
-	// rejected the enabled-but-unset combination, so reaching here with a zero
-	// ref means Validate was skipped, and resolving a zero ref fails -- which
-	// is the direction this path should fail in anyway.
-	if c.Retention.AccessKeyGraceSweepInterval.Std() > 0 {
+	// The pepper is required in production, and required to RESOLVE wherever it
+	// was named. The second half is the load-bearing one: an operator who set
+	// the reference asked for access key verification, so a reference that does
+	// not resolve is a failure, not a license to fall back to the verifier-less
+	// mode. Only an unset reference outside production selects that mode.
+	//
+	// The access key grace sweep needs the pepper too, but adds no gate here:
+	// Validate requires the ref whenever the sweep is on, so a sweep-enabled
+	// deployment always has a non-zero ref and is already covered by the clause
+	// above.
+	if c.Server.Environment == "production" || !c.Auth.AccessKeyPepperRef.IsZero() {
 		add("auth.access_key_pepper_ref", c.Auth.AccessKeyPepperRef)
 	}
 	if c.RateLimit.Enabled && c.RateLimit.Store == "shared" && !c.RateLimit.Shared.PasswordRef.IsZero() {

@@ -36,8 +36,18 @@ tls:
     dns:
       # manual | api
       mode: ""
+      # Required for dns_01 + api: cloudflare | route53
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
+      #
+      # The referenced secret's format depends on the provider:
+      #   cloudflare -> the API token
+      #   route53    -> "ACCESS_KEY_ID:SECRET_ACCESS_KEY" (no region; Route 53
+      #                 is global and always signed for us-east-1)
+      #
+      # See docs/dns01-provider-credentials.md for the least-privilege policy
+      # each provider needs. These credentials can rewrite your zone, so scope
+      # them as narrowly as the provider allows.
       credentials_ref: ""
   cloudflare_origin:
     # ONLY for an origin behind the Cloudflare proxy (orange cloud).
@@ -106,13 +116,23 @@ auth:
   refresh_token_max_age: 90d
   # Required in production. e.g. env:VALLET_TOKEN_SIGNING_KEY
   token_signing_key_ref: ""
-  # Keys the digest of every access key secret. REQUIRED when
-  # retention.access_key_grace_sweep_interval is set, because the service that
-  # runs that sweep also verifies bearer tokens and refuses to be built without
-  # an adequate pepper. At least 32 bytes. e.g. env:VALLET_ACCESS_KEY_PEPPER
+  # HMAC pepper keying the stored digest of every key-set access key.
+  # Must resolve to at least 32 bytes; a shorter or unresolvable value refuses
+  # startup rather than weakening the digests.
   #
-  # Changing it invalidates every access key already issued: the stored digests
-  # were computed under the old value. Treat it as long-lived key material.
+  #   openssl rand -hex 32   ->   store it, then reference it here
+  #
+  # ROTATION INVALIDATES EVERY EXISTING ACCESS KEY. The pepper keys every stored
+  # digest, so changing it stops every consumer of every protected key set from
+  # verifying, all at once; each one needs a newly minted token. There is no
+  # overlap window and no migration.
+  #
+  # Required in production, and required whenever
+  # retention.access_key_grace_sweep_interval is set (the grace sweep is built
+  # over the same service and refuses a weak or absent pepper). Left empty in
+  # development with the sweep off the server still starts, but no access key
+  # verifies and every protected key set answers the same 404 an absent set
+  # gets. e.g. env:VALLET_ACCESS_KEY_PEPPER
   access_key_pepper_ref: ""
   providers:
     # At least one provider must be enabled.

@@ -225,12 +225,17 @@ func newSetID() string {
 // and changing visibility are separate operations (C4) and deliberately cannot
 // be smuggled in through this call — there is no request field for either.
 //
-// The cap check and the insert run inside ONE transaction. A check-then-insert
-// split across two auto-committing calls is raceable by construction: two
-// concurrent creates can both read 99 and both insert, landing the owner at
-// 101. Inside a single WithTx the pair is serialized against other writers
-// (SQLite takes a BEGIN IMMEDIATE write lock; see the Store contract), so no
-// interleaving observes a stale count.
+// The cap check and the insert run inside ONE transaction, which takes a
+// per-owner lock before it counts. A check-then-insert split across two
+// auto-committing calls is raceable by construction: two concurrent creates can
+// both read 99 and both insert, landing the owner at 101.
+//
+// One transaction alone does not close that race on every engine. SQLite takes
+// a BEGIN IMMEDIATE write lock and serializes writers database-wide, so there
+// the transaction is enough. PostgreSQL runs at READ COMMITTED, where the count
+// takes no lock and the same interleaving is available inside two concurrent
+// transactions. KeySets.LockOwnerForCreate is what makes the pair atomic on
+// both; see createLocked.
 func (s *Service) Create(ctx context.Context, ownerID domain.OwnerID, name, requestID string) (*domain.KeySet, error) {
 	if ownerID == "" {
 		// An empty owner would produce a set belonging to nobody, reachable by
@@ -277,6 +282,20 @@ func (s *Service) Create(ctx context.Context, ownerID domain.OwnerID, name, requ
 // transaction. It is shared by Create and Rename so the cap cannot be enforced
 // on one path and forgotten on the other.
 func (s *Service) createLocked(ctx context.Context, r repository.Repos, ownerID domain.OwnerID, set *domain.KeySet) error {
+	// The lock comes first, before the count and before any write. Sharing one
+	// transaction is not on its own enough to make the cap hold: on PostgreSQL,
+	// READ COMMITTED lets two concurrent creates both count cap-1 and both
+	// insert. This serializes creates per owner so the count below observes
+	// every create that has committed.
+	//
+	// Taking it here rather than in Create and Rename separately is what keeps
+	// the lock ordering consistent. Both callers reach their first key_sets
+	// write through this function, so every transaction that touches an owner's
+	// sets takes the owner lock before it takes any row lock on key_sets, and
+	// there is no pair of paths that can acquire the two in opposite orders.
+	if err := r.KeySets.LockOwnerForCreate(ctx, ownerID); err != nil {
+		return err
+	}
 	n, err := r.KeySets.CountByOwner(ctx, ownerID)
 	if err != nil {
 		return err
@@ -470,13 +489,12 @@ func (s *Service) Delete(ctx context.Context, ownerID domain.OwnerID, id domain.
 		return ErrNotFound
 	}
 
-	var name string
+	var details audit.Details
 	if err := s.store.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
 		set, err := live(r.KeySets.Get(ctx, ownerID, id))
 		if err != nil {
 			return err
 		}
-		name = set.Name
 
 		// ListMembers is owner-scoped through its join, so a stranger's set
 		// would have produced ErrNotFound above and never reach this count.
@@ -486,6 +504,16 @@ func (s *Service) Delete(ctx context.Context, ownerID domain.OwnerID, id domain.
 		}
 		if len(members) > 0 && !confirm {
 			return ErrConfirmationRequired
+		}
+
+		// The details are built here: after the read that supplies the name,
+		// and before the delete. A detail the audit screen refuses then aborts
+		// the transaction rather than leaving a committed deletion with no
+		// record of what was removed. requestID reaches the screen for the
+		// first time on this path, so this is a value that can genuinely be
+		// refused, not a formality.
+		if details, err = setDetails(set.Name, requestID); err != nil {
+			return err
 		}
 
 		if err := r.KeySets.Delete(ctx, ownerID, id); err != nil {
@@ -502,13 +530,6 @@ func (s *Service) Delete(ctx context.Context, ownerID domain.OwnerID, id domain.
 		return err
 	}
 
-	details, err := setDetails(name, requestID)
-	if err != nil {
-		// The name was stored earlier rather than supplied by this caller, so a
-		// refusal here is not the caller's fault and is not reported as invalid
-		// input: it is a server fault the caller cannot fix.
-		return errors.New("keyset: deleted set cannot be recorded")
-	}
 	return s.emit(ctx, domain.AuditActionKeySetDeleted, ownerID, id, details)
 }
 

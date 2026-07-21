@@ -1,9 +1,11 @@
 package httpserver_test
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,8 +16,13 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/nameguard"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/schema"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/device"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/keyset"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publickey"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
 )
 
@@ -72,7 +79,7 @@ func newMgmtEnv(t *testing.T, limit int) *mgmtEnv {
 	if err != nil {
 		t.Fatalf("audit.NewEmitter: %v", err)
 	}
-	devSvc, err := device.New(env.devices, emitter, device.WithClock(func() time.Time { return env.now }))
+	devSvc, err := device.New(env.devices, emitter, mustGuard(t), device.WithClock(func() time.Time { return env.now }))
 	if err != nil {
 		t.Fatalf("device.New: %v", err)
 	}
@@ -82,12 +89,57 @@ func newMgmtEnv(t *testing.T, limit int) *mgmtEnv {
 		t.Fatalf("publickey.New: %v", err)
 	}
 
+	// The key set service is wired from a real store rather than left nil: its
+	// routes are in the route table below, and a nil service would make those
+	// cases fail on the handler rather than on the limiter, which is not the
+	// property this file is testing.
+	setSvc := newMgmtKeySetService(t, emitter, func() time.Time { return env.now })
+
 	cfg := config.Default()
 	cfg.RateLimit.Tiers.Management = config.Tier{Requests: limit, Window: config.Duration(time.Minute)}
 	env.handler = httpserver.NewHandler(&cfg, slog.New(slog.DiscardHandler), devicePinger{}, devicePublisher{},
 		httpserver.WithAuthorizer(guard), httpserver.WithDeviceService(devSvc),
-		httpserver.WithPublicKeyService(keySvc))
+		httpserver.WithPublicKeyService(keySvc), httpserver.WithKeySetService(setSvc))
 	return env
+}
+
+// newMgmtKeySetService builds a key set service on a migrated database, so the
+// key set routes in the route table reach a working handler.
+//
+// The rows it would need to succeed are deliberately NOT seeded. Several routes
+// in the table already address resources that do not exist, and the mounting
+// test asserts only that the limiter refuses past the limit -- a route's
+// success status is allowed to vary, but its refusal is not.
+func newMgmtKeySetService(t *testing.T, emitter *audit.Emitter, now func() time.Time) *keyset.Service {
+	t.Helper()
+
+	db, err := sqlite.Open(sqlite.Options{Path: filepath.Join(t.TempDir(), "keysets.db")})
+	if err != nil {
+		t.Fatalf("sqlite.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	reg, err := schema.Registry()
+	if err != nil {
+		t.Fatalf("schema.Registry: %v", err)
+	}
+	runner, err := migrate.NewRunner(sqlite.NewMigrateDB(db), migrate.EngineSQLite, reg)
+	if err != nil {
+		t.Fatalf("migrate.NewRunner: %v", err)
+	}
+	if _, err := runner.Up(context.Background()); err != nil {
+		t.Fatalf("migrate Up: %v", err)
+	}
+
+	nameGuard, err := nameguard.Default()
+	if err != nil {
+		t.Fatalf("nameguard.Default(): %v", err)
+	}
+	svc, err := keyset.New(sqlite.NewStore(db), nameGuard, emitter, keyset.WithClock(now))
+	if err != nil {
+		t.Fatalf("keyset.New: %v", err)
+	}
+	return svc
 }
 
 // token mints a real token for owner, minted from credential cred. The
@@ -151,6 +203,14 @@ func managementRoutes() []mgmtRoute {
 		{"add key", http.MethodPost, keysRoutePath, `{"device_id":"dev-absent","public_key":"ssh-ed25519 AAAA x"}`},
 		{"list keys", http.MethodGet, keysRoutePath, ""},
 		{"revoke key", http.MethodDelete, keysRoutePath + "/key-absent", ""},
+		// The key set routes. Rename and delete declare KeySetAccess rather
+		// than AccountAccess, so they are reached here only because the token
+		// these tests mint carries the full-owner scope; a set-bound token
+		// would be confined to its own set and could not stand in for them.
+		{"create key set", http.MethodPost, keySetsPath, `{"name":"prod"}`},
+		{"list key sets", http.MethodGet, keySetsPath, ""},
+		{"rename key set", http.MethodPatch, keySetsPath + "/set-absent", `{"name":"staging"}`},
+		{"delete key set", http.MethodDelete, keySetsPath + "/set-absent", ""},
 	}
 }
 

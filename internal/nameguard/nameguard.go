@@ -56,11 +56,9 @@ const (
 	// KindDeviceName is a device's display label (ADR-0017 includes device
 	// names).
 	//
-	// SEAM FOR C1 (device management API): this Kind is defined, implemented
-	// and tested here, but Fb4 deliberately wires NO device call site. The
-	// device management surface is owned by C1, and a create path added there
-	// must call Check(KindDeviceName, ...) to be covered. Nothing else is
-	// needed to adopt it.
+	// Both device create paths are now wired: device.Service.Register (the
+	// HTTP-reachable one) and bootstrap.AddKey (the CLI one). The seam this
+	// comment used to describe is closed.
 	//
 	// Device names are the Kind where confusable folding earns the most:
 	// unlike handles and set names, they permit non-ASCII, so a homoglyph
