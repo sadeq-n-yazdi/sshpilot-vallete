@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/safetext"
 )
 
 // Middleware wraps a handler with cross-cutting behavior.
@@ -138,9 +140,11 @@ func loggingMiddleware(logger *slog.Logger) Middleware {
 // format is operator-configurable (ADR-0025 allows text), so the value is made
 // safe at the source instead of relying on the sink.
 func sanitizeLogPath(p string) string {
-	if len(p) > maxLoggedPathLen {
-		p = p[:maxLoggedPathLen]
-	}
+	// safetext.Bound owns the length check as well as the cut: a plain byte
+	// slice here can land inside a multi-byte character and put invalid UTF-8
+	// into a log record, and the path is chosen by the client, so the offset the
+	// cut lands on is remote-controlled.
+	p = safetext.Bound(p, maxLoggedPathLen)
 	// The common case is a clean path, so scan before allocating: every request
 	// reaches this function, and copying an untouched string is pure waste.
 	i := 0
