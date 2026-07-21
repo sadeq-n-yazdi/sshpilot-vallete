@@ -211,6 +211,12 @@ func managementRoutes() []mgmtRoute {
 		{"list key sets", http.MethodGet, keySetsPath, ""},
 		{"rename key set", http.MethodPatch, keySetsPath + "/set-absent", `{"name":"staging"}`},
 		{"delete key set", http.MethodDelete, keySetsPath + "/set-absent", ""},
+		// The two C4 sub-resources. They landed after the tier did and were
+		// never wrapped, so they are here for the same reason the four above
+		// are: one entry per mux.Handle line, so dropping any single wrap
+		// reddens exactly that route's subtest.
+		{"set default key set", http.MethodPut, keySetsPath + "/set-absent/default", ""},
+		{"set key set visibility", http.MethodPut, keySetsPath + "/set-absent/visibility", `{"visibility":"public"}`},
 	}
 }
 
