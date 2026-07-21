@@ -85,6 +85,49 @@ var allowedDetailKeys = map[DetailKey]bool{
 	DetailCount:       true,
 }
 
+// keptDetailKeys are the detail keys whose VALUE is structural and carries no
+// identity: the kind of a thing that happened, never who it happened to. They
+// are preserved byte-for-byte through owner crypto-erasure (ADR-0024), because
+// erasing them would destroy the forensic substance of a record while erasing
+// nothing personal — an algorithm name or a request correlator names no owner.
+//
+// Every other allowlisted key can carry an owner's identity in its value and is
+// therefore erasable:
+//
+//   - fingerprint names a specific key and so its owner;
+//   - handle, device_name, key_set_name and client_label are display names of
+//     the owner's own entities;
+//   - from and to carry the old/new names in a rename, which are those same
+//     display names.
+//
+// The classification is expressed as the KEEP set rather than the erasable set
+// on purpose, and IsErasableDetail below inverts it: an unrecognized or
+// newly-added key defaults to erasable, so the failure mode of forgetting to
+// classify a new key is a value needlessly tombstoned, never an identity
+// silently left in the clear. This is the fail-closed direction for privacy.
+//
+// The split is authoritative: ADR-0024's "Open items" records exactly this
+// field list. TestDetailErasureClassification pins each of the fourteen keys so
+// a future edit that moves one across the line fails loudly.
+var keptDetailKeys = map[DetailKey]bool{
+	DetailAlgorithm:  true,
+	DetailVisibility: true,
+	DetailScope:      true,
+	DetailReason:     true,
+	DetailResult:     true,
+	DetailRequestID:  true,
+	DetailCount:      true,
+}
+
+// IsErasableDetail reports whether the value stored under key can identify an
+// owner and must be rewritten to a tombstone during owner crypto-erasure
+// (ADR-0024). It is the inverse of the structural KEEP set: any key not
+// explicitly classified as structural — including an unrecognized one — is
+// treated as identifying, so the fail-closed default is to erase.
+func IsErasableDetail(key DetailKey) bool {
+	return !keptDetailKeys[key]
+}
+
 // maxDetailValueLen bounds a detail value. Audit context is short, factual
 // text; the bound both keeps records small and means a large blob — a key file,
 // a certificate, a dump — cannot be parked in the log through a detail field.

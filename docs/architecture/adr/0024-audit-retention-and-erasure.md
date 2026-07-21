@@ -41,7 +41,37 @@ conflict; this ADR reconciles them.
 ## Open items
 
 Resolved: **default retention 365 days (configurable)** and the
-**salted-hash-with-destroyed-salt** pseudonymization technique. Remaining as
-implementation detail: the exact field list classed as personal, and interaction
-with external SIEM/log export (exported copies are outside the app's erasure
-reach — documented as a deployer responsibility).
+**salted-hash-with-destroyed-salt** pseudonymization technique.
+
+**Resolved — the exact field list classed as personal.** Erasure covers the
+whole audit record: the two identity columns (`actor_id`, `target_id`) and the
+identifying values in record metadata. Each allowlisted detail key is classified
+once, authoritatively, enforced in code by `internal/audit.IsErasableDetail` (a
+fail-closed inversion of a KEEP set, so an unclassified or newly-added key
+defaults to erasable) and pinned by `TestDetailErasureClassification`:
+
+- **Pseudonymize** (rewrite the value to a salted-hash tombstone under the same
+  per-owner salt as the columns, so equal values collapse to equal tombstones
+  and counts/lineage stay consistent, and destroying the salt makes it
+  irreversible): `fingerprint`, `handle`, `device_name`, `key_set_name`,
+  `client_label`, `from`, `to`. (`from`/`to` carry the old/new handle-or-name in
+  a rename and are therefore identifying; `fingerprint` names a specific key and
+  so its owner.)
+- **Keep** (structural, non-identifying, preserved byte-for-byte so the record
+  still proves what happened): `algorithm`, `visibility`, `scope`, `reason`,
+  `result`, `request_id`, `count`.
+
+The whole-record erasure runs in the `internal/erasure` service: it reads the
+owner's records, rewrites their identifying metadata via the audit port's
+`ScrubMetadata`, pseudonymizes the identity columns, then destroys the salt —
+one controlled, audited operation, not an arbitrary record edit.
+
+Reserved-identifier list edits (`internal/service/listadmin`) are **not** owner
+personal data and are deliberately out of erasure scope: their actor is a
+system-axis administrator (explicitly excluded from an owner's graph) and their
+target is a reserved *term* — an administrator policy decision about which words
+may be registered, which must outlive any owner for accountability.
+
+Remaining as implementation detail: interaction with external SIEM/log export
+(exported copies are outside the app's erasure reach — documented as a deployer
+responsibility).

@@ -200,6 +200,58 @@ func TestDetailsAcceptsEveryAllowlistedKey(t *testing.T) {
 	}
 }
 
+// TestDetailErasureClassification pins the ADR-0024 per-key erasure policy: each
+// of the fourteen allowlisted keys is either identifying (rewritten to a
+// tombstone during owner erasure) or structural (kept byte-for-byte). The
+// expectation is spelled out key by key rather than derived from the same map
+// the implementation uses, so a future edit that moves a key across the line —
+// the exact silent drift ADR-0024 warns about — fails here.
+func TestDetailErasureClassification(t *testing.T) {
+	t.Parallel()
+
+	// true = identifying/erasable, false = structural/kept.
+	want := map[DetailKey]bool{
+		DetailFingerprint: true,
+		DetailHandle:      true,
+		DetailDeviceName:  true,
+		DetailKeySetName:  true,
+		DetailClientLabel: true,
+		DetailFrom:        true,
+		DetailTo:          true,
+
+		DetailAlgorithm:  false,
+		DetailVisibility: false,
+		DetailScope:      false,
+		DetailReason:     false,
+		DetailResult:     false,
+		DetailRequestID:  false,
+		DetailCount:      false,
+	}
+
+	// Every allowlisted key must appear in the expectation: a new key added to
+	// the allowlist without a deliberate classification decision fails here
+	// rather than defaulting silently.
+	for key := range allowedDetailKeys {
+		if _, ok := want[key]; !ok {
+			t.Errorf("allowlisted key %q has no erasure classification", key)
+		}
+	}
+	for key, erasable := range want {
+		if !allowedDetailKeys[key] {
+			t.Errorf("classified key %q is not on the allowlist", key)
+		}
+		if got := IsErasableDetail(key); got != erasable {
+			t.Errorf("IsErasableDetail(%q) = %v, want %v", key, got, erasable)
+		}
+	}
+
+	// Fail-closed default: an unrecognized key is treated as identifying, so a
+	// value under an unclassified name is erased rather than left in the clear.
+	if !IsErasableDetail(DetailKey("unrecognized")) {
+		t.Error("an unrecognized detail key must default to erasable (fail closed)")
+	}
+}
+
 // TestFingerprintDetailMustBeAFingerprint stops the field that names a key from
 // becoming a field that carries one.
 func TestFingerprintDetailMustBeAFingerprint(t *testing.T) {
