@@ -198,3 +198,78 @@ no CA ever queries.
 The program does not poll DigitalOcean for the change to be applied. The solver
 already waits until every authoritative nameserver for the zone serves the
 value, which is a strictly stronger condition.
+
+---
+
+## DNSimple
+
+Set `credentials_ref` to a DNSimple **account API token**, issued from
+*Account → Automation → API tokens*.
+
+### Use an account token, not a user token
+
+DNSimple issues two kinds of token, and this matters:
+
+- An **account token** is tied to one account. This is what to use.
+- A **user token** grants access to *every* account the user can reach.
+
+The program refuses a user token at the first issuance rather than working
+around it. Every DNSimple API path is account-scoped
+(`/v2/{account}/zones/...`), so an account id is required to write anything, and
+the program reads it from `/v2/whoami` — the account the **presented token**
+belongs to. A user token has no single account behind it: `whoami` returns a
+null account, because the user may belong to several. Picking one would mean the
+program decides, on its own initiative, which of your accounts gets written to.
+
+Taking the id from the token rather than from configuration is also what makes a
+cross-account misroute impossible. There is no number you can set that points
+this credential at somebody else's account; the credential can only ever address
+its own.
+
+### The scope is coarse
+
+DNSimple's API tokens are **account-wide**. There is no way to narrow one to a
+single domain, record type, or record name, so a token that can edit DNS can
+edit every zone in the account. That is a limit of the API, not something this
+code can close, and none of the safety below comes from the token:
+
+- The program only ever deletes a record whose **value it published itself**,
+  matched exactly, so it cannot remove a record it did not create — including
+  your own TXT record at the same name, and including the second challenge of a
+  wildcard certificate. That is a property of *this program*, not a limit the
+  token enforces.
+- Anything else holding the same token is unconstrained by any of that.
+
+Give DNS-01 its own token rather than reusing one, store it in the secret
+provider, and rotate it if it is ever exposed. If your threat model cannot accept
+an account-wide credential on this host, use a provider whose API supports
+scoping, or run DNS-01 in `manual` mode.
+
+### Zones: what will be refused
+
+The program picks the zone rather than trusting configuration, and it fails
+loudly instead of guessing:
+
+- **The most specific zone wins.** If you hold both `example.com` and a delegated
+  `eu.example.com`, a name under the latter is written there. Writing to the
+  parent would put the record in a zone that is not authoritative for the name.
+- **No matching zone is an error.** The name being validated must sit under a
+  zone in this account. Guessing would write the challenge somewhere the CA never
+  queries, and issuance would fail ten minutes later with a message about DNS
+  rather than about your account.
+- **There is no ambiguity to resolve.** Within one account a zone name is the
+  API's own path key, so an account cannot hold two zones with the same name —
+  unlike Route 53, where duplicate hosted zones are possible and are refused. The
+  same name *can* exist in a different account, which is exactly why the account
+  is pinned from the token.
+
+Record names are stored **relative** to the zone — on both the write and the read
+path, unlike DigitalOcean, whose list filter wants the fully qualified name. The
+program computes that split itself; a name that does not sit inside the resolved
+zone is refused rather than written. Sending the fully qualified name would
+create the record at `_acme-challenge.example.com.example.com`, which the API
+accepts and no CA ever queries.
+
+The program does not poll DNSimple for the change to be applied. The solver
+already waits until every authoritative nameserver for the zone serves the value,
+which is a strictly stronger condition.
