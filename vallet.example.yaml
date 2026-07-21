@@ -130,10 +130,23 @@ auth:
   # verifying, all at once; each one needs a newly minted token. There is no
   # overlap window and no migration.
   #
-  # Required in production. Left empty in development the server still starts,
-  # but no access key verifies and every protected key set answers the same 404
-  # an absent set gets. e.g. env:VALLET_ACCESS_KEY_PEPPER
+  # Required in production, and required whenever
+  # retention.access_key_grace_sweep_interval is set (the grace sweep is built
+  # over the same service and refuses a weak or absent pepper). Left empty in
+  # development with the sweep off the server still starts, but no access key
+  # verifies and every protected key set answers the same 404 an absent set
+  # gets. e.g. env:VALLET_ACCESS_KEY_PEPPER
   access_key_pepper_ref: ""
+  # How long a rotated access key keeps working after its replacement has been
+  # minted -- the time your deployments have to pick up the new credential.
+  #
+  # Must be POSITIVE; startup fails otherwise. 0 is NOT "no deadline": that
+  # reading would leave every rotated credential live forever, so it is refused
+  # rather than guessed at. For rotation with no overlap at all, mint the
+  # replacement and revoke the old key -- two explicit, separately audited
+  # calls. Shortening this does not shorten a window already in flight; revoke
+  # the key to end one early.
+  access_key_grace_window: 24h
   providers:
     # At least one provider must be enabled.
     api_token:
@@ -216,6 +229,16 @@ retention:
   # rather than becoming claimable by anyone else -- it fails closed.
   handle_quarantine_sweep_interval: 1h
   handle_quarantine_sweep_batch: 200
+  # How often lapsed rotation grace windows are retired, and how many one pass
+  # retires. 0 disables the sweep and is the DEFAULT.
+  #
+  # Off by default because this sweep enforces nothing. A credential past its
+  # grace deadline is already refused at verification, which compares the
+  # deadline against the clock on every request; the sweep moves the dead row to
+  # the revoked status so the stored state and the audit trail stop describing a
+  # window that closed. Enabling it requires auth.access_key_pepper_ref above.
+  access_key_grace_sweep_interval: 0
+  access_key_grace_sweep_batch: 200
   max_sets_per_owner: 100
 
 install:

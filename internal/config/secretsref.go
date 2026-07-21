@@ -56,6 +56,11 @@ func (c *Config) RequiredSecretRefs() []RefRequirement {
 	// the reference asked for access key verification, so a reference that does
 	// not resolve is a failure, not a license to fall back to the verifier-less
 	// mode. Only an unset reference outside production selects that mode.
+	//
+	// The access key grace sweep needs the pepper too, but adds no gate here:
+	// Validate requires the ref whenever the sweep is on, so a sweep-enabled
+	// deployment always has a non-zero ref and is already covered by the clause
+	// above.
 	if c.Server.Environment == "production" || !c.Auth.AccessKeyPepperRef.IsZero() {
 		add("auth.access_key_pepper_ref", c.Auth.AccessKeyPepperRef)
 	}

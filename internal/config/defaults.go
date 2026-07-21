@@ -53,6 +53,14 @@ func Default() Config {
 		Auth: AuthConfig{
 			AccessTokenTTL:     Duration(15 * time.Minute),
 			RefreshTokenMaxAge: Duration(90 * day),
+			// 24 hours is long enough for a deployment on a daily cadence to
+			// pick up the replacement credential and short enough that a
+			// rotation performed because a secret leaked actually ends the
+			// leaked credential's usefulness within a day. It is deliberately
+			// not measured in weeks: a grace window is a migration allowance,
+			// and one long enough to forget about is one that turns every
+			// rotation into a second live credential nobody is tracking.
+			AccessKeyGraceWindow: Duration(24 * time.Hour),
 			Providers: AuthProviders{
 				APIToken: APITokenProvider{Enabled: true},
 				Passkey:  PasskeyProvider{Enabled: false},
@@ -117,7 +125,13 @@ func Default() Config {
 			// the sweep a meaningful load.
 			HandleQuarantineSweepInterval: Duration(time.Hour),
 			HandleQuarantineSweepBatch:    200,
-			MaxSetsPerOwner:               100,
+			// Off by default: see the field. The batch is still a real number
+			// so that an operator who enables the sweep gets a working bound
+			// without having to discover a second setting, and so validation
+			// has something positive to check either way.
+			AccessKeyGraceSweepInterval: 0,
+			AccessKeyGraceSweepBatch:    200,
+			MaxSetsPerOwner:             100,
 		},
 		Install: InstallConfig{
 			// Enabled and unauthenticated by default, per ADR-0013: the

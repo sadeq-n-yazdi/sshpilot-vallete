@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -107,6 +108,48 @@ func (r *keySetRepo) CountByOwner(ctx context.Context, ownerID domain.OwnerID) (
 		return 0, mapError(err)
 	}
 	return n, nil
+}
+
+// LockOwnerForCreate takes an exclusive row lock on the owner so that the
+// service's cap check and insert cannot interleave with another transaction's.
+//
+// SECURITY: this is the whole of the per-owner cap's concurrency safety on
+// PostgreSQL. Transactions here run at READ COMMITTED, under which a plain
+// SELECT COUNT(*) takes no lock and blocks nothing: two concurrent creates can
+// both read cap-1, both insert, and commit an owner into cap+1 sets. A row lock
+// taken here is held until the transaction ends, so the second create blocks
+// here and its count then sees the first's committed row.
+//
+// The lock is taken on owners rather than on the key_sets rows being counted
+// because a row lock cannot cover rows that do not exist yet -- the two racing
+// inserts are precisely the phantoms it would have to exclude. The owner row is
+// guaranteed to exist for any set that could be created: key_sets.owner_id is
+// NOT NULL REFERENCES owners(id).
+//
+// A missing owner yields no row and no lock, which is not an error: the foreign
+// key refuses the insert that follows, so no create can pass the cap this way.
+//
+// FOR NO KEY UPDATE, not FOR UPDATE. The two serialize creates identically --
+// both conflict with each other on the same row, which is all this needs -- but
+// they differ in what else they block. Every INSERT into a table referencing
+// owners(id) takes FOR KEY SHARE on the owner row to keep the key it references
+// alive, and FOR UPDATE conflicts with that: holding it here would stall
+// concurrent device and public key inserts for the same owner behind an
+// unrelated key set create. FOR NO KEY UPDATE does not conflict with FOR KEY
+// SHARE, so those inserts proceed while this lock is held.
+//
+// The lock is taken before this transaction's own first insert, so a create
+// never upgrades a shared lock it already holds into an exclusive one. That
+// ordering, and not the lock mode, is what keeps concurrent creates and renames
+// deadlock-free.
+func (r *keySetRepo) LockOwnerForCreate(ctx context.Context, ownerID domain.OwnerID) error {
+	const q = `SELECT 1 FROM owners WHERE id = $1 FOR NO KEY UPDATE`
+	var one int
+	err := r.e.QueryRowContext(ctx, q, string(ownerID)).Scan(&one)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return mapError(err)
+	}
+	return nil
 }
 
 // Update persists changes to the mutable fields of a key set, scoped by

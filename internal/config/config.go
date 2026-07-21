@@ -245,10 +245,39 @@ type AuthConfig struct {
 	// must be re-issued a freshly minted token. Rotate deliberately, not as
 	// cleanup.
 	//
-	// Required in production, where its absence is refused. Left empty in
-	// development the server still starts, with no verifier at all: protected
-	// key sets then answer the same 404 an absent set gets, for everyone.
+	// Required in production, where its absence is refused, and required
+	// whenever retention.access_key_grace_sweep_interval is set, because the
+	// grace sweep is built over the same access key service and it refuses a
+	// weak or absent pepper. Left empty in development with the sweep off the
+	// server still starts, with no verifier at all: protected key sets then
+	// answer the same 404 an absent set gets, for everyone.
 	AccessKeyPepperRef secrets.Ref `yaml:"access_key_pepper_ref"`
+
+	// AccessKeyGraceWindow is how long a rotated access key keeps working
+	// after its replacement has been minted. It is the operator's answer to
+	// "how long do my deployments have to pick up the new credential", and it
+	// is configuration rather than a literal in the service because that
+	// answer is a property of a deployment, not of this program.
+	//
+	// It must be POSITIVE. Zero is not "no deadline" and is not "rotate with
+	// no grace at all": both readings are dangerous in opposite directions,
+	// and rather than pick one silently the service refuses to be constructed
+	// with a non-positive window. That refusal is the fail-closed direction —
+	// the alternative, a zero that meant "never expires", would write a grace
+	// row with a deadline no clock ever passes and leave the rotated
+	// credential live forever, which is precisely the outcome rotation exists
+	// to prevent.
+	//
+	// An operator who wants rotation with no overlap at all has that already,
+	// and it is spelled Mint followed by Revoke: two explicit calls, each
+	// audited, rather than a window whose degenerate value happens to mean
+	// something different from every other value it can take.
+	//
+	// Shortening this value does not shorten a window already in flight: a
+	// grace deadline is stamped onto the row at the moment of rotation and is
+	// evaluated from the row thereafter. Ending an in-flight window early is
+	// what Revoke is for.
+	AccessKeyGraceWindow Duration `yaml:"access_key_grace_window"`
 
 	Providers AuthProviders `yaml:"providers"`
 }
@@ -440,16 +469,46 @@ type RetentionConfig struct {
 	// on AuditPurgeInterval: the consequence is reversible and fails closed. A
 	// sweep that never runs leaves a vacated name held by its previous owner
 	// forever, so the name is unavailable rather than handed to a stranger, and
-	// starting the sweep later releases the backlog. That is emphatically NOT
-	// true of every sweep -- a grace-expiry sweep that stops leaves a rotated
-	// credential usable, which fails open -- so an off switch is offered here
-	// and must not be copied to one of those by analogy.
+	// starting the sweep later releases the backlog.
+	//
+	// An earlier version of this comment warned that the access-key grace
+	// sweep, by contrast, fails open. It does not, and the claim is corrected
+	// here rather than deleted because it was load-bearing in two other files:
+	// accesskey.Service.Verify evaluates the grace deadline against the clock
+	// on every request, so a lapsed credential is refused with no sweep in the
+	// picture at all. Both sweeps are therefore safe to disable. What is NOT
+	// safe is moving either deadline comparison out of the request path on the
+	// theory that a sweep covers it -- that is the change that would create the
+	// fail-open shape this note used to describe.
 	HandleQuarantineSweepInterval Duration `yaml:"handle_quarantine_sweep_interval"`
 
 	// HandleQuarantineSweepBatch is how many quarantines one pass releases.
 	// Each release is a separate audited delete, so this bounds both the work
 	// of a pass and the audit rows it can produce.
 	HandleQuarantineSweepBatch int `yaml:"handle_quarantine_sweep_batch"`
+
+	// AccessKeyGraceSweepInterval is how often lapsed rotation grace windows
+	// are retired. 0 disables the sweep, and 0 is the DEFAULT.
+	//
+	// Off by default is deliberate and is a consequence of where the deadline
+	// is enforced. A credential past its grace window is already refused by
+	// Verify at request time, so this sweep changes no access decision; it
+	// moves a dead row to the revoked status so the stored state and the audit
+	// trail stop describing a window that closed. Enabling it costs an operator
+	// a configured pepper (below), and requiring that of every deployment to
+	// obtain a bookkeeping improvement is the wrong trade -- whereas an
+	// operator who turns it on is telling us they have one.
+	AccessKeyGraceSweepInterval Duration `yaml:"access_key_grace_sweep_interval"`
+
+	// AccessKeyGraceSweepBatch is how many credentials one pass retires. Each
+	// retirement is a separate audited write, so this bounds both the work of a
+	// pass and the audit rows it can produce.
+	//
+	// It is validated as strictly positive even when the sweep is off, matching
+	// the handle batch -- but for a stronger reason: the access key repository
+	// REJECTS a non-positive limit outright rather than coercing it, so a 0
+	// that reached it would fail every pass instead of running a small one.
+	AccessKeyGraceSweepBatch int `yaml:"access_key_grace_sweep_batch"`
 
 	MaxSetsPerOwner int `yaml:"max_sets_per_owner"`
 }
