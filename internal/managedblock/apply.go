@@ -30,6 +30,14 @@ var (
 	ErrTooLarge = errors.New("managedblock: existing file exceeds the maximum permitted size")
 	// ErrBadPath indicates the target path has no usable file name component.
 	ErrBadPath = errors.New("managedblock: target path must name a file")
+	// ErrWouldEmpty indicates the apply would clear an existing, non-empty
+	// managed block: the block currently holds one or more keys and the new
+	// render holds none. Emptying the block removes every key the service
+	// installed, which locks out every host that relies on it, so the operation
+	// refuses unless Options.AllowEmpty is set. The refusal is fail-loud, not a
+	// silent no-op: an empty render can be a genuine revocation, and swallowing
+	// it would leave a revoked party with access and nobody aware of it.
+	ErrWouldEmpty = errors.New("managedblock: refusing to empty the managed block")
 )
 
 // hooks holds the filesystem primitives the write path uses. They are indirect
@@ -67,6 +75,12 @@ type Options struct {
 	Path string
 	// DryRun reports what would change and writes nothing.
 	DryRun bool
+	// AllowEmpty permits clearing an existing, non-empty managed block. When
+	// false (the default) an apply that would take the block from one or more
+	// keys down to zero is refused with ErrWouldEmpty and the file is left
+	// untouched, so a single accidental set-emptying cannot silently wipe every
+	// host's access. Set it to apply a deliberate full revocation.
+	AllowEmpty bool
 }
 
 // Report describes the outcome of an Apply.
@@ -146,6 +160,21 @@ func Apply(pubkeys []string, opts Options) (Report, error) {
 	}
 	rep.Size = len(merged)
 	rep.Changed = !existed || !bytes.Equal(existing, merged)
+
+	// Refuse a non-empty -> empty transition of the managed block unless the
+	// caller opted in. The judgement is made on the block's own key lines, not
+	// the whole file: a file with keys outside the block but an empty render is
+	// still emptying the managed region. This runs before the dry-run return so
+	// -dry-run/-check also report the refusal (fail-loud) and exit non-zero.
+	if !opts.AllowEmpty {
+		wasKeys := blockKeyCount(existing)
+		nowKeys := blockKeyCount(block)
+		if wasKeys > 0 && nowKeys == 0 {
+			return rep, fmt.Errorf(
+				"%w (was %d keys, now 0); re-run with --allow-empty to apply this revocation",
+				ErrWouldEmpty, wasKeys)
+		}
+	}
 
 	if opts.DryRun || !rep.Changed {
 		return rep, nil
