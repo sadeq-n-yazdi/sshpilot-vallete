@@ -153,6 +153,21 @@ func buildOptions(address string, password secrets.Redacted) (*redis.Options, er
 	// during an outage, so command retries are disabled and the failover layer
 	// owns the recovery cadence instead.
 	opt.MaxRetries = -1
+	// Bound every network wait so a hung or slow backend cannot stall an HTTP
+	// request: this store answers the rate limiter, which is on the critical
+	// path of every request, and go-redis's multi-second defaults would let a
+	// wedged backend hold a request open. The values are deliberately not as
+	// tight as they could be. A spurious timeout does not just cost this one
+	// command -- it degrades the whole store to memory until the next health
+	// probe, and that probe is minutes away by design (the failover layer's
+	// re-probe starts at a several-minute interval), so an over-eager read
+	// timeout would trade a brief latency blip for minutes of per-instance
+	// counting. Dial is bounded shortest because a dial failure is the real
+	// outage signal; a healthy backend answers a command in well under the read
+	// window, so one second tolerates a real blip without flapping.
+	opt.DialTimeout = 2 * time.Second
+	opt.ReadTimeout = time.Second
+	opt.WriteTimeout = time.Second
 	// A rediss:// URL sets opt.TLSConfig with the host as ServerName and
 	// verification on. Guard against a future ParseURL that leaves it nil for a
 	// TLS scheme, and never weaken it: InsecureSkipVerify stays false so a

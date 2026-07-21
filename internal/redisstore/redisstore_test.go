@@ -280,6 +280,33 @@ func TestBuildOptionsAddressForms(t *testing.T) {
 	}
 }
 
+// TestBuildOptionsBoundsTimeouts proves every network wait is bounded, so a
+// hung backend cannot stall a request on the rate-limit critical path. It
+// pins that the retries are off and each timeout is positive and no larger than
+// a couple of seconds -- far below go-redis's multi-second defaults.
+func TestBuildOptionsBoundsTimeouts(t *testing.T) {
+	t.Parallel()
+	opt, err := buildOptions("redis://localhost:6379", "")
+	if err != nil {
+		t.Fatalf("buildOptions: %v", err)
+	}
+	if opt.MaxRetries != -1 {
+		t.Fatalf("MaxRetries = %d, want -1 (retries off so failover is prompt)", opt.MaxRetries)
+	}
+	for _, tc := range []struct {
+		name string
+		got  time.Duration
+	}{
+		{"DialTimeout", opt.DialTimeout},
+		{"ReadTimeout", opt.ReadTimeout},
+		{"WriteTimeout", opt.WriteTimeout},
+	} {
+		if tc.got <= 0 || tc.got > 2*time.Second {
+			t.Fatalf("%s = %v, want a bound in (0, 2s]", tc.name, tc.got)
+		}
+	}
+}
+
 // TestPasswordNeverRendered proves the AUTH secret is unreachable through any
 // fmt verb on the Store: it is revealed only into redis.Options at the dial
 // site and is retained in no field.
