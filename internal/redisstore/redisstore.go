@@ -164,7 +164,13 @@ func buildOptions(address string, password secrets.Redacted) (*redis.Options, er
 	// timeout would trade a brief latency blip for minutes of per-instance
 	// counting. Dial is bounded shortest because a dial failure is the real
 	// outage signal; a healthy backend answers a command in well under the read
-	// window, so one second tolerates a real blip without flapping.
+	// window, so one second tolerates a real blip without flapping. The health
+	// probe (FailoverStore.Ping) inherits this same one-second read cap -- its
+	// 5s probe context can only shorten the wait, never extend it past
+	// ReadTimeout -- which is accepted: a backend that cannot answer PING, the
+	// cheapest round-trip, within a second is legitimately unhealthy, and
+	// staying degraded to per-instance counting until the next probe is the
+	// intended graceful behavior.
 	opt.DialTimeout = 2 * time.Second
 	opt.ReadTimeout = time.Second
 	opt.WriteTimeout = time.Second
