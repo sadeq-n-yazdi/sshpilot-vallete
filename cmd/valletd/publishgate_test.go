@@ -110,6 +110,37 @@ func (f *gateFixture) handler() http.Handler {
 	return srv.Handler()
 }
 
+// TestBuildUpstreamServerSelectsPlaintextListener pins the composition root that
+// Decision 31 exists to deliver: upstream mode was unstartable before this change
+// (newCertProvider had no upstream case), so proving the plaintext listener merely
+// enforces its gate is not enough -- the assembly run() runs must actually build
+// it and hand it the configured private bind. This travels the SAME
+// buildUpstreamServer -> buildAPIDeps -> NewUpstreamServer chain run uses, off a
+// socket, so a regression that stops upstream mode from constructing its listener
+// fails here rather than only at deploy time.
+func TestBuildUpstreamServerSelectsPlaintextListener(t *testing.T) {
+	t.Setenv("VALLET_TEST_ACCESS_KEY_PEPPER", gatePepper)
+	f := newGateFixture(t, "env:VALLET_TEST_ACCESS_KEY_PEPPER")
+	const bind = "127.0.0.1:8899"
+	f.cfg.TLS.Mode = "upstream"
+	f.cfg.TLS.Upstream.ListenAddr = bind
+
+	logger := slog.New(slog.NewTextHandler(f.logs, nil))
+	tel := telemetry.New(f.cfg, logger)
+	t.Cleanup(func() { shutdownTelemetry(tel, logger) })
+
+	srv, err := buildUpstreamServer(context.Background(), f.cfg, logger, nil, f.store, tel, nil)
+	if err != nil {
+		t.Fatalf("buildUpstreamServer: %v", err)
+	}
+	if srv == nil {
+		t.Fatal("buildUpstreamServer returned a nil server in upstream mode")
+	}
+	if got := srv.Addr(); got != bind {
+		t.Errorf("upstream listener bind: got %q, want %q", got, bind)
+	}
+}
+
 // get issues one publish request through the built handler.
 func (f *gateFixture) get(h http.Handler, target, bearer string) *httptest.ResponseRecorder {
 	f.t.Helper()
