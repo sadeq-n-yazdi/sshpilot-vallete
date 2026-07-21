@@ -81,6 +81,14 @@ func runBootstrapOwner(args []string, stdout, stderr io.Writer) error {
 
 	store := sqlite.NewStore(db)
 
+	// Bring stored handle look-alike folds current before seeding. Seed registers
+	// a handle, and the adapter refuses a registration while any existing fold is
+	// stale (ADR-0030); on a database that already holds pre-recompute handles,
+	// this pass is what lets the seed through. On a fresh database it is a no-op.
+	if _, err := runFoldRecompute(ctx, store, store.AuditAppender()); err != nil {
+		return err
+	}
+
 	// Build the guard BEFORE opening the seed. If the composed lists cannot be
 	// built the command must stop rather than seed an unchecked handle: the
 	// handle claimed here is global and permanent, so proceeding without
