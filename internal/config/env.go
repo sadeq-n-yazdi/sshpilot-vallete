@@ -210,6 +210,8 @@ func bindings() []binding {
 		{"VALLET_RETENTION_AUDIT_PURGE_MAX_PER_RUN", setInt(func(c *Config) *int { return &c.Retention.AuditPurgeMaxPerRun })},
 		{"VALLET_RETENTION_HANDLE_QUARANTINE_SWEEP_INTERVAL", setDuration(func(c *Config) *Duration { return &c.Retention.HandleQuarantineSweepInterval })},
 		{"VALLET_RETENTION_HANDLE_QUARANTINE_SWEEP_BATCH", setInt(func(c *Config) *int { return &c.Retention.HandleQuarantineSweepBatch })},
+		{"VALLET_RETENTION_ACCESS_KEY_GRACE_SWEEP_INTERVAL", setDuration(func(c *Config) *Duration { return &c.Retention.AccessKeyGraceSweepInterval })},
+		{"VALLET_RETENTION_ACCESS_KEY_GRACE_SWEEP_BATCH", setInt(func(c *Config) *int { return &c.Retention.AccessKeyGraceSweepBatch })},
 		{"VALLET_RETENTION_MAX_SETS_PER_OWNER", setInt(func(c *Config) *int { return &c.Retention.MaxSetsPerOwner })},
 
 		// install

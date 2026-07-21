@@ -91,9 +91,15 @@ func (f *fakeHandles) has(id domain.HandleID) bool {
 // fakeStore hands out only the handle repository. Everything else is the zero
 // value, so a sweep that touched another entity would nil-panic in test rather
 // than reach production unnoticed.
-type fakeStore struct{ handles repository.HandleRepository }
+type fakeStore struct {
+	handles repository.HandleRepository
+	keys    repository.AccessKeyRepository
+	keySets repository.KeySetRepository
+}
 
-func (s fakeStore) Repos() repository.Repos { return repository.Repos{Handles: s.handles} }
+func (s fakeStore) Repos() repository.Repos {
+	return repository.Repos{Handles: s.handles, AccessKeys: s.keys, KeySets: s.keySets}
+}
 
 func (s fakeStore) WithTx(ctx context.Context, fn func(context.Context, repository.Repos) error) error {
 	return fn(ctx, s.Repos())
@@ -136,7 +142,7 @@ func TestHandleQuarantineSweepIsWiredAndRuns(t *testing.T) {
 	handles := newFakeHandles(expiredHandle(id, time.Now().Add(-time.Hour)))
 
 	runner, err := newSweepRunner(sweepCfg(time.Millisecond), discardLogger(),
-		fakeStore{handles: handles}, nopAppender{})
+		fakeStore{handles: handles}, nopAppender{}, testPepper)
 	if err != nil {
 		t.Fatalf("newSweepRunner: %v", err)
 	}
@@ -188,7 +194,7 @@ func TestHandleQuarantineSweepLeavesLiveHoldsAlone(t *testing.T) {
 	)
 
 	runner, err := newSweepRunner(sweepCfg(time.Millisecond), discardLogger(),
-		fakeStore{handles: handles}, nopAppender{})
+		fakeStore{handles: handles}, nopAppender{}, testPepper)
 	if err != nil {
 		t.Fatalf("newSweepRunner: %v", err)
 	}
@@ -230,7 +236,7 @@ func TestHandleQuarantineSweepPassesTheConfiguredBatch(t *testing.T) {
 	cfg.Retention.HandleQuarantineSweepBatch = 7
 
 	handles := newFakeHandles()
-	runner, err := newSweepRunner(cfg, discardLogger(), fakeStore{handles: handles}, nopAppender{})
+	runner, err := newSweepRunner(cfg, discardLogger(), fakeStore{handles: handles}, nopAppender{}, testPepper)
 	if err != nil {
 		t.Fatalf("newSweepRunner: %v", err)
 	}
@@ -259,7 +265,7 @@ func TestHandleQuarantineSweepDisabledByZeroInterval(t *testing.T) {
 	handles := newFakeHandles(expiredHandle(id, time.Now().Add(-time.Hour)))
 
 	runner, err := newSweepRunner(sweepCfg(0), discardLogger(),
-		fakeStore{handles: handles}, nopAppender{})
+		fakeStore{handles: handles}, nopAppender{}, testPepper)
 	if err != nil {
 		t.Fatalf("newSweepRunner: %v", err)
 	}
@@ -285,7 +291,7 @@ func TestSweepRunnerRejectsANegativeInterval(t *testing.T) {
 	t.Parallel()
 
 	_, err := newSweepRunner(sweepCfg(-time.Second), discardLogger(),
-		fakeStore{handles: newFakeHandles()}, nopAppender{})
+		fakeStore{handles: newFakeHandles()}, nopAppender{}, testPepper)
 	if !errors.Is(err, domain.ErrInvalidInput) {
 		t.Errorf("newSweepRunner with a negative interval = %v, want ErrInvalidInput", err)
 	}
