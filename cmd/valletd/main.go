@@ -138,6 +138,19 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
+	// The shared rate-limit counter store (Redis/Valkey with in-memory
+	// failover), or nil when the deployment runs single-node counters. Built
+	// here so run() owns its lifecycle: the closer stops the reprobe goroutine
+	// and releases the connection pool, and it is deferred so the drain in serve
+	// completes -- the limiter is still consulted while requests finish -- before
+	// anything is torn down. A redis backend that is unreachable is NOT a startup
+	// failure: the store degrades to memory, which is the whole point.
+	counterStore, closeCounterStore, err := newSharedCounterStore(cfg, logger, resolved)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = closeCounterStore() }()
+
 	// Telemetry is built before the server so the handler can carry the
 	// middleware, and it never returns an error: an exporter that cannot be
 	// constructed is logged and omitted (see telemetry.New). A monitoring
@@ -145,7 +158,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	tel := telemetry.New(cfg, logger)
 	defer shutdownTelemetry(tel, logger)
 
-	srv, err := buildServer(context.Background(), cfg, logger, db, store, tel)
+	srv, err := buildServer(context.Background(), cfg, logger, db, store, tel, counterStore)
 	if err != nil {
 		return err
 	}

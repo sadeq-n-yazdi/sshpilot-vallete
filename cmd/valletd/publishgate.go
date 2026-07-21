@@ -9,6 +9,7 @@ import (
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/counter"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/accesskey"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
@@ -36,6 +37,7 @@ func buildServer(
 	db *sql.DB,
 	store *sqlite.Store,
 	tel *telemetry.Provider,
+	counterStore counter.Store,
 ) (*httpserver.Server, error) {
 	publisher, err := newPublisher(ctx, cfg, logger, store)
 	if err != nil {
@@ -80,7 +82,15 @@ func buildServer(
 	// TestManagementRoutesFailClosedWithoutAnAuthorizer, which builds a handler
 	// with no authorizer -- this function's exact option set -- and asserts every
 	// management route answers 401.
-	return httpserver.New(cfg, logger, db, publisher, httpserver.WithTelemetry(tel))
+	//
+	// counterStore is appended only when the shared backend is configured; a nil
+	// one (the single-node default) leaves the option set unchanged, so the
+	// fail-closed test above is unaffected.
+	opts := []httpserver.HandlerOption{httpserver.WithTelemetry(tel)}
+	if counterStore != nil {
+		opts = append(opts, httpserver.WithCounterStore(counterStore))
+	}
+	return httpserver.New(cfg, logger, db, publisher, opts...)
 }
 
 // newPublisher builds the publish service, wiring the access key verifier that

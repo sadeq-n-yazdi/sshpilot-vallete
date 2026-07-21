@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/counter"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
 )
@@ -19,6 +20,7 @@ type handlerOptions struct {
 	keys       PublicKeyService
 	keySets    KeySetService
 	telemetry  *telemetry.Provider
+	counter    counter.Store
 }
 
 // HandlerOption configures NewHandler.
@@ -50,6 +52,21 @@ func WithDeviceService(s DeviceService) HandlerOption {
 // (telemetry.MetricsServer) and there is no code path from here to it.
 func WithTelemetry(p *telemetry.Provider) HandlerOption {
 	return func(o *handlerOptions) { o.telemetry = p }
+}
+
+// WithCounterStore supplies the counter store that backs every rate-limit
+// tier, overriding the in-process store NewHandler would otherwise build.
+//
+// It exists so the composition root can inject the shared (Redis/Valkey with
+// memory failover) store selected by rate_limit.store: it is the seam through
+// which a store with a lifecycle -- a connection pool, a reprobe goroutine --
+// reaches the handler while its Close stays owned by the caller that built it.
+// Absent this option, NewHandler builds the in-process store, which is the
+// right default for a single-node deployment and for an embedder. A nil store
+// supplied here is treated as "not supplied" and the fallback is used, so the
+// option can never be the reason rate limiting silently vanishes.
+func WithCounterStore(s counter.Store) HandlerOption {
+	return func(o *handlerOptions) { o.counter = s }
 }
 
 // WithPublicKeyService supplies the public key management service.

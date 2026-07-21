@@ -103,7 +103,7 @@ func (f *gateFixture) handler() http.Handler {
 	tel := telemetry.New(f.cfg, logger)
 	f.t.Cleanup(func() { shutdownTelemetry(tel, logger) })
 
-	srv, err := buildServer(context.Background(), f.cfg, logger, nil, f.store, tel)
+	srv, err := buildServer(context.Background(), f.cfg, logger, nil, f.store, tel, nil)
 	if err != nil {
 		f.t.Fatalf("buildServer: %v", err)
 	}
