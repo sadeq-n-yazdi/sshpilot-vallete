@@ -745,3 +745,115 @@ func TestReclaimSurvivesANilNamedRow(t *testing.T) {
 			old.State, domain.NameStateActive)
 	}
 }
+
+// TestRenameFailureRollsBackTheMove pins the durable-audit fix for rename. The
+// rename's audit record shares the rename's transaction, so an emit that fails
+// rolls the move back with it: the owner keeps their old active name and the
+// new one is never claimed. Under the pre-fix shape the transaction committed
+// before the emit ran, so this same failing auditor left the owner already
+// renamed with no record that they were — the exact after-commit window this
+// closes. Moving the emit back outside store.WithTx makes both assertions below
+// fail (alice would be quarantined, alicia active), which is what pins the fix.
+//
+// The assertions read persisted state, not captured events: the recording
+// auditor appends from Emit and EmitTo alike, so an event-count assertion would
+// pass whether the emit ran inside the transaction or after it. Only the
+// rollback of the database rows tells the two apart.
+func TestRenameFailureRollsBackTheMove(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t)
+	f.seed(ownerA, "alice")
+
+	// A plain sentinel, not one wrapping domain.ErrNotFound or ErrConflict:
+	// Rename routes an emit failure through mapErr, which would rewrite either
+	// of those and muddy what this asserts.
+	f.auditor.mu.Lock()
+	f.auditor.err = errors.New("audit sink down")
+	f.auditor.mu.Unlock()
+
+	if _, err := f.svc.Rename(ctx, ownerA, "alicia", "req-1"); err == nil {
+		t.Fatal("Rename with a failing auditor returned nil, want the error")
+	}
+
+	// The move must have rolled back with the failed record: the old name is
+	// still the owner's active handle...
+	old, err := f.byName("alice")
+	if err != nil {
+		t.Fatalf("after a failed rename byName(alice) = %v, want the row still "+
+			"active: the rename must roll back with the audit record", err)
+	}
+	if old.State != domain.NameStateActive {
+		t.Fatalf("alice state after failed rename = %q, want %q",
+			old.State, domain.NameStateActive)
+	}
+	// ...and the new name was never claimed.
+	if _, err := f.byName("alicia"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("after a failed rename byName(alicia) = %v, want ErrNotFound: "+
+			"the new claim must roll back too", err)
+	}
+}
+
+// TestRenameCommitsRecordAndMoveTogether is the positive half of the fix,
+// against real machinery: a real audit.Emitter over the store's own audit
+// repository, and the rename record read back out of the audit table rather
+// than off a fake. After a rename the name has moved AND its record is durably
+// present, naming both the old and new address — the two committed as one
+// transaction. The record is observed through the tx-bound path the fix uses,
+// so a regression that routed the write to an auto-commit sink instead would
+// still pass here, but the rollback assertion in TestRenameFailureRollsBackThe-
+// Move would then fail; together they pin "move iff record".
+func TestRenameCommitsRecordAndMoveTogether(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t)
+	f.seed(ownerA, "alice")
+
+	// A real emitter, wired over the store's audit repository. EmitTo ignores
+	// this sink and writes to the transaction-bound r.Audit, but a real emitter
+	// is what applies the true validation and screening on the rename path.
+	emitter, err := audit.NewEmitter(f.store.Repos().Audit, audit.WithClock(f.clock.get))
+	if err != nil {
+		t.Fatalf("audit.NewEmitter: %v", err)
+	}
+	svc, err := handle.New(f.store, mustGuard(t), emitter, handle.WithClock(f.clock.get))
+	if err != nil {
+		t.Fatalf("handle.New: %v", err)
+	}
+
+	if _, err := svc.Rename(ctx, ownerA, "alicia", "req-7"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	// The name has moved: the new one is active, the old one quarantined.
+	if got, err := f.byName("alicia"); err != nil {
+		t.Fatalf("byName(alicia) = %v, want the active row", err)
+	} else if got.State != domain.NameStateActive {
+		t.Fatalf("alicia state = %q, want %q", got.State, domain.NameStateActive)
+	}
+	if got, err := f.byName("alice"); err != nil {
+		t.Fatalf("byName(alice) = %v, want the quarantined row", err)
+	} else if got.State != domain.NameStateQuarantined {
+		t.Fatalf("alice state = %q, want %q", got.State, domain.NameStateQuarantined)
+	}
+
+	// ...and the record is durably in the audit table, naming both addresses.
+	records, _, err := f.store.Repos().Audit.List(ctx,
+		repository.AuditQuery{Action: domain.AuditActionHandleRenamed}, repository.Page{})
+	if err != nil {
+		t.Fatalf("Audit.List: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("audit table holds %d handle.renamed records, want 1", len(records))
+	}
+	rec := records[0]
+	if rec.ActorID != string(ownerA) {
+		t.Errorf("renamed record actor = %q, want %q", rec.ActorID, ownerA)
+	}
+	if got := rec.Metadata[string(audit.DetailFrom)]; got != "alice" {
+		t.Errorf("renamed record from = %q, want %q", got, "alice")
+	}
+	if got := rec.Metadata[string(audit.DetailTo)]; got != "alicia" {
+		t.Errorf("renamed record to = %q, want %q", got, "alicia")
+	}
+}
