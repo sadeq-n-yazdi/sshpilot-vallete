@@ -160,6 +160,22 @@ func (s *dns01Solver) awaitPropagation(ctx context.Context, rec dns01.Record) er
 			// The record name is named; the value is not, because there is
 			// nothing to diagnose in a digest and the name is what the operator
 			// must go and check.
+			//
+			// A canceled parent and an expired budget both arrive here, because
+			// deadline derives from ctx. They fail identically — the record was
+			// never seen either way, which is the only safe reading — but they
+			// are reported differently. Saying "not visible after 10m0s" when
+			// the process was shut down two seconds in sends the operator to
+			// investigate a DNS problem that never existed.
+			//
+			// The ErrDNS01Propagation identity is kept on BOTH paths rather
+			// than replaced by ctx.Err(), so callers and tests matching the
+			// sentinel keep working; the cancellation cause is wrapped
+			// alongside it, so errors.Is finds context.Canceled too.
+			if cause := ctx.Err(); cause != nil {
+				return fmt.Errorf("%w: %q not confirmed before the wait was canceled: %w",
+					ErrDNS01Propagation, rec.Name, cause)
+			}
 			return fmt.Errorf("%w: %q not visible on all authoritative nameservers after %s",
 				ErrDNS01Propagation, rec.Name, s.propagationTimeout)
 		case <-ticker.C:

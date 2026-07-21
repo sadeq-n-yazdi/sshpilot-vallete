@@ -234,22 +234,23 @@ type AuthConfig struct {
 	RefreshTokenMaxAge Duration    `yaml:"refresh_token_max_age"`
 	TokenSigningKeyRef secrets.Ref `yaml:"token_signing_key_ref"`
 
-	// AccessKeyPepperRef points at the key that peppers every access key
-	// secret digest. It is a reference, never a value: like every other secret
-	// in this file it is resolved at startup from the environment or a file,
-	// so the literal never sits in a config an operator might commit.
+	// AccessKeyPepperRef references the HMAC pepper that keys the stored digest
+	// of every key-set access key (ADR-0016). It must resolve to at least
+	// accesskey.MinPepperLen (32) bytes; a shorter or unresolvable value is a
+	// startup failure, never a downgrade.
 	//
-	// It is REQUIRED whenever retention.access_key_grace_sweep_interval is
-	// positive, because the service that performs that sweep refuses to be
-	// constructed without an adequate pepper. That refusal is not incidental to
-	// the sweep -- the same service verifies bearer tokens, and a construction
-	// path that accepted a weak or absent pepper to satisfy a maintenance job
-	// would be a path to a service that hashes secrets under a key nobody
-	// chose. There is no separate sweep-only pepper for that reason.
+	// OPERATIONAL CONSEQUENCE: the pepper is part of every digest, so changing
+	// it invalidates EVERY existing access key at once. Every consumer of every
+	// protected key set stops verifying the moment the new pepper is loaded and
+	// must be re-issued a freshly minted token. Rotate deliberately, not as
+	// cleanup.
 	//
-	// Rotating this value invalidates every access key already issued: the
-	// stored digests were computed under the old one and no presented secret
-	// will match them again. Treat it as long-lived key material.
+	// Required in production, where its absence is refused, and required
+	// whenever retention.access_key_grace_sweep_interval is set, because the
+	// grace sweep is built over the same access key service and it refuses a
+	// weak or absent pepper. Left empty in development with the sweep off the
+	// server still starts, with no verifier at all: protected key sets then
+	// answer the same 404 an absent set gets, for everyone.
 	AccessKeyPepperRef secrets.Ref `yaml:"access_key_pepper_ref"`
 
 	// AccessKeyGraceWindow is how long a rotated access key keeps working

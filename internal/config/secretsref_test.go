@@ -84,7 +84,8 @@ func TestRequiredSecretRefsOptionalWhenUnset(t *testing.T) {
 
 func TestResolveRequiredSecrets(t *testing.T) {
 	t.Setenv("VALLET_SIGNING_KEY", "the-signing-secret")
-	c := validConfig() // requires only auth.token_signing_key_ref
+	t.Setenv("VALLET_ACCESS_KEY_PEPPER", "0123456789abcdef0123456789abcdef")
+	c := validConfig() // production: the signing key and the access key pepper
 
 	resolver, err := secrets.NewResolver(secrets.Builtin(secrets.FileOptions{})...)
 	if err != nil {
@@ -94,14 +95,18 @@ func TestResolveRequiredSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveRequiredSecrets: %v", err)
 	}
-	if len(resolved) != 1 {
-		t.Fatalf("resolved %d secrets, want 1", len(resolved))
+	got := make(map[string]string, len(resolved))
+	for _, r := range resolved {
+		got[r.Field] = r.Value.Reveal()
 	}
-	if resolved[0].Field != "auth.token_signing_key_ref" {
-		t.Errorf("field = %q", resolved[0].Field)
+	if len(got) != 2 {
+		t.Fatalf("resolved %d secrets, want 2: %v", len(got), resolved)
 	}
-	if resolved[0].Value.Reveal() != "the-signing-secret" {
-		t.Errorf("value not resolved correctly")
+	if got["auth.token_signing_key_ref"] != "the-signing-secret" {
+		t.Errorf("signing key not resolved correctly")
+	}
+	if got["auth.access_key_pepper_ref"] != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("access key pepper not resolved correctly")
 	}
 	// Config must not be mutated with the resolved value.
 	if c.Auth.TokenSigningKeyRef != "env:VALLET_SIGNING_KEY" {

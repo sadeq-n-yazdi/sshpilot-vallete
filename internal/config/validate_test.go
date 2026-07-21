@@ -20,6 +20,7 @@ func validConfig() Config {
 	c.TLS.ACME.CacheDir = "/var/lib/vallet/acme"
 	c.TLS.ACME.AcceptTOS = true
 	c.Auth.TokenSigningKeyRef = "env:VALLET_SIGNING_KEY"
+	c.Auth.AccessKeyPepperRef = "env:VALLET_ACCESS_KEY_PEPPER"
 	return c
 }
 
