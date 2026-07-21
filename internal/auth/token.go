@@ -189,13 +189,22 @@ func parseRefreshToken(presented secrets.Redacted) (domain.RefreshCredentialID, 
 //   - Each scope is individually well formed (domain.Scope.Validate).
 //   - No duplicates. A repeated scope means the caller built the set wrong, and
 //     silently collapsing it hides that.
-//   - The account-wide kinds, full-owner and read-only, must appear alone.
-//     Mixing them with each other or with a resource-bound scope has no
-//     defensible reading: "read-only plus full-owner" and "read-only plus write
-//     access to one set" both ask the enforcement layer to guess, and a guess
-//     on a permission check resolves to more access than someone intended.
-//   - Resource-bound kinds (single-set, single-device) may be combined freely,
-//     because their union is unambiguous: each names exactly one resource.
+//   - full-owner must appear alone. It already grants everything within the
+//     owner, so pairing it with a narrower scope has no defensible reading: the
+//     narrower scope can only take authority away, and full-owner says none is
+//     taken away, so the pair asks the enforcement layer to guess.
+//   - read-only is a MODIFIER, not an account-wide grant (ADR-0018: "read-only +
+//     single-set"). It may stand alone -- read of any of the owner's resources
+//     -- or accompany exactly one resource binding, where it narrows that
+//     binding to reads. It may not repeat (a second read-only is a duplicate),
+//     and it cannot pair with full-owner (which already implies read access to
+//     everything, so the modifier subtracts nothing there).
+//   - At most ONE resource binding (single-set or single-device) per set.
+//     ADR-0018 fixes each token to exactly one named resource -- "managing
+//     several resources with least privilege means minting several narrow
+//     tokens", and a resource list per token was considered and rejected. Two
+//     bindings, of the same kind or different kinds, are refused so the
+//     enforcement union can never widen one narrow grant with another.
 //
 // It returns a wrapped domain.ErrInvalidInput rather than ErrAuthFailed. The
 // caller here is trusted server code building a grant, not an unauthenticated
@@ -209,6 +218,7 @@ func ValidateScopes(scopes []domain.Scope) error {
 		return fmt.Errorf("auth: scope set exceeds %d entries: %w", MaxScopes, domain.ErrInvalidInput)
 	}
 	seen := make(map[domain.Scope]struct{}, len(scopes))
+	bindings := 0
 	for _, s := range scopes {
 		if err := s.Validate(); err != nil {
 			return err
@@ -217,17 +227,25 @@ func ValidateScopes(scopes []domain.Scope) error {
 			return fmt.Errorf("auth: duplicate scope %q: %w", s.Kind, domain.ErrInvalidInput)
 		}
 		seen[s] = struct{}{}
-		if accountWideScope(s.Kind) && len(scopes) > 1 {
+		if s.Kind == domain.ScopeFullOwner && len(scopes) > 1 {
 			return fmt.Errorf("auth: scope kind %q must be the only scope in the set: %w", s.Kind, domain.ErrInvalidInput)
 		}
+		if resourceBinding(s.Kind) {
+			bindings++
+		}
+	}
+	if bindings > 1 {
+		return fmt.Errorf("auth: at most one resource binding per scope set: %w", domain.ErrInvalidInput)
 	}
 	return nil
 }
 
-// accountWideScope reports whether the kind grants across the whole account and
-// therefore must stand alone.
-func accountWideScope(k domain.ScopeKind) bool {
-	return k == domain.ScopeFullOwner || k == domain.ScopeReadOnly
+// resourceBinding reports whether the kind binds the token to exactly one named
+// resource -- a key set (single-set) or a device (single-device). Such a
+// binding is the token's positive grant, and ValidateScopes permits at most one
+// per set (ADR-0018: each narrow token names exactly one resource).
+func resourceBinding(k domain.ScopeKind) bool {
+	return k == domain.ScopeSingleSet || k == domain.ScopeSingleDevice
 }
 
 // cloneScopes copies a scope set so that a stored entity and an issued token

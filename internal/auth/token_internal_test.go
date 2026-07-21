@@ -205,21 +205,21 @@ func TestValidateClientLabel(t *testing.T) {
 	}
 }
 
-func TestAccountWideScope(t *testing.T) {
+func TestResourceBinding(t *testing.T) {
 	tests := []struct {
 		kind domain.ScopeKind
 		want bool
 	}{
-		{kind: domain.ScopeFullOwner, want: true},
-		{kind: domain.ScopeReadOnly, want: true},
-		{kind: domain.ScopeSingleSet, want: false},
-		{kind: domain.ScopeSingleDevice, want: false},
+		{kind: domain.ScopeSingleSet, want: true},
+		{kind: domain.ScopeSingleDevice, want: true},
+		{kind: domain.ScopeFullOwner, want: false},
+		{kind: domain.ScopeReadOnly, want: false},
 		{kind: domain.ScopeKind("nonsense"), want: false},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.kind), func(t *testing.T) {
-			if got := accountWideScope(tt.kind); got != tt.want {
-				t.Fatalf("accountWideScope(%q) = %v, want %v", tt.kind, got, tt.want)
+			if got := resourceBinding(tt.kind); got != tt.want {
+				t.Fatalf("resourceBinding(%q) = %v, want %v", tt.kind, got, tt.want)
 			}
 		})
 	}

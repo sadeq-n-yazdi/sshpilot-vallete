@@ -99,8 +99,8 @@ func TestAccessTokenRoundTrip(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	want := sampleAccess(now)
 	want.Scopes = []domain.Scope{
+		{Kind: domain.ScopeReadOnly},
 		{Kind: domain.ScopeSingleSet, ResourceID: "ks-1"},
-		{Kind: domain.ScopeSingleDevice, ResourceID: "dev-1"},
 	}
 
 	raw, err := s.Issue(want)
