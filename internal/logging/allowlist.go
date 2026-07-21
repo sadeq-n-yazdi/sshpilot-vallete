@@ -118,4 +118,16 @@ var defaultAllowedKeys = []string{
 	"count",
 	"visibility",
 	"audit_action",
+
+	// The name of a periodic maintenance job ("handle_quarantine_release",
+	// "access_key_grace_expiry"). It is a compile-time constant chosen by the
+	// registration site, never derived from a request or a row, so the set of
+	// values it can take is fixed and public. It is allowlisted because a
+	// redacted job name makes every sweep log line interchangeable -- an
+	// operator asking "which sweep stopped" or "which one is failing" gets
+	// "[REDACTED]" from both, which is the one question these lines exist to
+	// answer. "interval" is its companion on the same lines and is likewise an
+	// operator's own configured cadence.
+	"sweep",
+	"interval",
 }

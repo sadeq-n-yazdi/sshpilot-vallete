@@ -95,6 +95,18 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	store := sqlite.NewStore(db)
 
+	// Secrets are resolved before anything is constructed from them, and every
+	// failure is aggregated, so an operator fixes one startup error rather than
+	// discovering the next missing reference on the following attempt. Which
+	// references are required is decided by cfg (see RequiredSecretRefs): a
+	// deployment that enabled no feature needing a secret resolves none. The
+	// access key grace sweep is the consumer here; the bearer-token verifier
+	// resolves the same pepper independently in buildServer (see accessKeyPepper).
+	resolved, err := resolveSecrets(cfg)
+	if err != nil {
+		return err
+	}
+
 	// Built before the listener binds, so a bad retention policy fails startup
 	// rather than surfacing at the first tick of a server already taking
 	// traffic. Repos().Audit is the full port (the purge needs PurgeOlderThan);
@@ -107,7 +119,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	// Likewise built before the listener binds: a sweep that cannot be
 	// constructed is a startup failure, not something to discover at the first
 	// tick of a server already taking traffic.
-	sweeps, err := newSweepRunner(cfg, logger, store, store.AuditAppender())
+	sweeps, err := newSweepRunner(cfg, logger, store, store.AuditAppender(),
+		resolved[accessKeyPepperField])
 	if err != nil {
 		return err
 	}
