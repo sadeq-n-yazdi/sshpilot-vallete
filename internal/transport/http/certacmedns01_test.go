@@ -602,6 +602,18 @@ func acmeProviderAgainstFakeCA(t *testing.T, solver acmeSolver) (*acmeProvider, 
 
 	client := testACMEClient(t)
 	client.DirectoryURL = srv.URL + "/dir"
+	// Bind the ACME client to THIS server's own client instead of letting it
+	// fall back to http.DefaultClient. The default client keeps its idle
+	// keep-alive connections in http.DefaultTransport, which is process-wide
+	// shared state: a connection opened to srv during the order is parked there
+	// and outlives the order, so the deferred t.Cleanup(srv.Close) tears the
+	// listener down while an idle connection to it is still held in a pool the
+	// test does not own. With these providers running t.Parallel() by the
+	// dozen, that teardown is non-deterministic — the exact "detached cleanup
+	// races srv.Close" this test was flaking on. srv.Client() confines every
+	// connection made against srv to a transport scoped to this server, so
+	// srv.Close accounts for all of them and nothing leaks into a sibling test.
+	client.HTTPClient = srv.Client()
 
 	p := &acmeProvider{
 		client:    client,
