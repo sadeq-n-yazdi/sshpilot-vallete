@@ -37,4 +37,11 @@ var (
 	ErrLimitExceeded = errors.New("domain: limit exceeded")
 	// ErrDefaultKeySet indicates an invalid operation on the default key set.
 	ErrDefaultKeySet = errors.New("domain: default key set")
+	// ErrFoldStale indicates a look-alike fold column is out of step with the
+	// current blocklist table revision, so a create or rename that relies on the
+	// fold uniqueness index is refused until a recompute pass has brought the
+	// stored folds current. It is a transient, fail-closed refusal, not a
+	// conflict over any one name, so it is deliberately distinct from
+	// ErrConflict (see ADR-0030).
+	ErrFoldStale = errors.New("domain: fold table stale")
 )

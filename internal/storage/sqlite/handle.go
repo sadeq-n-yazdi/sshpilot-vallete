@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -39,6 +40,19 @@ func (r *handleRepo) Register(ctx context.Context, h *domain.Handle) error {
 	// as invalid input rather than dereferencing it into a panic.
 	if h == nil {
 		return fmt.Errorf("%s: nil handle: %w", errPrefix, domain.ErrInvalidInput)
+	}
+	// Fail closed while any handle's look-alike fold is out of step with the
+	// current blocklist table revision. A stale (possibly raw, unfolded)
+	// name_fold means ux_handles_name_fold cannot be trusted to reject a
+	// look-alike of that row, so a new claim could slip a confusable past it.
+	// This is the single write choke point both bootstrap create and
+	// rename-to-a-new-name pass through, which is why the guard lives here rather
+	// than in a service that a second write path could walk past (ADR-0030). The
+	// startup recompute pass makes every row current before the listener binds,
+	// so this only ever fires against a database that has not been recomputed
+	// yet, never at runtime.
+	if err := r.refuseIfFoldStale(ctx); err != nil {
+		return err
 	}
 	const q = `INSERT INTO handles (id, owner_id, name, name_fold, fold_version,
 state, quarantine_until,
@@ -186,6 +200,70 @@ func (r *handleRepo) Release(ctx context.Context, id domain.HandleID, now time.T
 WHERE id = ? AND state = ? AND quarantine_until IS NOT NULL AND quarantine_until <= ?`
 	res, err := r.e.ExecContext(ctx, q,
 		string(id), string(domain.NameStateQuarantined), encTime(now))
+	if err != nil {
+		return mapError(err)
+	}
+	return requireAffected(res)
+}
+
+// refuseIfFoldStale reports domain.ErrFoldStale when any handle row's
+// fold_version differs from the current blocklist table revision. A probe that
+// stops at the first stale row (LIMIT 1) keeps this cheap on the create path.
+func (r *handleRepo) refuseIfFoldStale(ctx context.Context) error {
+	const probe = `SELECT 1 FROM handles WHERE fold_version <> ? LIMIT 1`
+	var one int
+	switch err := r.e.QueryRowContext(ctx, probe, blocklist.TableVersion).Scan(&one); {
+	case err == nil:
+		return fmt.Errorf("%s: handle fold table stale: %w", errPrefix, domain.ErrFoldStale)
+	case errors.Is(err, sql.ErrNoRows):
+		return nil
+	default:
+		return mapError(err)
+	}
+}
+
+// ListStaleFolds returns every handle row whose fold_version differs from
+// currentVersion, oldest first, for the startup look-alike recompute pass.
+//
+// UNSCOPED: system-maintenance recompute across all owners; see the port.
+func (r *handleRepo) ListStaleFolds(ctx context.Context, currentVersion int) ([]domain.Handle, error) {
+	q := `SELECT ` + handleColumns + ` FROM handles WHERE fold_version <> ?
+ORDER BY created_at ASC, id ASC`
+	rows, err := r.e.QueryContext(ctx, q, currentVersion)
+	if err != nil {
+		return nil, mapError(err)
+	}
+	return collectHandles(rows)
+}
+
+// SetFold overwrites name_fold and fold_version for the row with id, stamping
+// updatedAt. A clash with another row's name_fold maps to domain.ErrConflict; a
+// missing row to domain.ErrNotFound. It is deliberately not owner-scoped: the
+// recompute is a system pass, and id already names exactly one row.
+//
+// UNSCOPED: system-maintenance recompute across all owners; see the port.
+func (r *handleRepo) SetFold(ctx context.Context, id domain.HandleID, fold string, version int, updatedAt time.Time) error {
+	const q = `UPDATE handles SET name_fold = ?, fold_version = ?, updated_at = ?
+WHERE id = ?`
+	res, err := r.e.ExecContext(ctx, q, fold, version, encTime(updatedAt), string(id))
+	if err != nil {
+		return mapError(err)
+	}
+	return requireAffected(res)
+}
+
+// QuarantineLookalike holds the row with id indefinitely (quarantine_until left
+// NULL so the release sweep never frees it) and flags it for review, leaving
+// name_fold and fold_version as SetFold placed them. A missing row maps to
+// domain.ErrNotFound.
+//
+// UNSCOPED: system-maintenance recompute across all owners; see the port.
+func (r *handleRepo) QuarantineLookalike(ctx context.Context, id domain.HandleID, updatedAt time.Time) error {
+	const q = `UPDATE handles
+SET state = ?, quarantine_until = NULL, flagged_for_review = ?, updated_at = ?
+WHERE id = ?`
+	res, err := r.e.ExecContext(ctx, q,
+		string(domain.NameStateQuarantined), encBool(true), encTime(updatedAt), string(id))
 	if err != nil {
 		return mapError(err)
 	}
