@@ -300,6 +300,43 @@ func TestUnknownKeyIsRedacted(t *testing.T) {
 	}
 }
 
+// TestMaintenanceSweepIdentityRenders pins that a maintenance sweep's log line
+// still says WHICH sweep it is about.
+//
+// The job name is the only field distinguishing the quarantine-release sweep
+// from the access-key grace sweep, so a redacted "sweep" key turns every line
+// the runner emits into an unattributable one -- captured and then thrown away.
+// The record is built here rather than by importing the sweep runner: this
+// package must not depend on its callers, and the keys are what is under test.
+//
+// The unlisted key alongside it is deliberate. It proves in the same rendered
+// line that allowing these two did not disable the control.
+func TestMaintenanceSweepIdentityRenders(t *testing.T) {
+	t.Parallel()
+
+	const jobName = "handle_quarantine_release"
+	out := render(t, func(l *slog.Logger) {
+		l.Info("maintenance sweep started",
+			slog.String("sweep", jobName),
+			slog.Duration("interval", 15*time.Minute),
+			slog.String("sweep_operator_note", "not-classified"),
+		)
+	})
+
+	if !strings.Contains(out, `"sweep":"`+jobName+`"`) {
+		t.Errorf("the sweep job name did not render, so the line does not say which sweep it is about\n  want: %q\n  got:  %s", `"sweep":"`+jobName+`"`, out)
+	}
+	if !strings.Contains(out, `"interval":900000000000`) {
+		t.Errorf("the sweep interval did not render as its duration\n  got: %s", out)
+	}
+	if !strings.Contains(out, `"sweep_operator_note":"`+RedactedMarker+`"`) {
+		t.Errorf("an unlisted key rendered; allowing the sweep keys must not disable the control\n  got: %s", out)
+	}
+	if strings.Contains(out, "not-classified") {
+		t.Errorf("the unlisted value leaked into the line: %s", out)
+	}
+}
+
 // TestExtraAllowedKeyRenders pins the declared-widening path: a key becomes
 // loggable only by being named at construction.
 func TestExtraAllowedKeyRenders(t *testing.T) {
