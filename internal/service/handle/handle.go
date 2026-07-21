@@ -94,10 +94,10 @@ var ErrMissingDependency = errors.New("handle: missing dependency")
 // it.
 //
 // Emit appends on the auditor's own auto-commit sink; EmitTo appends on a sink
-// the caller supplies. ReleaseExpired uses the latter to hand it the
-// transaction-bound r.Audit, so the release and its record commit as one — see
-// that method for why a release in particular cannot afford the gap the
-// auto-commit path leaves.
+// the caller supplies. Rename and ReleaseExpired use the latter to hand it the
+// transaction-bound r.Audit, so the state change and its record commit as one —
+// see those methods for why a move of a public name in particular cannot afford
+// the gap the auto-commit path leaves.
 type Auditor interface {
 	Emit(ctx context.Context, ev audit.Event) error
 	EmitTo(ctx context.Context, sink repository.AuditAppender, ev audit.Event) error
@@ -334,14 +334,19 @@ func (s *Service) Rename(ctx context.Context, ownerID domain.OwnerID, name, requ
 			action = domain.AuditActionHandleReclaimed
 		}
 		result = claimed
-		return nil
+		// Recorded on r.Audit, the transaction-bound appender, so the record and
+		// the rename it witnesses commit as one atomic unit. Emitting after the
+		// transaction closed instead would leave a window in which a crash
+		// between the commit and the emit moved a public name with no record
+		// that it moved — the very outcome this package's doc calls a failed
+		// operation. A failure here returns non-nil, which rolls the rename back
+		// with it. action, result, and details are all resolved above, inside
+		// this closure, so nothing the record depends on is left outside it.
+		return s.emitTx(ctx, r.Audit, action, ownerID, result.ID, details)
 	}); err != nil {
 		return nil, mapErr(err)
 	}
 
-	if err := s.emit(ctx, action, ownerID, result.ID, details); err != nil {
-		return nil, err
-	}
 	return result, nil
 }
 
@@ -520,28 +525,11 @@ func mapErr(err error) error {
 	}
 }
 
-// emit records an audited handle transition.
-func (s *Service) emit(
-	ctx context.Context,
-	action domain.AuditAction,
-	ownerID domain.OwnerID,
-	id domain.HandleID,
-	details audit.Details,
-) error {
-	return s.auditor.Emit(ctx, audit.Event{
-		ActorType:  domain.ActorTypeOwner,
-		ActorID:    string(ownerID),
-		Action:     action,
-		TargetType: domain.TargetTypeHandle,
-		TargetID:   string(id),
-		Details:    details,
-	})
-}
-
-// emitTx records the same audited transition as emit but on a caller-supplied
-// sink rather than the auditor's own. ReleaseExpired passes the transaction-
-// bound r.Audit so the record commits or rolls back with the state change it
-// witnesses; it is otherwise identical to emit.
+// emitTx records an audited handle transition on the caller-supplied sink.
+// Rename and ReleaseExpired pass the transaction-bound r.Audit so the record
+// commits or rolls back with the state change it witnesses, rather than through
+// the auditor's own auto-commit sink, which would leave a gap between the state
+// change and its record.
 func (s *Service) emitTx(
 	ctx context.Context,
 	sink repository.AuditAppender,
