@@ -199,12 +199,14 @@ func TestAuditRepoExposesNoMutatingMethods(t *testing.T) {
 	t.Parallel()
 
 	// The full surface this adapter implements. Append/Get/List are the
-	// append-and-read core; the other two are the bounded ADR-0024 maintenance
-	// capabilities, each of which can only remove an aged row or overwrite the
-	// two identity columns.
+	// append-and-read core; the rest are the bounded ADR-0024 maintenance
+	// capabilities. Each can only remove an aged row, overwrite the two identity
+	// columns, read records for erasure, or overwrite the metadata column — none
+	// can alter the action or timestamp of a surviving record.
 	allowed := map[string]bool{
 		"Append": true, "Get": true, "List": true,
 		"PurgeOlderThan": true, "Pseudonymize": true,
+		"RecordsForErasure": true, "ScrubMetadata": true,
 	}
 
 	repoType := reflect.TypeOf(&auditRepo{})

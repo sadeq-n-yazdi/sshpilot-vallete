@@ -442,13 +442,13 @@ func (r *auditRepo) PurgeOlderThan(ctx context.Context, cutoff time.Time, limit 
 // byte-identical, so a surviving record still proves the event. There is no
 // input to this method that alters the substance of history.
 //
-// It also does not touch metadata, which can itself carry identifying values.
-// That is a known gap, tracked separately, and it is left in place here on
-// purpose: the SQLite adapter has the same gap, and closing it on one engine
-// only would make the two disagree about what erasure means — a difference far
-// more dangerous than the gap itself, because it would be invisible until an
-// erasure was audited on the wrong engine. The gap is pinned by a test on both
-// adapters so it stays visible rather than drifting.
+// It deliberately does not touch metadata, and that is a division of labor, not
+// a gap: a record's metadata can itself carry identifying values, but rewriting
+// them requires a tombstone the service computes, so it is done through the
+// separate ScrubMetadata method rather than here. Keeping this method to the two
+// identity columns is what preserves its structural anti-forgery property. The
+// two adapters implement both halves identically, pinned by parity tests, so
+// erasure means the same thing on each engine.
 //
 // # Idempotence
 //
@@ -590,6 +590,105 @@ WHERE actor_id IN (` + whereActorIn + `) OR target_id IN (` + whereTargetIn + `)
 		return 0, mapError(err)
 	}
 	return rows, nil
+}
+
+// RecordsForErasure returns every record whose actor_id or target_id is one of
+// ids, so the erasure service can read their metadata before the columns are
+// tombstoned. It is a read: it changes nothing, and it matches the same rows
+// Pseudonymize would, which is why the caller runs it first.
+//
+// It is kept line-for-line comparable with the SQLite adapter: same batching on
+// the shared bound-variable ceiling (each ID bound twice, against actor_id and
+// target_id), same statement shape, same dedup by record ID (a record whose
+// actor and target fall in different batches would otherwise be returned twice).
+// Only the placeholders differ — $-numbered here, computed from a single counter
+// so the numbering and the argument order cannot drift, the same discipline
+// pseudonymizeBatch uses.
+func (r *auditRepo) RecordsForErasure(ctx context.Context, ids []string) ([]domain.AuditRecord, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var out []domain.AuditRecord
+	seen := map[domain.AuditRecordID]bool{}
+	for start := 0; start < len(ids); start += maxPseudonymizeBatch {
+		end := min(start+maxPseudonymizeBatch, len(ids))
+		batch := ids[start:end]
+
+		n := 0
+		group := func() string {
+			parts := make([]string, len(batch))
+			for i := range parts {
+				n++
+				parts[i] = placeholder(n)
+			}
+			return strings.Join(parts, ", ")
+		}
+		actorIn, targetIn := group(), group()
+		q := `SELECT ` + auditColumns + ` FROM audit_records
+WHERE actor_id IN (` + actorIn + `) OR target_id IN (` + targetIn + `)`
+
+		args := make([]any, 0, 2*len(batch))
+		for range 2 {
+			for _, id := range batch {
+				args = append(args, id)
+			}
+		}
+		rows, err := r.e.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		recs, err := collectAuditRecords(rows)
+		if err != nil {
+			return nil, err
+		}
+		for _, rec := range recs {
+			if seen[rec.ID] {
+				continue
+			}
+			seen[rec.ID] = true
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+// ScrubMetadata overwrites only the metadata column of each named record and
+// returns how many rows were updated. Every update runs in one transaction so
+// an owner's metadata erasure is all-or-nothing, matching Pseudonymize: a
+// partial metadata scrub that left some identifying values in the clear would
+// be the same silent privacy failure a partial column pass would be.
+//
+// The statement sets metadata and nothing else — not the identity columns, not
+// the pseudonymized flag, which the column pass owns — so it cannot doctor what
+// an event was or when it happened. A record ID that matches no row updates
+// nothing and is not an error.
+func (r *auditRepo) ScrubMetadata(ctx context.Context, updates []repository.AuditMetadataUpdate) (int64, error) {
+	if len(updates) == 0 {
+		return 0, nil
+	}
+	var total int64
+	err := withLocalTx(ctx, r.e, func(e execer) error {
+		const q = `UPDATE audit_records SET metadata = $1 WHERE id = $2`
+		for _, u := range updates {
+			if u.ID == "" {
+				return fmt.Errorf("%s: empty record id in metadata scrub: %w", errPrefix, domain.ErrInvalidInput)
+			}
+			res, err := e.ExecContext(ctx, q, encAuditMetadata(u.Metadata), string(u.ID))
+			if err != nil {
+				return mapError(err)
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return mapError(err)
+			}
+			total += n
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 // auditAppenderOnly is the wrapper that makes the request-path sink insert-only
