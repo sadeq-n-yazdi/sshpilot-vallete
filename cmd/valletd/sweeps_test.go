@@ -98,7 +98,15 @@ type fakeStore struct {
 }
 
 func (s fakeStore) Repos() repository.Repos {
-	return repository.Repos{Handles: s.handles, AccessKeys: s.keys, KeySets: s.keySets}
+	return repository.Repos{
+		Handles:    s.handles,
+		AccessKeys: s.keys,
+		KeySets:    s.keySets,
+		// The release sweep records each freed name through the
+		// transaction-bound Audit repository so the delete and the record commit
+		// together; a store without one could not complete a release.
+		Audit: fakeAudit{},
+	}
 }
 
 func (s fakeStore) WithTx(ctx context.Context, fn func(context.Context, repository.Repos) error) error {
@@ -111,6 +119,14 @@ func (s fakeStore) WithTx(ctx context.Context, fn func(context.Context, reposito
 type nopAppender struct{}
 
 func (nopAppender) Append(context.Context, *domain.AuditRecord) error { return nil }
+
+// fakeAudit is the transaction-bound audit repository the release sweep writes
+// through. It accepts appends and embeds the port so any read, purge, or
+// pseudonymize a sweep has no business calling nil-panics loudly rather than
+// passing quietly.
+type fakeAudit struct{ repository.AuditRepository }
+
+func (fakeAudit) Append(context.Context, *domain.AuditRecord) error { return nil }
 
 func expiredHandle(id domain.HandleID, until time.Time) domain.Handle {
 	return domain.Handle{

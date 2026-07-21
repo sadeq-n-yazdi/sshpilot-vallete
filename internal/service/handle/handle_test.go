@@ -446,6 +446,14 @@ func TestReleaseIsAudited(t *testing.T) {
 // TestReleaseFailureLeavesTheNameClaimed: a release that cannot be recorded
 // must not have happened silently. The failure direction matters — freeing a
 // public name with no audit trail is the outcome worth refusing.
+//
+// The second assertion is the durable-audit fix (task #53). The delete and its
+// audit record share one transaction, so an audit write that fails rolls the
+// delete back with it and the name stays quarantined for the next sweep. Under
+// the pre-fix shape the delete auto-committed BEFORE the emit, so this same
+// failing auditor left "alice" already gone with no record — the exact window
+// this closes. Moving the emit back outside store.WithTx makes this assertion
+// fail (alice would be ErrNotFound), which is what pins the fix in place.
 func TestReleaseFailureStopsTheSweep(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -463,6 +471,75 @@ func TestReleaseFailureStopsTheSweep(t *testing.T) {
 
 	if _, err := f.svc.ReleaseExpired(ctx, 10); err == nil {
 		t.Fatal("ReleaseExpired with a failing auditor returned nil, want the error")
+	}
+
+	// The state change must have rolled back with the failed record: the name
+	// is still claimed, not freed-and-unrecorded.
+	if _, err := f.byName("alice"); err != nil {
+		t.Fatalf("after a failed release GetByName(alice) = %v, want the row still "+
+			"claimed: the delete must roll back with the audit record", err)
+	}
+}
+
+// TestReleaseCommitsRecordAndDeleteTogether is the positive half of the fix,
+// against real machinery: a real audit.Emitter over the store's own audit
+// repository, and the release record read back out of the audit table rather
+// than off a fake. After a release the name is gone AND its record is durably
+// present — the two committed as one transaction. The record is observed
+// through the tx-bound path the fix uses, so a regression that routed the write
+// to an auto-commit sink instead would still pass here, but the rollback
+// assertion in TestReleaseFailureStopsTheSweep would then fail; together they
+// pin "delete iff record".
+func TestReleaseCommitsRecordAndDeleteTogether(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	f := newFixture(t)
+	f.seed(ownerA, "alice")
+
+	// A real emitter, wired over the store's audit repository. EmitTo ignores
+	// this sink and writes to the transaction-bound r.Audit, but a real emitter
+	// is what applies the true validation and screening on the release path.
+	emitter, err := audit.NewEmitter(f.store.Repos().Audit, audit.WithClock(f.clock.get))
+	if err != nil {
+		t.Fatalf("audit.NewEmitter: %v", err)
+	}
+	svc, err := handle.New(f.store, mustGuard(t), emitter, handle.WithClock(f.clock.get))
+	if err != nil {
+		t.Fatalf("handle.New: %v", err)
+	}
+
+	if _, err := svc.Rename(ctx, ownerA, "alicia", "req-1"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	f.clock.advance(handle.DefaultQuarantineWindow + time.Second)
+
+	n, err := svc.ReleaseExpired(ctx, 10)
+	if err != nil {
+		t.Fatalf("ReleaseExpired: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("released %d, want 1", n)
+	}
+
+	// The name is gone...
+	if _, err := f.byName("alice"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("after release GetByName(alice) = %v, want ErrNotFound", err)
+	}
+
+	// ...and the record is durably in the audit table, naming the freed name.
+	records, _, err := f.store.Repos().Audit.List(ctx,
+		repository.AuditQuery{Action: domain.AuditActionHandleReleased}, repository.Page{})
+	if err != nil {
+		t.Fatalf("Audit.List: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("audit table holds %d handle.released records, want 1", len(records))
+	}
+	if got := records[0].Metadata[string(audit.DetailHandle)]; got != "alice" {
+		t.Errorf("released record handle = %q, want %q", got, "alice")
+	}
+	if records[0].ActorID != string(ownerA) {
+		t.Errorf("released record actor = %q, want %q", records[0].ActorID, ownerA)
 	}
 }
 
@@ -500,6 +577,9 @@ func TestNewRequiresEveryCollaborator(t *testing.T) {
 				inner: f.store,
 				decor: func(repository.HandleRepository) repository.HandleRepository { return nil },
 			}, mustGuard(t), f.auditor)
+		}},
+		{name: "nil audit repository", build: func() (*handle.Service, error) {
+			return handle.New(nilAuditStore{inner: f.store}, mustGuard(t), f.auditor)
 		}},
 	} {
 		if _, err := tc.build(); !errors.Is(err, handle.ErrMissingDependency) {
