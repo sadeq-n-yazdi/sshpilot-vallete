@@ -476,6 +476,86 @@ WHERE actor_id IN (` + placeholders + `) OR target_id IN (` + placeholders + `)`
 	return n, nil
 }
 
+// RecordsForErasure returns every record whose actor_id or target_id is one of
+// ids, so the erasure service can read their metadata before the columns are
+// tombstoned. It is a read: it changes nothing, and it matches the same rows
+// Pseudonymize would, which is why the caller runs it first.
+//
+// Reads are batched on the same bound-variable ceiling as Pseudonymize (each ID
+// is bound twice here, against actor_id and target_id), so an owner with more
+// identifiers than one statement can carry is read across several. Duplicate
+// rows cannot arise across batches because the batches partition ids, and
+// within a batch a row matching on both columns is still one row.
+func (r *auditRepo) RecordsForErasure(ctx context.Context, ids []string) ([]domain.AuditRecord, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var out []domain.AuditRecord
+	for start := 0; start < len(ids); start += maxPseudonymizeBatch {
+		end := min(start+maxPseudonymizeBatch, len(ids))
+		batch := ids[start:end]
+		placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(batch)), ", ")
+		q := `SELECT ` + auditColumns + ` FROM audit_records
+WHERE actor_id IN (` + placeholders + `) OR target_id IN (` + placeholders + `)`
+
+		args := make([]any, 0, 2*len(batch))
+		for range 2 {
+			for _, id := range batch {
+				args = append(args, id)
+			}
+		}
+		rows, err := r.e.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, mapError(err)
+		}
+		recs, err := collectAuditRecords(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, recs...)
+	}
+	return out, nil
+}
+
+// ScrubMetadata overwrites only the metadata column of each named record and
+// returns how many rows were updated. Every update runs in one transaction so
+// an owner's metadata erasure is all-or-nothing, matching Pseudonymize: a
+// partial metadata scrub that left some identifying values in the clear would
+// be the same silent privacy failure a partial column pass would be.
+//
+// The statement sets metadata and nothing else — not the identity columns, not
+// the pseudonymized flag, which the column pass owns — so it cannot doctor what
+// an event was or when it happened. A record ID that matches no row updates
+// nothing and is not an error.
+func (r *auditRepo) ScrubMetadata(ctx context.Context, updates []repository.AuditMetadataUpdate) (int64, error) {
+	if len(updates) == 0 {
+		return 0, nil
+	}
+	var total int64
+	err := withLocalTx(ctx, r.e, func(e execer) error {
+		const q = `UPDATE audit_records SET metadata = ? WHERE id = ?`
+		for _, u := range updates {
+			if u.ID == "" {
+				return fmt.Errorf("%s: empty record id in metadata scrub: %w", errPrefix, domain.ErrInvalidInput)
+			}
+			res, err := e.ExecContext(ctx, q, encAuditMetadata(u.Metadata), string(u.ID))
+			if err != nil {
+				return mapError(err)
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return mapError(err)
+			}
+			total += n
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
 // auditAppenderOnly is the wrapper that makes the request-path sink insert-only
 // at the TYPE level, not merely at the interface level.
 //

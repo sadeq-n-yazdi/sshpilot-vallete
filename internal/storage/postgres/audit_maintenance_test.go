@@ -238,19 +238,18 @@ func TestAuditPseudonymizeRewritesOnlyIdentity(t *testing.T) {
 	}
 }
 
-// TestAuditPseudonymizeLeavesMetadataUntouched pins the known erasure gap, on
-// this engine, to the SAME behavior the SQLite adapter has.
+// TestAuditPseudonymizeLeavesMetadataUntouched pins the division of labor
+// between the two erasure writes: Pseudonymize rewrites ONLY the identity
+// columns, and metadata erasure is the separate ScrubMetadata method's job
+// (exercised by TestAuditScrubMetadataTouchesOnlyMetadata).
 //
-// This is not an endorsement of the gap: the seeded record deliberately carries
-// a fingerprint that names a specific key, and therefore its owner, and that
-// value survives the erasure in the clear. The gap is tracked separately. What
-// this test defends is that the gap cannot be closed on one engine only. A
-// well-meaning change that added metadata to the Postgres UPDATE would make the
-// two engines disagree about what "erased" means, and nothing above the storage
-// layer could observe the difference — an operator would get a different
-// privacy outcome depending on which database the deployment happened to use.
-// Closing the gap must therefore be a deliberate edit to both adapters and to
-// both of these tests, in one change.
+// Keeping Pseudonymize to the two columns is what preserves its structural
+// anti-forgery guarantee — it cannot reach any other column, metadata included.
+// A change that added metadata rewriting to this UPDATE would both break that
+// guarantee and, if made on one engine only, make the two disagree about what
+// Pseudonymize does. The whole-record erasure that DOES scrub metadata runs the
+// two methods together in the erasure service; here each is pinned in isolation
+// so the boundary between them stays sharp on both engines.
 func TestAuditPseudonymizeLeavesMetadataUntouched(t *testing.T) {
 	t.Parallel()
 	s := newStore(t)
@@ -281,11 +280,11 @@ func TestAuditPseudonymizeLeavesMetadataUntouched(t *testing.T) {
 	if got.ActorID != "tomb-xyz" || got.TargetID != "tomb-xyz" {
 		t.Fatalf("identity columns = %q/%q, want both tombstoned", got.ActorID, got.TargetID)
 	}
-	// ...and metadata was not, which is the current agreed behavior on both
-	// engines. If this assertion is ever changed, change the SQLite one too.
+	// ...and metadata was not, because scrubbing it is ScrubMetadata's job, not
+	// this method's. This boundary must stay identical on both engines.
 	if !reflect.DeepEqual(got.Metadata, meta) {
-		t.Errorf("Metadata = %v, want %v unchanged: the metadata erasure gap is a known, "+
-			"tracked limitation that must stay identical on both engines, not be closed on one", got.Metadata, meta)
+		t.Errorf("Metadata = %v, want %v unchanged: Pseudonymize must touch only the "+
+			"identity columns; metadata erasure belongs to ScrubMetadata", got.Metadata, meta)
 	}
 }
 
@@ -545,5 +544,129 @@ func TestAuditPseudonymizeChunksLargeSets(t *testing.T) {
 	}
 	if len(recs) != n {
 		t.Errorf("tombstoned records = %d, want %d", len(recs), n)
+	}
+}
+
+// TestAuditRecordsForErasureMatchesActorOrTarget covers the read half of
+// metadata crypto-erasure: a record is returned when either identity column is
+// in the ID set, an unrelated record is not, and an empty set yields nothing.
+// It mirrors the SQLite adapter's test so the two engines are proven identical.
+func TestAuditRecordsForErasureMatchesActorOrTarget(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	byActor := newAuditRecord("aud-actor", "owner-a", "key-1", testClock)
+	byTarget := newAuditRecord("aud-target", "admin-9", "owner-a", testClock)
+	byTarget.ActorType = domain.ActorTypeAdministrator
+	byTarget.TargetType = domain.TargetTypeOwner
+	unrelated := newAuditRecord("aud-other", "owner-b", "key-2", testClock)
+	for _, rec := range []*domain.AuditRecord{byActor, byTarget, unrelated} {
+		if err := sink.Append(ctx, rec); err != nil {
+			t.Fatalf("Append %s: %v", rec.ID, err)
+		}
+	}
+
+	got, err := repo.RecordsForErasure(ctx, []string{"owner-a"})
+	if err != nil {
+		t.Fatalf("RecordsForErasure: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, r := range got {
+		ids[string(r.ID)] = true
+	}
+	if !ids["aud-actor"] || !ids["aud-target"] {
+		t.Errorf("missing a matched record: got %v", ids)
+	}
+	if ids["aud-other"] {
+		t.Error("an unrelated owner's record was returned")
+	}
+	if len(got) != 2 {
+		t.Errorf("returned %d records, want 2", len(got))
+	}
+
+	empty, err := repo.RecordsForErasure(ctx, nil)
+	if err != nil {
+		t.Fatalf("RecordsForErasure(nil): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("empty id set returned %d records, want 0", len(empty))
+	}
+}
+
+// TestAuditScrubMetadataTouchesOnlyMetadata is the anti-forgery test for the
+// write half: it replaces the metadata column and leaves every other column —
+// action, timestamp, the type and identity columns, and the pseudonymized flag
+// — byte-identical. Rewriting metadata must never become a route to doctoring
+// what happened or when.
+func TestAuditScrubMetadataTouchesOnlyMetadata(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	rec := newAuditRecord("aud-1", "owner-a", "key-1", testClock)
+	rec.Metadata = map[string]string{"handle": "acme", "algorithm": "ssh-ed25519"}
+	if err := sink.Append(ctx, rec); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	newMeta := map[string]string{"handle": "anon:xyz", "algorithm": "ssh-ed25519"}
+	n, err := repo.ScrubMetadata(ctx, []repository.AuditMetadataUpdate{{ID: "aud-1", Metadata: newMeta}})
+	if err != nil {
+		t.Fatalf("ScrubMetadata: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("updated = %d, want 1", n)
+	}
+
+	got, err := repo.Get(ctx, "aud-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !reflect.DeepEqual(got.Metadata, newMeta) {
+		t.Errorf("Metadata = %v, want %v", got.Metadata, newMeta)
+	}
+	if got.Action != rec.Action {
+		t.Errorf("Action = %q, want %q: scrub altered the action", got.Action, rec.Action)
+	}
+	if !got.OccurredAt.Equal(rec.OccurredAt) {
+		t.Errorf("OccurredAt changed: %v want %v", got.OccurredAt, rec.OccurredAt)
+	}
+	if got.ActorID != "owner-a" || got.TargetID != "key-1" {
+		t.Errorf("identity columns changed: %q/%q", got.ActorID, got.TargetID)
+	}
+	if got.ActorType != rec.ActorType || got.TargetType != rec.TargetType {
+		t.Errorf("type columns changed: %v/%v", got.ActorType, got.TargetType)
+	}
+	if got.Pseudonymized {
+		t.Error("Pseudonymized flag was set by a metadata scrub: that flag belongs to the column pass")
+	}
+}
+
+// TestAuditScrubMetadataSkipsUnknownAndRejectsEmpty covers the two edge cases: a
+// record ID that names no row updates nothing (erasure tolerates a partially
+// deleted owner), and an empty ID is refused rather than silently applied.
+func TestAuditScrubMetadataSkipsUnknownAndRejectsEmpty(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	_, repo := auditSink(t, s)
+
+	n, err := repo.ScrubMetadata(ctx, []repository.AuditMetadataUpdate{{ID: "missing", Metadata: map[string]string{"handle": "x"}}})
+	if err != nil {
+		t.Fatalf("ScrubMetadata(missing): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("updated = %d for a missing record, want 0", n)
+	}
+
+	if _, err := repo.ScrubMetadata(ctx, []repository.AuditMetadataUpdate{{ID: "", Metadata: nil}}); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("empty id err = %v, want ErrInvalidInput", err)
+	}
+
+	if n, err := repo.ScrubMetadata(ctx, nil); err != nil || n != 0 {
+		t.Errorf("ScrubMetadata(nil) = %d, %v, want 0, nil", n, err)
 	}
 }

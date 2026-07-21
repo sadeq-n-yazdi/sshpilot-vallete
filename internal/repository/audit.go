@@ -66,4 +66,49 @@ type AuditRepository interface {
 	// UNSCOPED: pseudonymization is a system-maintenance operation over records
 	// identified by their polymorphic IDs, not by an owner scope.
 	Pseudonymize(ctx context.Context, ids []string, pseudonym string) (int64, error)
+
+	// RecordsForErasure returns every audit record whose actor_id or target_id
+	// is one of ids, with all columns populated. It is the read half of
+	// metadata crypto-erasure: Pseudonymize erases the identity columns, but a
+	// record's metadata can itself carry identifying values (a fingerprint, a
+	// handle, a device name), and rewriting those to salted-hash tombstones
+	// requires reading each record's current metadata because the tombstone is
+	// an HMAC computed in the service, not in SQL. An empty ids yields no
+	// records. It MUST be called before Pseudonymize rewrites the columns,
+	// while ids still match, or the record set comes back empty.
+	//
+	// UNSCOPED: as for Pseudonymize, records are identified by their
+	// polymorphic IDs, not by an owner scope.
+	RecordsForErasure(ctx context.Context, ids []string) ([]domain.AuditRecord, error)
+
+	// ScrubMetadata overwrites the metadata of each named record with the
+	// supplied map, touching no other column, and returns the number of records
+	// updated. It is the write half of metadata crypto-erasure (ADR-0024): the
+	// erasure service computes each record's new metadata — identifying detail
+	// values rewritten to tombstones, structural details preserved byte for
+	// byte — and this persists them.
+	//
+	// Unlike Pseudonymize, which structurally cannot alter anything but the two
+	// identity columns, this method writes a caller-supplied map, so which keys
+	// are preserved and which are rewritten is the erasure service's
+	// responsibility, pinned by its tests, not a property enforced here. What
+	// this method does guarantee is the other half of the anti-forgery
+	// property: it writes only the metadata column and never action,
+	// occurred_at, the type columns, the identity columns, or the pseudonymized
+	// flag, so it can no more forge WHAT happened or WHEN than Pseudonymize can.
+	//
+	// A record ID that names no row is skipped, not an error: erasure tolerates
+	// a partially deleted owner, so a record that has since been purged simply
+	// contributes nothing.
+	//
+	// UNSCOPED: records are identified by their IDs, not by an owner scope.
+	ScrubMetadata(ctx context.Context, updates []AuditMetadataUpdate) (int64, error)
+}
+
+// AuditMetadataUpdate names one record and the metadata to store on it, the
+// unit ScrubMetadata applies. It is a value type rather than a bare map so the
+// record ID and its new metadata travel together and cannot be transposed.
+type AuditMetadataUpdate struct {
+	ID       domain.AuditRecordID
+	Metadata map[string]string
 }

@@ -158,12 +158,14 @@ func TestAuditRepoExposesNoMutatingMethods(t *testing.T) {
 	t.Parallel()
 
 	// The full surface this adapter implements. Append/Get/List are the
-	// append-and-read core; the other two are the bounded ADR-0024 maintenance
-	// capabilities, each of which can only remove an aged row or overwrite the
-	// two identity columns.
+	// append-and-read core; the rest are the bounded ADR-0024 maintenance
+	// capabilities. Each can only remove an aged row, overwrite the two identity
+	// columns, read records for erasure, or overwrite the metadata column — none
+	// can alter the action or timestamp of a surviving record.
 	allowed := map[string]bool{
 		"Append": true, "Get": true, "List": true,
 		"PurgeOlderThan": true, "Pseudonymize": true,
+		"RecordsForErasure": true, "ScrubMetadata": true,
 	}
 
 	repoType := reflect.TypeOf(&auditRepo{})
@@ -851,12 +853,13 @@ func TestAuditPseudonymizeRewritesOnlyIdentity(t *testing.T) {
 	if got.TargetID != "key-1" {
 		t.Errorf("TargetID = %q, want key-1: a bystander identity was erased", got.TargetID)
 	}
-	// Metadata survives verbatim. That cuts both ways, and the seeded record
-	// says so deliberately: the surviving "fingerprint" names a specific key,
-	// and therefore its owner, after the actor id has been tombstoned. Erasure
-	// covers the identifier columns only. See the limits section in the
-	// internal/erasure package doc; this assertion is the pin on the current
-	// behavior, not an endorsement of it.
+	// Metadata survives THIS method verbatim, and that is the boundary being
+	// pinned: Pseudonymize rewrites only the identity columns. The seeded
+	// "fingerprint" names a specific key and would identify its owner, so it is
+	// erased too — but by the separate ScrubMetadata method (see
+	// TestAuditScrubMetadataTouchesOnlyMetadata), which the erasure service runs
+	// alongside this one. Keeping Pseudonymize to the columns is what preserves
+	// its structural anti-forgery guarantee.
 	if !reflect.DeepEqual(got.Metadata, rec.Metadata) {
 		t.Errorf("Metadata = %v, want %v", got.Metadata, rec.Metadata)
 	}
@@ -1176,5 +1179,128 @@ func TestAuditPseudonymizeAbortsTransactionOnBatchError(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("rewritten = %d, want 0 on error", n)
+	}
+}
+
+// TestAuditRecordsForErasureMatchesActorOrTarget covers the read half of
+// metadata crypto-erasure: a record is returned when either identity column is
+// in the ID set, an unrelated record is not, and an empty set yields nothing.
+func TestAuditRecordsForErasureMatchesActorOrTarget(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	byActor := newAuditRecord("aud-actor", "owner-a", "key-1", testClock)
+	byTarget := newAuditRecord("aud-target", "admin-9", "owner-a", testClock)
+	byTarget.ActorType = domain.ActorTypeAdministrator
+	byTarget.TargetType = domain.TargetTypeOwner
+	unrelated := newAuditRecord("aud-other", "owner-b", "key-2", testClock)
+	for _, rec := range []*domain.AuditRecord{byActor, byTarget, unrelated} {
+		if err := sink.Append(ctx, rec); err != nil {
+			t.Fatalf("Append %s: %v", rec.ID, err)
+		}
+	}
+
+	got, err := repo.RecordsForErasure(ctx, []string{"owner-a"})
+	if err != nil {
+		t.Fatalf("RecordsForErasure: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, r := range got {
+		ids[string(r.ID)] = true
+	}
+	if !ids["aud-actor"] || !ids["aud-target"] {
+		t.Errorf("missing a matched record: got %v", ids)
+	}
+	if ids["aud-other"] {
+		t.Error("an unrelated owner's record was returned")
+	}
+	if len(got) != 2 {
+		t.Errorf("returned %d records, want 2", len(got))
+	}
+
+	empty, err := repo.RecordsForErasure(ctx, nil)
+	if err != nil {
+		t.Fatalf("RecordsForErasure(nil): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("empty id set returned %d records, want 0", len(empty))
+	}
+}
+
+// TestAuditScrubMetadataTouchesOnlyMetadata is the anti-forgery test for the
+// write half: it replaces the metadata column and leaves every other column —
+// action, timestamp, the type and identity columns, and the pseudonymized flag
+// — byte-identical. Rewriting metadata must never become a route to doctoring
+// what happened or when.
+func TestAuditScrubMetadataTouchesOnlyMetadata(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	sink, repo := auditSink(t, s)
+
+	rec := newAuditRecord("aud-1", "owner-a", "key-1", testClock)
+	rec.Metadata = map[string]string{"handle": "acme", "algorithm": "ssh-ed25519"}
+	if err := sink.Append(ctx, rec); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	newMeta := map[string]string{"handle": "anon:xyz", "algorithm": "ssh-ed25519"}
+	n, err := repo.ScrubMetadata(ctx, []repository.AuditMetadataUpdate{{ID: "aud-1", Metadata: newMeta}})
+	if err != nil {
+		t.Fatalf("ScrubMetadata: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("updated = %d, want 1", n)
+	}
+
+	got, err := repo.Get(ctx, "aud-1")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !reflect.DeepEqual(got.Metadata, newMeta) {
+		t.Errorf("Metadata = %v, want %v", got.Metadata, newMeta)
+	}
+	if got.Action != rec.Action {
+		t.Errorf("Action = %q, want %q: scrub altered the action", got.Action, rec.Action)
+	}
+	if !got.OccurredAt.Equal(rec.OccurredAt) {
+		t.Errorf("OccurredAt changed: %v want %v", got.OccurredAt, rec.OccurredAt)
+	}
+	if got.ActorID != "owner-a" || got.TargetID != "key-1" {
+		t.Errorf("identity columns changed: %q/%q", got.ActorID, got.TargetID)
+	}
+	if got.ActorType != rec.ActorType || got.TargetType != rec.TargetType {
+		t.Errorf("type columns changed: %v/%v", got.ActorType, got.TargetType)
+	}
+	if got.Pseudonymized {
+		t.Error("Pseudonymized flag was set by a metadata scrub: that flag belongs to the column pass")
+	}
+}
+
+// TestAuditScrubMetadataSkipsUnknownAndRejectsEmpty covers the two edge cases: a
+// record ID that names no row updates nothing (erasure tolerates a partially
+// deleted owner), and an empty ID is refused rather than silently applied.
+func TestAuditScrubMetadataSkipsUnknownAndRejectsEmpty(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	_, repo := auditSink(t, s)
+
+	n, err := repo.ScrubMetadata(ctx, []repository.AuditMetadataUpdate{{ID: "missing", Metadata: map[string]string{"handle": "x"}}})
+	if err != nil {
+		t.Fatalf("ScrubMetadata(missing): %v", err)
+	}
+	if n != 0 {
+		t.Errorf("updated = %d for a missing record, want 0", n)
+	}
+
+	if _, err := repo.ScrubMetadata(ctx, []repository.AuditMetadataUpdate{{ID: "", Metadata: nil}}); !errors.Is(err, domain.ErrInvalidInput) {
+		t.Errorf("empty id err = %v, want ErrInvalidInput", err)
+	}
+
+	if n, err := repo.ScrubMetadata(ctx, nil); err != nil || n != 0 {
+		t.Errorf("ScrubMetadata(nil) = %d, %v, want 0, nil", n, err)
 	}
 }
