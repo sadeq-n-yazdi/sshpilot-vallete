@@ -36,7 +36,7 @@ tls:
     dns:
       # manual | api
       mode: ""
-      # Required for dns_01 + api: cloudflare | route53
+      # Required for dns_01 + api: cloudflare | route53 | digitalocean
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -44,6 +44,9 @@ tls:
       #   cloudflare -> the API token
       #   route53    -> "ACCESS_KEY_ID:SECRET_ACCESS_KEY" (no region; Route 53
       #                 is global and always signed for us-east-1)
+      #   digitalocean -> a personal access token with write scope. NOTE: this
+      #                 token is account-wide -- DigitalOcean has no per-domain
+      #                 or per-record scoping. See the doc below.
       #
       # See docs/dns01-provider-credentials.md for the least-privilege policy
       # each provider needs. These credentials can rewrite your zone, so scope
@@ -134,6 +137,16 @@ auth:
   # verifies and every protected key set answers the same 404 an absent set
   # gets. e.g. env:VALLET_ACCESS_KEY_PEPPER
   access_key_pepper_ref: ""
+  # How long a rotated access key keeps working after its replacement has been
+  # minted -- the time your deployments have to pick up the new credential.
+  #
+  # Must be POSITIVE; startup fails otherwise. 0 is NOT "no deadline": that
+  # reading would leave every rotated credential live forever, so it is refused
+  # rather than guessed at. For rotation with no overlap at all, mint the
+  # replacement and revoke the old key -- two explicit, separately audited
+  # calls. Shortening this does not shorten a window already in flight; revoke
+  # the key to end one early.
+  access_key_grace_window: 24h
   providers:
     # At least one provider must be enabled.
     api_token:

@@ -137,3 +137,64 @@ scoping, so a token that can edit DNS in a zone can edit any record in it. The
 program only ever deletes by the record ID its own create returned, so it cannot
 remove a record it did not create — but that is a property of this program, not
 a limit the token enforces.
+
+---
+
+## DigitalOcean
+
+Set `credentials_ref` to a DigitalOcean **personal access token** with the
+`write` scope, issued from *API → Tokens*.
+
+### The scope is coarse, and this is the honest version
+
+Unlike Route 53 and Cloudflare, DigitalOcean offers **no way to narrow this
+credential to one domain, one record type, or one record name**. A legacy
+personal access token with `write` is **account-wide**: the same token that
+edits your DNS can create and destroy Droplets, Kubernetes clusters, volumes,
+snapshots and load balancers, and can read your account. Newer DigitalOcean
+tokens support per-resource-type scopes, and if your account offers them, grant
+only the DNS/domain write scope — but even that is every domain in the account,
+not the one being validated.
+
+There is no policy this program can hand you that makes the token narrower,
+and none of the safety below comes from the token:
+
+- The program only ever deletes a record whose **value it published itself**,
+  matched exactly, so it cannot remove a record it did not create — including
+  your own TXT record at the same name, and including the second challenge of a
+  wildcard certificate. That is a property of *this program*, not a limit the
+  token enforces.
+- Anything else holding the same token is unconstrained by any of that.
+
+So treat a DigitalOcean DNS-01 token as an account credential: give it its own
+token rather than reusing one, store it in the secret provider, and rotate it if
+it is ever exposed. If your threat model cannot accept an account-wide
+credential on this host, use a provider whose API supports scoping, or run
+DNS-01 in `manual` mode.
+
+### Domains: what will be refused
+
+The program picks the domain rather than trusting configuration, and it fails
+loudly instead of guessing:
+
+- **The most specific domain wins.** If you hold both `example.com` and a
+  delegated `eu.example.com`, a name under the latter is written there. Writing
+  to the parent would put the record in a zone that is not authoritative for the
+  name.
+- **No matching domain is an error.** The name being validated must sit under a
+  domain in this account. Guessing would write the challenge somewhere the CA
+  never queries, and issuance would fail ten minutes later with a message about
+  DNS rather than about your account.
+- **There is no ambiguity to resolve.** A domain name is the API's own path key,
+  so an account cannot hold two domains with the same name — unlike Route 53,
+  where duplicate hosted zones are possible and are refused.
+
+Record names are stored **relative** to the domain, and the program computes
+that split itself; a name that does not sit inside the resolved domain is
+refused rather than written. Sending the fully qualified name would create the
+record at `_acme-challenge.example.com.example.com`, which the API accepts and
+no CA ever queries.
+
+The program does not poll DigitalOcean for the change to be applied. The solver
+already waits until every authoritative nameserver for the zone serves the
+value, which is a strictly stronger condition.

@@ -35,7 +35,7 @@ func newProtectedFixture(t *testing.T) *protectedFixture {
 
 	f := newFixture(t)
 	repos := f.store.Repos()
-	keySvc, err := accesskey.New(repos.AccessKeys, repos.KeySets, noopAuditor{}, testPepper)
+	keySvc, err := accesskey.New(f.store, noopAuditor{}, testPepper)
 	if err != nil {
 		t.Fatalf("accesskey.New: %v", err)
 	}
