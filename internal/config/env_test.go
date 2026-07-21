@@ -29,6 +29,11 @@ func collectLeaves(v reflect.Value, prefix []string, out map[string]leaf) {
 			collectLeaves(v.Field(i), path, out)
 			continue
 		}
+		if f.Type.Kind() == reflect.Map {
+			// Map fields have no flat env binding; see deriveEnvNames in
+			// env_convention_test.go. Skipped so the same walk shape holds.
+			continue
+		}
 		env := envPrefix + strings.ToUpper(strings.Join(path, "_"))
 		out[env] = leaf{typ: f.Type, val: fmt.Sprintf("%v", v.Field(i).Interface())}
 	}

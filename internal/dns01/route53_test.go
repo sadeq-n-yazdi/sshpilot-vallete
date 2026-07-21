@@ -73,7 +73,7 @@ func newRoute53API(t *testing.T, zones ...route53Zone) (*route53API, *route53Pro
 	srv := httptest.NewServer(api)
 	t.Cleanup(srv.Close)
 
-	provider, err := NewRoute53(secrets.NewRedacted(testAWSCred), srv.Client())
+	provider, err := NewRoute53(NewSingleCredential(secrets.NewRedacted(testAWSCred)), srv.Client())
 	if err != nil {
 		t.Fatalf("NewRoute53: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestRoute53RefusesAMalformedCredential(t *testing.T) {
 		{"whitespace only", "  :  "},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := NewRoute53(secrets.NewRedacted(tc.cred), nil)
+			_, err := NewRoute53(NewSingleCredential(secrets.NewRedacted(tc.cred)), nil)
 			if !errors.Is(err, ErrRoute53API) {
 				t.Errorf("NewRoute53(%q) = %v, want ErrRoute53API", tc.cred, err)
 			}
@@ -588,7 +588,7 @@ func TestRoute53RefusesAMalformedCredential(t *testing.T) {
 // above: the strict parse must still accept the documented format, including
 // the trailing newline a file-backed secret provider commonly yields.
 func TestRoute53AcceptsAWrappedCredential(t *testing.T) {
-	if _, err := NewRoute53(secrets.NewRedacted(testAWSCred+"\n"), nil); err != nil {
+	if _, err := NewRoute53(NewSingleCredential(secrets.NewRedacted(testAWSCred+"\n")), nil); err != nil {
 		t.Errorf("NewRoute53 rejected a valid credential with a trailing newline: %v", err)
 	}
 }
@@ -684,7 +684,7 @@ func TestRoute53RejectsAMalformedZoneIDFromTheAPI(t *testing.T) {
 // TestRoute53IsRegisteredInTheSeam checks the provider is reachable through the
 // registry, which is what config actually calls.
 func TestRoute53IsRegisteredInTheSeam(t *testing.T) {
-	p, err := NewAPIProvider("route53", secrets.NewRedacted(testAWSCred), nil)
+	p, err := NewAPIProvider("route53", NewSingleCredential(secrets.NewRedacted(testAWSCred)), nil)
 	if err != nil {
 		t.Fatalf("NewAPIProvider(route53): %v", err)
 	}

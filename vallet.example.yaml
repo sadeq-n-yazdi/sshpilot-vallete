@@ -65,6 +65,19 @@ tls:
       # each provider needs. These credentials can rewrite your zone, so scope
       # them as narrowly as the provider allows.
       credentials_ref: ""
+      # Named, multi-credential alternative to credentials_ref for providers
+      # that need several values. Set EITHER credentials_ref OR credentials_refs
+      # for a given provider, never both (startup is refused if both are set).
+      # Each value is its own secret reference resolved independently.
+      #
+      #   route53 -> access_key_id and secret_access_key as separate references:
+      #     credentials_refs:
+      #       access_key_id: env:VALLET_DNS_AWS_KEY_ID
+      #       secret_access_key: env:VALLET_DNS_AWS_SECRET
+      #
+      # The single-value providers above also accept credentials_refs with one
+      # entry; the provider uses the sole value.
+      credentials_refs: {}
   cloudflare_origin:
     # ONLY for an origin behind the Cloudflare proxy (orange cloud).
     #

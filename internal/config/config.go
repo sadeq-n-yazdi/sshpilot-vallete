@@ -111,9 +111,28 @@ type ACMEConfig struct {
 
 // ACMEDNSConfig configures the DNS-01 solver.
 type ACMEDNSConfig struct {
-	Mode           string      `yaml:"mode"`
-	Provider       string      `yaml:"provider"`
+	Mode     string `yaml:"mode"`
+	Provider string `yaml:"provider"`
+
+	// CredentialsRef is the SINGLE secret reference used by providers that
+	// authenticate with one value (Cloudflare's API token, a DigitalOcean or
+	// DNSimple PAT, a Gandi PAT, an ArvanCloud API key). Route 53's two values
+	// may still be supplied here packed as "ACCESS_KEY_ID:SECRET_ACCESS_KEY";
+	// see docs/dns01-provider-credentials.md.
 	CredentialsRef secrets.Ref `yaml:"credentials_ref"`
+
+	// CredentialsRefs carries several NAMED secret references for providers that
+	// need more than one credential — Route 53 (access_key_id +
+	// secret_access_key) and the future GoDaddy/Azure/OVH/Namecheap/GCP/RFC2136
+	// providers. Each map value is its own reference resolved independently
+	// through the secret provider (ADR-0022), so no credential is ever written
+	// in the config file.
+	//
+	// It is an ALTERNATIVE to CredentialsRef, not an addition: exactly one of
+	// the two is set for a given provider (Validate refuses both at once). This
+	// field has no flat environment-variable binding because its keys are
+	// operator-chosen; configure it in YAML or a config file.
+	CredentialsRefs map[string]secrets.Ref `yaml:"credentials_refs"`
 }
 
 // CloudflareOriginConfig configures Cloudflare Origin certificates.

@@ -118,7 +118,13 @@ var _ Provider = (*arvanCloudProvider)(nil)
 // NewArvanCloud builds the provider. A nil client gets a bounded default; the
 // parameter exists so a test can supply a transport pointed at a local fake and
 // so an operator's proxy settings can be honored later.
-func NewArvanCloud(token secrets.Redacted, client *http.Client) (Provider, error) {
+func NewArvanCloud(creds Credentials, client *http.Client) (Provider, error) {
+	// One value authenticates ArvanCloud; an empty or multi-value set yields
+	// ok=false and is refused rather than guessed at. Fail closed.
+	token, ok := creds.Single()
+	if !ok {
+		return nil, fmt.Errorf("%w: no api key credential", ErrArvanCloudAPI)
+	}
 	// The blank check asks the WRAPPED value rather than revealing it, exactly as
 	// the other providers do, so this file keeps a single plaintext-unwrap site.
 	// Whitespace-only counts as blank: it is not a credential. Refused at

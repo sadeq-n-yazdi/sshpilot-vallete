@@ -55,7 +55,7 @@ func newGandiAPI(t *testing.T) (*gandiAPI, Provider) {
 	srv := httptest.NewServer(api)
 	t.Cleanup(srv.Close)
 
-	provider, err := NewGandi(secrets.NewRedacted(gandiTestToken), srv.Client())
+	provider, err := NewGandi(NewSingleCredential(secrets.NewRedacted(gandiTestToken)), srv.Client())
 	if err != nil {
 		t.Fatalf("NewGandi: %v", err)
 	}
@@ -439,13 +439,13 @@ func TestGandiPrefersTheMostSpecificDomain(t *testing.T) {
 }
 
 func TestGandiMissingCredentialRefused(t *testing.T) {
-	if _, err := NewGandi(secrets.NewRedacted(""), nil); err == nil {
+	if _, err := NewGandi(NewSingleCredential(secrets.NewRedacted("")), nil); err == nil {
 		t.Error("NewGandi with an empty token succeeded, want a refusal at construction")
 	}
-	if _, err := NewGandi(secrets.NewRedacted("   "), nil); err == nil {
+	if _, err := NewGandi(NewSingleCredential(secrets.NewRedacted("   ")), nil); err == nil {
 		t.Error("NewGandi with a whitespace-only token succeeded, want a refusal at construction")
 	}
-	if _, err := NewGandi(secrets.NewRedacted(gandiTestToken), nil); err != nil {
+	if _, err := NewGandi(NewSingleCredential(secrets.NewRedacted(gandiTestToken)), nil); err != nil {
 		t.Errorf("NewGandi with a token: %v", err)
 	}
 }
@@ -455,7 +455,7 @@ func TestGandiMissingCredentialRefused(t *testing.T) {
 // secrets.Redacted's redaction methods, so without Format on the containing type
 // "%+v" prints the bearer token in full.
 func TestGandiProviderNeverFormatsItsToken(t *testing.T) {
-	provider, err := NewGandi(secrets.NewRedacted(gandiTestToken), nil)
+	provider, err := NewGandi(NewSingleCredential(secrets.NewRedacted(gandiTestToken)), nil)
 	if err != nil {
 		t.Fatalf("NewGandi: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestGandiProviderNeverFormatsItsToken(t *testing.T) {
 }
 
 func TestNewAPIProviderBuildsGandi(t *testing.T) {
-	provider, err := NewAPIProvider("gandi", secrets.NewRedacted(gandiTestToken), nil)
+	provider, err := NewAPIProvider("gandi", NewSingleCredential(secrets.NewRedacted(gandiTestToken)), nil)
 	if err != nil {
 		t.Fatalf("NewAPIProvider: %v", err)
 	}

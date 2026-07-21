@@ -14,22 +14,55 @@ this program holds, so two rules apply to every provider below:
   credential less powerful than you issued it. Everything below is the
   narrowest grant that still works.
 
+### One credential or several
+
+Providers that authenticate with a **single value** (Cloudflare, DigitalOcean,
+DNSimple, Gandi, ArvanCloud) use `credentials_ref`.
+
+Providers that need **several named values** — currently Route 53 — use
+`credentials_refs`, a map from a credential name to its own reference:
+
+```yaml
+tls:
+  acme:
+    dns:
+      mode: api
+      provider: route53
+      credentials_refs:
+        access_key_id: env:VALLET_DNS_AWS_KEY_ID
+        secret_access_key: env:VALLET_DNS_AWS_SECRET
+```
+
+Each value is resolved independently through the secret provider, so no
+credential is ever written in the config file. Set **either** `credentials_ref`
+**or** `credentials_refs` for a provider, never both — startup is refused if
+both are present, so the source of a credential is never ambiguous. A
+single-value provider may also use `credentials_refs` with one entry.
+
 ---
 
 ## AWS Route 53
 
 ### Credential format
 
-Route 53 needs two values, and `credentials_ref` resolves to one string, so
-they are packed with a colon:
+Route 53 needs two values. The preferred form is the named
+`credentials_refs` map shown above, with `access_key_id` and
+`secret_access_key` as separate references.
+
+For back-compatibility the two values may still be supplied as a single
+`credentials_ref` with the halves packed by a colon:
 
 ```
 AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
 ```
 
-Both halves must be present and non-empty; a malformed value is refused at
-startup rather than at the first renewal. Surrounding whitespace and a trailing
-newline are tolerated, so a file-backed secret works without special handling.
+Either form works. With the named map, supply both `access_key_id` and
+`secret_access_key`; supplying only one is refused (it is a configuration
+mistake, not a packed value to split). With the packed single reference, both
+halves must be present and non-empty. In both forms a malformed value is
+refused at startup rather than at the first renewal, and surrounding whitespace
+and a trailing newline are tolerated, so a file-backed secret works without
+special handling.
 
 There is no region to configure. Route 53 is a global service with a single
 control plane, always signed for `us-east-1`.

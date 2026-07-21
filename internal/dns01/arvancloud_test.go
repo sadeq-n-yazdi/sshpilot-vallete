@@ -66,7 +66,7 @@ func newArvanCloudAPI(t *testing.T) (*arvanCloudAPI, Provider) {
 	srv := httptest.NewServer(api)
 	t.Cleanup(srv.Close)
 
-	provider, err := NewArvanCloud(secrets.NewRedacted(acTestToken), srv.Client())
+	provider, err := NewArvanCloud(NewSingleCredential(secrets.NewRedacted(acTestToken)), srv.Client())
 	if err != nil {
 		t.Fatalf("NewArvanCloud: %v", err)
 	}
@@ -380,7 +380,7 @@ func TestArvanCloudRefusesAMalformedDomainCandidate(t *testing.T) {
 // redaction methods, so without Format on the containing type "%+v" prints the
 // API key in full.
 func TestArvanCloudProviderNeverFormatsItsToken(t *testing.T) {
-	provider, err := NewArvanCloud(secrets.NewRedacted(acTestToken), nil)
+	provider, err := NewArvanCloud(NewSingleCredential(secrets.NewRedacted(acTestToken)), nil)
 	if err != nil {
 		t.Fatalf("NewArvanCloud: %v", err)
 	}

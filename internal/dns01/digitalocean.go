@@ -110,7 +110,13 @@ var _ Provider = (*digitalOceanProvider)(nil)
 // NewDigitalOcean builds the provider. A nil client gets a bounded default; the
 // parameter exists so a test can supply a transport pointed at a local fake and
 // so an operator's proxy settings can be honored later.
-func NewDigitalOcean(token secrets.Redacted, client *http.Client) (Provider, error) {
+func NewDigitalOcean(creds Credentials, client *http.Client) (Provider, error) {
+	// One value authenticates DigitalOcean; an empty or multi-value set yields
+	// ok=false and is refused rather than guessed at. Fail closed.
+	token, ok := creds.Single()
+	if !ok {
+		return nil, fmt.Errorf("%w: no api token credential", ErrDigitalOceanAPI)
+	}
 	// The blank check asks the WRAPPED value rather than revealing it, exactly
 	// as the Cloudflare constructor does, so this file keeps a single
 	// plaintext-unwrap site. Whitespace-only counts as blank: it is not a
