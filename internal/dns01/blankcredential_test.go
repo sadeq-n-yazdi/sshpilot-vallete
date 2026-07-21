@@ -53,6 +53,7 @@ func TestAPIProvidersRejectBlankCredential(t *testing.T) {
 		{"route53", ErrRoute53API},
 		{"digitalocean", ErrDigitalOceanAPI},
 		{"dnsimple", ErrDNSimpleAPI},
+		{"gandi", ErrGandiAPI},
 	}
 
 	for _, prov := range providers {
@@ -135,6 +136,7 @@ func TestAPIProvidersAcceptCredentialWithSurroundingWhitespace(t *testing.T) {
 		{"route53", "  AKIDEXAMPLE:wJalrXUtnFEMI  "},
 		{"digitalocean", "  do-token  "},
 		{"dnsimple", "  ds-token  "},
+		{"gandi", "  gandi-token  "},
 	}
 
 	for _, tt := range tests {
