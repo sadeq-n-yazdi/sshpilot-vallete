@@ -435,6 +435,55 @@ func TestValidateRateLimitSharedStore(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsInlineRedisPassword proves ADR-0022's at-rest rule is
+// enforced at startup: a shared-store address that embeds an AUTH password is
+// refused (and the error never echoes the secret), while a username-only
+// address and a password supplied via password_ref are accepted.
+func TestValidateRejectsInlineRedisPassword(t *testing.T) {
+	const secret = "inline-redis-secret-value"
+	tests := []struct {
+		name       string
+		address    string
+		passRef    secrets.Ref
+		wantReject bool
+	}{
+		{"inline password redis scheme", "redis://:" + secret + "@redis.internal:6379", "", true},
+		{"inline user and password", "redis://user:" + secret + "@redis.internal:6379", "", true},
+		{"inline password rediss scheme", "rediss://:" + secret + "@redis.internal:6379", "", true},
+		{"inline password bare host", "user:" + secret + "@redis.internal:6379", "", true},
+		{"inline password even with password_ref set", "redis://:" + secret + "@redis.internal:6379", "env:VALLET_RL_PASSWORD", true},
+		{"username only, no password", "redis://appuser@redis.internal:6379", "", false},
+		{"no credentials", "redis.internal:6379", "", false},
+		{"password via password_ref", "redis://redis.internal:6379", "env:VALLET_RL_PASSWORD", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := validConfig()
+			c.RateLimit.Store = "shared"
+			c.RateLimit.Shared.Address = tc.address
+			c.RateLimit.Shared.PasswordRef = tc.passRef
+
+			err := c.Validate()
+			if !tc.wantReject {
+				if err != nil {
+					t.Fatalf("address %q should be accepted, got: %v", tc.address, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("address %q embeds a password and must be rejected", tc.address)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "rate_limit.shared.address") {
+				t.Errorf("error %q does not name the offending field", msg)
+			}
+			if strings.Contains(msg, secret) {
+				t.Errorf("rejection error leaks the inline password: %q", msg)
+			}
+		})
+	}
+}
+
 func TestValidateCollectsAllProblems(t *testing.T) {
 	c := validConfig()
 	c.Server.Environment = "staging"

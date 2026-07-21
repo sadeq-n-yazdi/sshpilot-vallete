@@ -185,11 +185,25 @@ auth:
 rate_limit:
   enabled: true
   # memory | shared
+  #   memory: in-process counters. Correct for a single instance; with more
+  #           than one instance each enforces its own limits.
+  #   shared: a Redis/Valkey backend so counters are shared across instances,
+  #           with automatic failover to in-process memory whenever the backend
+  #           is unreachable. During an outage limits are still enforced, but
+  #           per instance, and the shared counts are not preserved; when the
+  #           backend recovers it becomes authoritative again. Limits are never
+  #           disabled -- only made per-instance for the duration of the outage.
   store: memory
   shared:
-    # Required when store is shared.
+    # Required when store is shared. A Redis URL:
+    #   redis://host:6379/0      plaintext
+    #   rediss://host:6379/0     TLS with full certificate verification
+    # The rediss:// scheme verifies the server certificate against the system
+    # roots and the URL host; verification is never disabled. A bare "host:port"
+    # is treated as redis:// (no TLS).
     address: ""
-    # Optional. e.g. env:VALLET_RATE_LIMIT_PASSWORD
+    # Optional AUTH password, as a secret reference (never the value itself).
+    # e.g. env:VALLET_RATE_LIMIT_PASSWORD or file:/run/secrets/redis-password
     password_ref: ""
   tiers:
     auth: { requests: 5, window: 1m }

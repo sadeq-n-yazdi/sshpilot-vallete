@@ -543,8 +543,9 @@ func TestNewLimitStore(t *testing.T) {
 		t.Error("newLimitStore with rate limiting disabled returned a store")
 	}
 
-	// store: shared is not implemented yet; it must degrade to the memory store
-	// rather than to no limiting at all.
+	// store: shared without an injected counter store (the embedder path that
+	// does not call WithCounterStore) must degrade to the memory store rather
+	// than to no limiting at all.
 	shared := config.Default()
 	shared.RateLimit.Store = "shared"
 	if newLimitStore(&shared, slog.New(slog.DiscardHandler)) == nil {

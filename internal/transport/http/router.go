@@ -61,7 +61,14 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// One counter store backs every tier, per ADR-0023. The limiters namespace
 	// their own keys by tier name, so sharing it cannot let one tier spend
 	// another's budget.
-	limitStore := newLimitStore(cfg, logger)
+	//
+	// The composition root injects the shared (Redis/Valkey with memory
+	// failover) store via WithCounterStore; absent that, an in-process store is
+	// built here, which is the single-node default and the embedder's.
+	limitStore := o.counter
+	if limitStore == nil {
+		limitStore = newLimitStore(cfg, logger)
+	}
 	publishLimiter, err := newPublishLimiter(cfg, limitStore)
 	if err != nil {
 		logger.LogAttrs(context.Background(), slog.LevelError,

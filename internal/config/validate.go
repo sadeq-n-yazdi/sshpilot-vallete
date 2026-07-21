@@ -418,6 +418,21 @@ func (c *Config) validateRateLimit(v *validator) {
 	if r.Store == "shared" && r.Shared.Address == "" {
 		v.add("rate_limit.shared.address", "required when store is shared")
 	}
+	if r.Store == "shared" && r.Shared.Address != "" {
+		// ADR-0022 is an at-rest rule: secrets never live in the config file. A
+		// Redis URL can smuggle an AUTH password into its userinfo
+		// (redis://:pass@host), which would sit in the file on disk, in version
+		// control and in backups -- exactly what password_ref exists to prevent.
+		// Reject it fail-closed at startup; the operator must move the secret to
+		// rate_limit.shared.password_ref. A username with no password
+		// (redis://user@host, a Redis 6+ ACL username) is not a secret and is
+		// allowed. The redacted address never echoes the password back.
+		if hasPassword, redacted := inspectRedisAddress(r.Shared.Address); hasPassword {
+			v.add("rate_limit.shared.address",
+				"must not embed an AUTH password (got %s); set it via rate_limit.shared.password_ref instead (ADR-0022: secrets never in the config file)",
+				redacted)
+		}
+	}
 	if r.Store != "memory" && r.Store != "shared" {
 		v.add("rate_limit.store", "unknown store %q (want memory or shared)", r.Store)
 	}
@@ -433,6 +448,31 @@ func (c *Config) validateRateLimit(v *validator) {
 			v.add("rate_limit.tiers."+name+".window", "must be > 0, got %v", t.Window.Std())
 		}
 	}
+}
+
+// inspectRedisAddress reports whether a shared-store Redis address embeds an
+// AUTH password in its userinfo, and returns the address with any such password
+// masked for safe inclusion in a validation error. A bare "host:port" is
+// normalized to a redis:// URL first, matching how the store parses it. It uses
+// the standard library's url.Redacted -- the same primitive redisstore's
+// RedactAddress wraps -- rather than importing redisstore, so config keeps its
+// minimal dependency footprint (it does not pull in the Redis client library).
+func inspectRedisAddress(address string) (hasPassword bool, redacted string) {
+	raw := address
+	if !strings.Contains(raw, "://") {
+		raw = "redis://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		// Unparseable here is caught fail-closed when the store is built; this
+		// path only decides the password question, so report "no password" and
+		// never echo the raw string (url.Parse's own error would quote it).
+		return false, "[unparseable redis address]"
+	}
+	if u.User != nil {
+		_, hasPassword = u.User.Password()
+	}
+	return hasPassword, u.Redacted()
 }
 
 func (c *Config) validateTelemetry(v *validator) {

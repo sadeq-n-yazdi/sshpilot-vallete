@@ -212,22 +212,25 @@ func managementRateLimit(lim *ratelimit.Limiter, logger *slog.Logger) func(Scope
 	}
 }
 
-// newLimitStore builds the counter store backing the rate-limit tiers.
+// newLimitStore builds the IN-PROCESS counter store backing the rate-limit
+// tiers. It is the fallback used when the composition root did not inject one
+// via WithCounterStore.
 //
-// Only the in-process store exists today. ADR-0023 anticipates a Redis/Valkey-
-// style backend for multi-instance deployments, and config already accepts
-// store: shared for it; until that adapter lands, a deployment that asks for it
-// gets the memory store with a loud warning rather than a silent downgrade.
-// Saying nothing would leave an operator believing their instances share
-// counters when each is enforcing its own -- which multiplies every limit by
-// the instance count.
+// The shared (Redis/Valkey with memory failover) store is built and injected by
+// cmd/valletd, which owns its lifecycle (the connection pool and reprobe
+// goroutine it must Close). Reaching this function with store: shared therefore
+// means an embedder mounted NewHandler directly without wiring the shared store;
+// it gets the in-process store with a loud warning rather than a silent
+// downgrade, because saying nothing would leave an operator believing their
+// instances share counters when each is enforcing its own -- which multiplies
+// every limit by the instance count.
 func newLimitStore(cfg *config.Config, logger *slog.Logger) counter.Store {
 	if cfg != nil && !cfg.RateLimit.Enabled {
 		return nil
 	}
 	if cfg != nil && cfg.RateLimit.Store == "shared" && logger != nil {
 		logger.LogAttrs(context.Background(), slog.LevelWarn,
-			"rate limit: shared counter store not implemented; using in-process counters",
+			"rate limit: shared counter store not wired into this handler; using in-process counters",
 			slog.String("effect", "limits are enforced per instance, not across the deployment"))
 	}
 	// NewMemoryStore fails only on a nil clock, and the clock here is a
