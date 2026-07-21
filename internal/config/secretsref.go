@@ -9,10 +9,10 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
-// sortedRefNames returns the keys of a named secret-reference map in sorted
+// SortedRefNames returns the keys of a named secret-reference map in sorted
 // order, so every enumeration of the map (validation errors, required-secret
 // resolution) is deterministic regardless of Go's randomized map iteration.
-func sortedRefNames(m map[string]secrets.Ref) []string {
+func SortedRefNames(m map[string]secrets.Ref) []string {
 	names := make([]string, 0, len(m))
 	for name := range m {
 		names = append(names, name)
@@ -63,7 +63,7 @@ func (c *Config) RequiredSecretRefs() []RefRequirement {
 			// refuses both); resolution mirrors that so the preflight resolves
 			// exactly the references this provider will actually use.
 			if len(d.CredentialsRefs) > 0 {
-				for _, name := range sortedRefNames(d.CredentialsRefs) {
+				for _, name := range SortedRefNames(d.CredentialsRefs) {
 					add("tls.acme.dns.credentials_refs."+name, d.CredentialsRefs[name])
 				}
 			} else {

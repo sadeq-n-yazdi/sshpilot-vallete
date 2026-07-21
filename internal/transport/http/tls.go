@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"sort"
 	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
@@ -389,12 +388,7 @@ func resolveDNSCredentials(ctx context.Context, cfg *config.Config) (dns01.Crede
 
 	d := cfg.TLS.ACME.DNS
 	if len(d.CredentialsRefs) > 0 {
-		names := make([]string, 0, len(d.CredentialsRefs))
-		for name := range d.CredentialsRefs {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-
+		names := config.SortedRefNames(d.CredentialsRefs)
 		named := make(map[string]secrets.Redacted, len(d.CredentialsRefs))
 		for _, name := range names {
 			val, err := resolver.Resolve(ctx, d.CredentialsRefs[name])

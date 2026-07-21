@@ -315,7 +315,7 @@ func validateACMEDNSCredentials(v *validator, d ACMEDNSConfig) {
 		v.add("tls.acme.dns.credentials_ref",
 			"required for dns_01 api mode (set credentials_ref or credentials_refs)")
 	case hasNamed:
-		for _, name := range sortedRefNames(d.CredentialsRefs) {
+		for _, name := range SortedRefNames(d.CredentialsRefs) {
 			if strings.TrimSpace(name) == "" {
 				v.add("tls.acme.dns.credentials_refs", "credential name must not be empty")
 				continue
@@ -674,7 +674,7 @@ func (c *Config) allRefs() []refField {
 		{"rate_limit.shared.password_ref", c.RateLimit.Shared.PasswordRef},
 		{"telemetry.metrics.otlp.headers_ref", c.Telemetry.Metrics.OTLP.HeadersRef},
 	}
-	for _, name := range sortedRefNames(c.TLS.ACME.DNS.CredentialsRefs) {
+	for _, name := range SortedRefNames(c.TLS.ACME.DNS.CredentialsRefs) {
 		refs = append(refs, refField{
 			"tls.acme.dns.credentials_refs." + name,
 			c.TLS.ACME.DNS.CredentialsRefs[name],
