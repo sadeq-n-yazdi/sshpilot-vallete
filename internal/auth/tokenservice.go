@@ -132,6 +132,21 @@ func NewTokenService(store repository.Store, signer *AccessTokenSigner, denylist
 	if denylist == nil {
 		return nil, fmt.Errorf("auth: nil denylist: %w", domain.ErrInvalidInput)
 	}
+	// A non-nil Store can still hand out a Repos with these fields nil, and
+	// Issue and Exchange dereference both without checking. A panic on Exchange
+	// is a denial of service on the token path, so the wiring bug is caught
+	// here instead. The auto-commit Repos stands in for the transaction-bound
+	// one Exchange receives from WithTx -- which is where Owners is actually
+	// read, to refuse a suspended owner. Both stores build the two by calling
+	// one reposFor(execer) over the db handle and the tx handle respectively,
+	// so a field non-nil in one is non-nil in the other.
+	repos := store.Repos()
+	switch {
+	case repos.RefreshCredentials == nil:
+		return nil, fmt.Errorf("auth: nil refresh credential repository: %w", domain.ErrInvalidInput)
+	case repos.Owners == nil:
+		return nil, fmt.Errorf("auth: nil owner repository: %w", domain.ErrInvalidInput)
+	}
 	return &TokenService{store: store, signer: signer, denylist: denylist}, nil
 }
 
