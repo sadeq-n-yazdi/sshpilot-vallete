@@ -26,6 +26,12 @@ func deriveEnvNames(t *testing.T, typ reflect.Type, prefix []string, out map[str
 			deriveEnvNames(t, f.Type, path, out)
 			continue
 		}
+		if f.Type.Kind() == reflect.Map {
+			// A map keyed by operator-chosen names (tls.acme.dns.credentials_refs)
+			// has no single flat VALLET_* variable, so it is configured through
+			// YAML rather than the env layer and is intentionally not a binding.
+			continue
+		}
 		out[envPrefix+strings.ToUpper(strings.Join(path, "_"))] = true
 	}
 }

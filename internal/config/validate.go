@@ -283,13 +283,47 @@ func (c *Config) validateACMEDNS(v *validator) {
 		if d.Provider == "" {
 			v.add("tls.acme.dns.provider", "required for dns_01 api mode")
 		}
-		if d.CredentialsRef.IsZero() {
-			v.add("tls.acme.dns.credentials_ref", "required for dns_01 api mode")
-		}
+		validateACMEDNSCredentials(v, d)
 	case "":
 		v.add("tls.acme.dns.mode", "required for dns_01 solver (manual or api)")
 	default:
 		v.add("tls.acme.dns.mode", "unknown mode %q (want manual or api)", d.Mode)
+	}
+}
+
+// validateACMEDNSCredentials fails closed on the DNS-01 api-mode credential.
+//
+// A credential is required and comes from exactly ONE source: the single
+// credentials_ref, or the named credentials_refs map. Setting both is refused
+// rather than silently preferring one, because which one wins would be a
+// security decision taken by precedence rules an operator cannot see. Setting
+// neither is refused because api mode cannot authenticate without a credential.
+//
+// Only presence and non-emptiness are checked here; each reference's
+// scheme:opaque well-formedness is enforced once, for every ref in the config,
+// by validateRefs. No message quotes a reference value — a secrets.Ref renders
+// redacted through every formatting path.
+func validateACMEDNSCredentials(v *validator, d ACMEDNSConfig) {
+	hasSingle := !d.CredentialsRef.IsZero()
+	hasNamed := len(d.CredentialsRefs) > 0
+
+	switch {
+	case hasSingle && hasNamed:
+		v.add("tls.acme.dns.credentials_refs",
+			"set either credentials_ref or credentials_refs, not both")
+	case !hasSingle && !hasNamed:
+		v.add("tls.acme.dns.credentials_ref",
+			"required for dns_01 api mode (set credentials_ref or credentials_refs)")
+	case hasNamed:
+		for _, name := range sortedRefNames(d.CredentialsRefs) {
+			if strings.TrimSpace(name) == "" {
+				v.add("tls.acme.dns.credentials_refs", "credential name must not be empty")
+				continue
+			}
+			if d.CredentialsRefs[name].IsZero() {
+				v.add("tls.acme.dns.credentials_refs."+name, "must not be empty")
+			}
+		}
 	}
 }
 
@@ -627,9 +661,11 @@ type refField struct {
 	ref   secrets.Ref
 }
 
-// allRefs enumerates every secret reference field in the config.
+// allRefs enumerates every secret reference field in the config, including each
+// named DNS credential reference. The named refs are appended in sorted key
+// order so validation errors over them are deterministic.
 func (c *Config) allRefs() []refField {
-	return []refField{
+	refs := []refField{
 		{"tls.acme.dns.credentials_ref", c.TLS.ACME.DNS.CredentialsRef},
 		{"tls.cloudflare_origin.api_token_ref", c.TLS.CloudflareOrigin.APITokenRef},
 		{"database.postgres.dsn_ref", c.Database.Postgres.DSNRef},
@@ -638,4 +674,11 @@ func (c *Config) allRefs() []refField {
 		{"rate_limit.shared.password_ref", c.RateLimit.Shared.PasswordRef},
 		{"telemetry.metrics.otlp.headers_ref", c.Telemetry.Metrics.OTLP.HeadersRef},
 	}
+	for _, name := range sortedRefNames(c.TLS.ACME.DNS.CredentialsRefs) {
+		refs = append(refs, refField{
+			"tls.acme.dns.credentials_refs." + name,
+			c.TLS.ACME.DNS.CredentialsRefs[name],
+		})
+	}
+	return refs
 }

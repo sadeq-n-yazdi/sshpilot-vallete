@@ -4,9 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
+
+// sortedRefNames returns the keys of a named secret-reference map in sorted
+// order, so every enumeration of the map (validation errors, required-secret
+// resolution) is deterministic regardless of Go's randomized map iteration.
+func sortedRefNames(m map[string]secrets.Ref) []string {
+	names := make([]string, 0, len(m))
+	for name := range m {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
 
 // RefRequirement is a secret reference the running configuration depends on,
 // paired with the yaml field it came from (for error messages).
@@ -45,7 +58,17 @@ func (c *Config) RequiredSecretRefs() []RefRequirement {
 		add("tls.cloudflare_origin.api_token_ref", c.TLS.CloudflareOrigin.APITokenRef)
 	case "acme":
 		if c.TLS.ACME.Solver == "dns_01" && c.TLS.ACME.DNS.Mode == "api" {
-			add("tls.acme.dns.credentials_ref", c.TLS.ACME.DNS.CredentialsRef)
+			d := c.TLS.ACME.DNS
+			// The single ref and the named refs are mutually exclusive (Validate
+			// refuses both); resolution mirrors that so the preflight resolves
+			// exactly the references this provider will actually use.
+			if len(d.CredentialsRefs) > 0 {
+				for _, name := range sortedRefNames(d.CredentialsRefs) {
+					add("tls.acme.dns.credentials_refs."+name, d.CredentialsRefs[name])
+				}
+			} else {
+				add("tls.acme.dns.credentials_ref", d.CredentialsRef)
+			}
 		}
 	}
 	if c.Server.Environment == "production" {

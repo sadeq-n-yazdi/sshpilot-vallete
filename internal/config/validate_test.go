@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
 
 // validConfig returns a Config that passes Validate, used as the baseline that
@@ -96,6 +98,25 @@ func TestValidateFailures(t *testing.T) {
 			c.TLS.ACME.DNS.Mode = "api"
 			c.TLS.ACME.DNS.Provider = "cloudflare"
 		}, "tls.acme.dns.credentials_ref"},
+		{"dns api both cred sources", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "api"
+			c.TLS.ACME.DNS.Provider = "cloudflare"
+			c.TLS.ACME.DNS.CredentialsRef = "env:X"
+			c.TLS.ACME.DNS.CredentialsRefs = map[string]secrets.Ref{"access_key_id": "env:Y"}
+		}, "tls.acme.dns.credentials_refs"},
+		{"dns api named cred empty value", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "api"
+			c.TLS.ACME.DNS.Provider = "route53"
+			c.TLS.ACME.DNS.CredentialsRefs = map[string]secrets.Ref{"access_key_id": ""}
+		}, "tls.acme.dns.credentials_refs.access_key_id"},
+		{"dns api named cred empty name", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "api"
+			c.TLS.ACME.DNS.Provider = "route53"
+			c.TLS.ACME.DNS.CredentialsRefs = map[string]secrets.Ref{"": "env:Y"}
+		}, "tls.acme.dns.credentials_refs"},
 		{"dns_01 missing mode", func(c *Config) {
 			c.TLS.ACME.Solver = "dns_01"
 		}, "tls.acme.dns.mode"},
