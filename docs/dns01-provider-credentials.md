@@ -273,3 +273,77 @@ accepts and no CA ever queries.
 The program does not poll DNSimple for the change to be applied. The solver
 already waits until every authoritative nameserver for the zone serves the value,
 which is a strictly stronger condition.
+
+---
+
+## Gandi
+
+Set `credentials_ref` to a Gandi **Personal Access Token (PAT)**, created from
+*Organizations → (your organization) → Manage → Personal Access Tokens*.
+
+The token is presented as `Authorization: Bearer <PAT>`. Gandi's older
+`Authorization: Apikey <key>` scheme is **deprecated** and this program does not
+send it, so an API key issued under the legacy scheme will not work — mint a PAT
+instead.
+
+### Scope it as narrowly as Gandi allows
+
+A PAT is created against **one organization**, and its permissions are
+selectable. Grant only what DNS-01 needs:
+
+- Restrict the token to the single organization that holds the domain you are
+  getting a certificate for.
+- Enable only the permission that covers LiveDNS record management (**"Manage
+  domain name technical configurations"** / *See and renew domain names* is not
+  required). Do **not** grant billing, transfer, or organization-management
+  permissions.
+
+That is the narrowest grant Gandi offers. Within an organization the API has no
+per-record scoping, so a token that can edit LiveDNS records can edit any record
+in that organization's domains. None of the safety below comes from the token:
+
+- The program only ever removes a TXT **value it published itself**, matched
+  exactly. Gandi addresses records by record set — a *set* of values keyed by
+  name and type — so on cleanup the program reads the current set, writes back
+  every other value unchanged, and deletes the set outright **only** when its own
+  value was the last one in it. It therefore cannot remove a record it did not
+  create, including your own TXT record at the same name, and including the
+  second challenge of a wildcard certificate, which sits at the same name with a
+  different digest. That is a property of *this program*, not a limit the token
+  enforces.
+- Anything else holding the same token is unconstrained by any of that.
+
+Give DNS-01 its own token rather than reusing one, store it in the secret
+provider, and rotate it if it is ever exposed. If your threat model cannot accept
+an organization-wide credential on this host, use a provider whose API supports
+finer scoping, or run DNS-01 in `manual` mode.
+
+### Domains: what will be refused
+
+The program picks the domain rather than trusting configuration, and it fails
+loudly instead of guessing:
+
+- **The most specific domain wins.** If you hold both `example.com` and a
+  delegated `eu.example.com`, a name under the latter is written there. Writing
+  to the parent would put the record in a zone that is not authoritative for the
+  name.
+- **No matching domain is an error.** The name being validated must sit under a
+  domain the token can manage. `GET /v5/livedns/domains/{fqdn}` answers `404`
+  ("Unknown domain") for a domain the token does not hold, which is the only
+  status treated as "try the parent"; a rejected token or a server error is
+  surfaced rather than swallowed. Guessing would write the challenge somewhere
+  the CA never queries, and issuance would fail ten minutes later with a message
+  about DNS rather than about your account.
+- **There is no ambiguity to resolve.** A domain name is the API's own path key,
+  so one organization cannot hold two domains with the same name — unlike Route
+  53, where duplicate hosted zones are possible and are refused.
+
+Record names are stored **relative** to the domain (the apex is `@`), and the
+program computes that split itself; a name that does not sit inside the resolved
+domain is refused rather than written. The challenge TTL is set to Gandi's floor
+of **300 seconds** — Gandi rejects a lower value — and an existing record set's
+own TTL is preserved when the program merges a challenge into it.
+
+The program does not poll Gandi for the change to be applied. The solver already
+waits until every authoritative nameserver for the zone serves the value, which
+is a strictly stronger condition.

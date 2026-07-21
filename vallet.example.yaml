@@ -36,7 +36,7 @@ tls:
     dns:
       # manual | api
       mode: ""
-      # Required for dns_01 + api: cloudflare | route53 | digitalocean | dnsimple
+      # Required for dns_01 + api: cloudflare | route53 | digitalocean | dnsimple | gandi
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -51,6 +51,10 @@ tls:
       #                 reaches every account the user can see, so there is no
       #                 single account behind it and it is refused. This token
       #                 is also account-wide; see the doc below.
+      #   gandi      -> a Personal Access Token (PAT). The legacy "Apikey" is
+      #                 deprecated by Gandi and not accepted. Scope the PAT to
+      #                 the one organization holding the domain and to DNS
+      #                 management only; see the doc below.
       #
       # See docs/dns01-provider-credentials.md for the least-privilege policy
       # each provider needs. These credentials can rewrite your zone, so scope
