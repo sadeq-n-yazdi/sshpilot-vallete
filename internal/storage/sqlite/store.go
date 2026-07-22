@@ -106,10 +106,10 @@ func (s *Store) WithTx(ctx context.Context, fn func(ctx context.Context, r repos
 }
 
 // reposFor builds a repository.Repos backed by the given execer, which is
-// either the *sql.DB (auto-commit) or an in-flight *sql.Tx. Only the
-// repositories implemented so far — Owners, Handles, Devices, PublicKeys,
-// KeySets, Audit, Admins, ListOverrides, and OwnerSalts — are populated; the
-// rest are left nil for later slices.
+// either the *sql.DB (auto-commit) or an in-flight *sql.Tx. Every repository the
+// port declares is populated — Owners, Handles, Devices, PublicKeys, KeySets,
+// Audit, Admins, OwnerSalts, ListOverrides, and the auth adapters
+// LinkedIdentities, RefreshCredentials, DevicePairings, and AccessKeys.
 func reposFor(e execer) repository.Repos {
 	return repository.Repos{
 		Owners:     &ownerRepo{e: e},
