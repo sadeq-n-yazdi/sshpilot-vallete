@@ -99,37 +99,61 @@ func NewRecomputer(store repository.Store, auditor Auditor, opts ...RecomputeOpt
 // Phase 0 first clears every stale row's fold to a unique, non-collidable
 // placeholder; phase 1 then writes true skeletons into an empty namespace, so
 // the index is only ever a backstop.
+//
+// The authoritative stale set is re-read INSIDE the transaction (double-checked
+// locking, ADR-0030 / #110). A multi-replica deployment can boot two valletd
+// instances at once, and a stale set read outside any transaction is a snapshot
+// a peer can mutate before this instance writes: both peers would then act on
+// the same rows and double-quarantine or churn them, and a row a peer already
+// resolved would abort this pass with ErrNotFound. The read below the WithTx is
+// only a cheap pre-check to skip the transaction when nothing looks stale; the
+// survivor/loser decision is made on the in-transaction re-query, which a peer
+// cannot have mutated between this instance's read and write.
 func (rc *Recomputer) Run(ctx context.Context) (FoldRecomputeResult, error) {
 	var res FoldRecomputeResult
 	version := blocklist.TableVersion
 
-	stale, err := rc.store.Repos().Handles.ListStaleFolds(ctx, version)
+	// Cheap pre-check outside the transaction: skip opening one at all on the
+	// common already-current boot. Not authoritative — the transaction re-reads.
+	precheck, err := rc.store.Repos().Handles.ListStaleFolds(ctx, version)
 	if err != nil {
 		return res, fmt.Errorf("handle: list stale folds: %w", err)
 	}
-	if len(stale) == 0 {
-		// Nothing to do. Return before opening a transaction so the common
-		// already-current boot does no write at all.
+	if len(precheck) == 0 {
 		return res, nil
-	}
-	now := rc.now().UTC()
-
-	// Group stale rows by true skeleton. stale is ordered oldest-first
-	// (created_at ASC, id ASC) by the port, so the first index in each group is
-	// the survivor and the rest are newer look-alikes. order preserves first-seen
-	// skeleton order so the pass — and its audit records — are deterministic.
-	order := make([]string, 0, len(stale))
-	groups := make(map[string][]int, len(stale))
-	for i := range stale {
-		sk := blocklist.Skeleton(stale[i].Name)
-		if _, seen := groups[sk]; !seen {
-			order = append(order, sk)
-		}
-		groups[sk] = append(groups[sk], i)
 	}
 
 	if err := rc.store.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
 		res = FoldRecomputeResult{}
+
+		// Double-checked: re-read the stale set inside the transaction and base
+		// every decision on it. A peer may have resolved some or all of the rows
+		// the pre-check saw between that read and this transaction.
+		stale, err := r.Handles.ListStaleFolds(ctx, version)
+		if err != nil {
+			return err
+		}
+		if len(stale) == 0 {
+			// A peer resolved everything in the window; this pass is a no-op.
+			return nil
+		}
+		now := rc.now().UTC()
+
+		// Group stale rows by true skeleton. stale is ordered oldest-first
+		// (created_at ASC, id ASC) by the port, so the first index in each group
+		// is the survivor and the rest are newer look-alikes. order preserves
+		// first-seen skeleton order so the pass — and its audit records — are
+		// deterministic.
+		order := make([]string, 0, len(stale))
+		groups := make(map[string][]int, len(stale))
+		for i := range stale {
+			sk := blocklist.Skeleton(stale[i].Name)
+			if _, seen := groups[sk]; !seen {
+				order = append(order, sk)
+			}
+			groups[sk] = append(groups[sk], i)
+		}
+
 		// Phase 0: empty the skeleton namespace of raw squatters.
 		for i := range stale {
 			if err := r.Handles.SetFold(ctx, stale[i].ID, foldPlaceholder(stale[i].ID), version, now); err != nil {
