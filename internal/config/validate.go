@@ -60,6 +60,7 @@ func (c *Config) Validate() error {
 	c.validateOnboarding(v)
 	c.validateRetention(v)
 	c.validateRefs(v)
+	c.validateListenerOverlap(v)
 
 	if len(v.errs) == 0 {
 		return nil
@@ -668,6 +669,76 @@ func addrsOverlap(a, b string) bool {
 // interface. An empty host is the ":8443" form.
 func isWildcardHost(h string) bool {
 	return h == "" || h == "0.0.0.0" || h == "::"
+}
+
+// namedListener pairs a config field path with a bind address, so the
+// cross-listener overlap check can name the offending field in its message.
+type namedListener struct {
+	field string
+	addr  string
+}
+
+// activeListeners lists the process's own listeners that are actually bound for
+// the current config, each paired with the field that names it.
+//
+// The application listener is exactly ONE socket, not two: in upstream TLS mode
+// (tls.mode: upstream) the process holds no certificate and serves the guarded
+// plaintext tls.upstream.listen_addr; every other mode binds the HTTPS
+// server.listen_addr. The composition root builds one or the other and never
+// both (see cmd/valletd/main.go run(), the `if cfg.TLS.Mode == "upstream"`
+// branch), so the field that is not bound in the current mode must NOT
+// participate here — including it would flag a collision against a socket that
+// is never opened.
+//
+// The plaintext health-probe listener participates only when an operator named
+// an address for it; nil (no address) means the listener does not exist.
+//
+// The Prometheus scrape listener is deliberately NOT included: it has its own
+// overlap-vs-server check in validatePrometheus, and folding it in here would
+// double-report the same conflict.
+func (c *Config) activeListeners() []namedListener {
+	var listeners []namedListener
+	if c.TLS.Mode == "upstream" {
+		listeners = append(listeners, namedListener{"tls.upstream.listen_addr", c.TLS.Upstream.ListenAddr})
+	} else {
+		listeners = append(listeners, namedListener{"server.listen_addr", c.Server.ListenAddr})
+	}
+	if c.Server.HealthListenAddr != "" {
+		listeners = append(listeners, namedListener{"server.health_listen_addr", c.Server.HealthListenAddr})
+	}
+	return listeners
+}
+
+// validateListenerOverlap fails closed when two of the process's own listeners
+// would bind overlapping addresses (issue #113).
+//
+// A collision otherwise surfaces late, at the second net.Listen, per-listener,
+// with an error that names neither the other listener nor — for a
+// wildcard-vs-specific shadow on the same port, which does not always fail to
+// bind at all — the fact that one socket is silently swallowing another's
+// traffic. Catching it here, before any listener binds (Validate runs at the
+// very top of run(), long before serve() binds a socket), turns that into one
+// clear startup error naming BOTH listeners and the addresses that collide.
+//
+// Overlap is decided by addrsOverlap: same port AND intersecting hosts, where a
+// wildcard on either side shadows any specific host on that port. The comparison
+// is on the configured strings' normalized host:port forms only — there is NO
+// DNS resolution, so two different names that resolve to the same interface are
+// not detected here; that is a deliberate limitation, not an oversight (a
+// validator that resolved names would depend on network state that startup must
+// not).
+func (c *Config) validateListenerOverlap(v *validator) {
+	listeners := c.activeListeners()
+	for i := 0; i < len(listeners); i++ {
+		for j := i + 1; j < len(listeners); j++ {
+			a, b := listeners[i], listeners[j]
+			if addrsOverlap(a.addr, b.addr) {
+				v.add(b.field,
+					"overlaps %s: %q and %q would bind the same socket (a wildcard host shadows a specific bind on the same port); give each listener a distinct host:port",
+					a.field, b.addr, a.addr)
+			}
+		}
+	}
 }
 
 func (c *Config) validateOnboarding(v *validator) {
