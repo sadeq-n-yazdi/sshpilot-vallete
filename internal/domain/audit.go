@@ -83,6 +83,12 @@ const (
 	// someone else, so it is the record an incident review needs to place a
 	// change of ownership in time.
 	AuditActionHandleReleased AuditAction = "handle.released"
+	// AuditActionHandleQuarantined records the startup fold recompute
+	// quarantining the newer of two pre-existing confusable handles, keeping the
+	// oldest and holding the look-alike for review (ADR-0030). It is a loud,
+	// operator-facing record because it means two names a human reads as one were
+	// registered before the look-alike index existed.
+	AuditActionHandleQuarantined AuditAction = "handle.quarantined"
 
 	AuditActionDeviceRegistered AuditAction = "device.registered"
 	AuditActionDeviceRevoked    AuditAction = "device.revoked"

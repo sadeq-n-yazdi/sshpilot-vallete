@@ -77,4 +77,34 @@ type HandleRepository interface {
 	// UNSCOPED: the release sweep is system maintenance across all owners, and
 	// the elapsed hold — not a caller's identity — is what authorizes the delete.
 	Release(ctx context.Context, id domain.HandleID, now time.Time) error
+
+	// ListStaleFolds returns every handle row whose fold_version differs from
+	// currentVersion, oldest first (created_at ASC, id ASC), for the startup
+	// look-alike recompute pass (ADR-0030). Ordering oldest-first is what lets
+	// the caller keep the oldest of two confusables and quarantine the newer.
+	//
+	// UNSCOPED: the recompute is system maintenance across all owners; the stale
+	// table revision, not any caller's identity, is what selects the rows.
+	ListStaleFolds(ctx context.Context, currentVersion int) ([]domain.Handle, error)
+
+	// SetFold overwrites a handle row's name_fold and fold_version and stamps
+	// updatedAt. It exists only for the recompute pass and is the one place a
+	// fold is written from a value the caller computed rather than derived from
+	// the row's own name — the pass computes Skeleton(name) itself so it can
+	// detect collisions in Go rather than by tripping the unique index. It
+	// returns domain.ErrConflict if fold collides with another row's name_fold,
+	// and domain.ErrNotFound if no row has the id.
+	//
+	// UNSCOPED: system-maintenance recompute across all owners; see ADR-0030.
+	SetFold(ctx context.Context, id domain.HandleID, fold string, version int, updatedAt time.Time) error
+
+	// QuarantineLookalike moves a handle row to the quarantined state held
+	// indefinitely (quarantine_until = NULL, so the release sweep never frees
+	// it), flags it for review, and stamps updatedAt. name_fold and fold_version
+	// are left exactly as SetFold placed them. The recompute pass uses it for the
+	// newer of two confusable handles (ADR-0030). It returns domain.ErrNotFound
+	// if no row has the id.
+	//
+	// UNSCOPED: system-maintenance recompute across all owners; see ADR-0030.
+	QuarantineLookalike(ctx context.Context, id domain.HandleID, updatedAt time.Time) error
 }

@@ -108,6 +108,20 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 	store := sqlite.NewStore(db)
 
+	// Bring the stored handle look-alike folds current before anything is built
+	// that could accept a create or rename. This is fail-closed ordering: the
+	// adapter refuses those operations while any fold is stale, and this pass —
+	// run after migrations and before the listener binds — is what lifts that
+	// refusal. It also quarantines any pre-existing confusable pair's newer
+	// member (ADR-0030). A failure fails startup rather than serving stale folds.
+	if res, err := runFoldRecompute(context.Background(), store, store.AuditAppender()); err != nil {
+		return err
+	} else if res.Recomputed > 0 || res.Quarantined > 0 {
+		logger.Info("recomputed handle look-alike folds",
+			slog.Int("recomputed", res.Recomputed),
+			slog.Int("quarantined", res.Quarantined))
+	}
+
 	// Secrets are resolved before anything is constructed from them, and every
 	// failure is aggregated, so an operator fixes one startup error rather than
 	// discovering the next missing reference on the following attempt. Which
