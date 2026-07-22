@@ -59,25 +59,29 @@
 // can never be erased — the key needed to mint their tombstones is gone. The
 // safe direction is the one that stays retryable.
 //
-// # Limit: erasure covers the identifier columns, NOT record metadata
+// # Erasure covers the whole record: identifier columns AND record metadata
 //
-// Pseudonymize rewrites actor_id and target_id. It does NOT touch a record's
-// metadata, and the metadata allowlist in internal/audit admits keys that can
-// carry an owner's identity: fingerprint, handle, device_name, key_set_name and
-// client_label. A fingerprint is not a secret, but it names a specific key and
-// therefore its owner.
+// Pseudonymize rewrites actor_id and target_id, but a record's metadata can
+// itself carry an owner's identity: the internal/audit allowlist admits
+// fingerprint, handle, device_name, key_set_name and client_label, and the
+// from/to pair carries the old and new names in a rename. A fingerprint is not
+// a secret, but it names a specific key and therefore its owner. Tombstoning
+// the columns alone would leave that owner nameable in the metadata.
 //
-// So the irreversibility argument above holds for the identifier columns only.
-// A record whose metadata carries an identifying detail still identifies its
-// subject after erasure, and destroying the salt does nothing about it. Do not
-// read this package as providing erasure over a whole audit record until that
-// is addressed.
+// EraseOwner closes this. It rewrites every identifying detail value to a
+// tombstone under the SAME per-owner salt used for the columns, so the whole
+// record — both identity columns and metadata — is erased and the
+// irreversibility argument above holds over all of it. The classification of
+// which detail keys are identifying (erasable) and which are structural (kept
+// byte-for-byte) is owned by internal/audit.IsErasableDetail and settled in
+// ADR-0024; equal values across records collapse to equal tombstones, so event
+// counts and lineage stay consistent, and the structural keys — algorithm,
+// visibility, scope, reason, result, request_id, count — are preserved so a
+// scrubbed record still proves what happened.
 //
-// Closing it means deciding, per allowlisted key, whether the value is erasable
-// (rewrite it), droppable (remove it) or genuinely non-identifying (keep it) —
-// a policy question about the audit vocabulary, not a storage detail, which is
-// why it is not settled here. Like the traversal below, it is NOT ASSIGNED to
-// any planned task.
+// A metadata value that already has a tombstone's exact shape is left alone, so
+// a re-run scrubs nothing twice; see isTombstone for why the shape, not a bare
+// prefix, is the test.
 //
 // # Scope: this package is a primitive, and its caller does not exist yet
 //
@@ -102,7 +106,9 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"strings"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/repository"
 )
@@ -155,6 +161,53 @@ func Verify(salt []byte, id, tombstone string) bool {
 	return hmac.Equal([]byte(Tombstone(salt, id)), []byte(tombstone))
 }
 
+// isTombstone reports whether s has the exact shape Tombstone produces: the
+// prefix followed by the base64url encoding of a 32-byte HMAC-SHA256 digest.
+//
+// The metadata scrub uses this to leave an already-tombstoned value untouched,
+// which is what makes a re-run idempotent. A bare prefix test would not do,
+// because unlike a minted identifier a metadata value is user-supplied and can
+// legitimately begin with the prefix: a device literally named "anon:bot"
+// would be mistaken for an already-erased value and left standing in the clear.
+// Requiring the full shape — a valid base64url body decoding to exactly the
+// digest length — means only a real tombstone is skipped. The residual is a
+// value a user deliberately crafts to the full 48-character tombstone shape to
+// dodge its own scrub, which is self-defeating and left un-guarded here.
+func isTombstone(s string) bool {
+	rest, ok := strings.CutPrefix(s, tombstonePrefix)
+	if !ok {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(rest)
+	return err == nil && len(raw) == sha256.Size
+}
+
+// scrubDetails returns metadata with every identifying detail value rewritten
+// to a tombstone under salt, and whether anything changed. Structural values
+// (see audit.IsErasableDetail) and values already in tombstone shape are left
+// exactly as they are, and an empty value is nothing to erase. The input map is
+// never mutated; a fresh copy is made only when a rewrite is actually needed,
+// so the common no-metadata and all-structural cases allocate nothing.
+func scrubDetails(meta map[string]string, salt []byte) (map[string]string, bool) {
+	var out map[string]string
+	for k, v := range meta {
+		if v == "" || isTombstone(v) || !audit.IsErasableDetail(audit.DetailKey(k)) {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]string, len(meta))
+			for mk, mv := range meta {
+				out[mk] = mv
+			}
+		}
+		out[k] = Tombstone(salt, v)
+	}
+	if out == nil {
+		return meta, false
+	}
+	return out, true
+}
+
 // EraseOwner replaces every occurrence of the given identifiers in the audit
 // log with tombstones and then destroys the owner's salt, returning the number
 // of identity fields rewritten.
@@ -183,6 +236,15 @@ func (e *Eraser) EraseOwner(ctx context.Context, ownerID string, ids []string) (
 		return 0, fmt.Errorf("erasure: load salt: %w", err)
 	}
 
+	// Scrub identifying metadata BEFORE the column pass. RecordsForErasure finds
+	// the owner's records by their identifiers in actor_id/target_id, which the
+	// column pass is about to overwrite; run it after and the records no longer
+	// match. Nothing here is irreversible — the salt is still alive — so a
+	// failure returns for a retry, having destroyed nothing.
+	if serr := e.scrubMetadata(ctx, ids, salt); serr != nil {
+		return 0, fmt.Errorf("erasure: scrub metadata: %w", serr)
+	}
+
 	// Each identifier gets its own tombstone, so distinct subjects stay
 	// distinguishable in the surviving log. A single shared pseudonym would
 	// merge an owner's device and key references into one value and destroy the
@@ -204,4 +266,31 @@ func (e *Eraser) EraseOwner(ctx context.Context, ownerID string, ids []string) (
 		return rewritten, fmt.Errorf("erasure: destroy salt: %w", derr)
 	}
 	return rewritten, nil
+}
+
+// scrubMetadata rewrites the identifying detail values in the owner's records
+// to tombstones under salt. It reads the records the owner's identifiers name,
+// computes each one's scrubbed metadata, and persists only those that changed.
+//
+// The count is not surfaced through EraseOwner's return, which stays a count of
+// identity-column fields; the metadata pass is a distinct rewrite whose progress
+// is not comparable to a per-identifier field count, and conflating the two
+// would make the returned figure mean two different things at once.
+func (e *Eraser) scrubMetadata(ctx context.Context, ids []string, salt []byte) error {
+	recs, err := e.audit.RecordsForErasure(ctx, ids)
+	if err != nil {
+		return err
+	}
+	var updates []repository.AuditMetadataUpdate
+	for i := range recs {
+		newMeta, changed := scrubDetails(recs[i].Metadata, salt)
+		if changed {
+			updates = append(updates, repository.AuditMetadataUpdate{ID: recs[i].ID, Metadata: newMeta})
+		}
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	_, err = e.audit.ScrubMetadata(ctx, updates)
+	return err
 }

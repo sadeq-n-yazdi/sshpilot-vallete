@@ -127,6 +127,7 @@ func bindings() []binding {
 		{"VALLET_SERVER_LISTEN_ADDR", setString(func(c *Config) *string { return &c.Server.ListenAddr })},
 		{"VALLET_SERVER_PUBLIC_BASE_URL", setString(func(c *Config) *string { return &c.Server.PublicBaseURL })},
 		{"VALLET_SERVER_TRUSTED_PROXIES", setStringSlice(func(c *Config) *[]string { return &c.Server.TrustedProxies })},
+		{"VALLET_SERVER_HEALTH_LISTEN_ADDR", setString(func(c *Config) *string { return &c.Server.HealthListenAddr })},
 
 		// tls
 		{"VALLET_TLS_MODE", setString(func(c *Config) *string { return &c.TLS.Mode })},
@@ -149,6 +150,7 @@ func bindings() []binding {
 		{"VALLET_TLS_CSR_CSR_FILE", setString(func(c *Config) *string { return &c.TLS.CSR.CSRFile })},
 		{"VALLET_TLS_CSR_CERT_FILE", setString(func(c *Config) *string { return &c.TLS.CSR.CertFile })},
 		{"VALLET_TLS_UPSTREAM_REQUIRE_FORWARDED_PROTO", setBool(func(c *Config) *bool { return &c.TLS.Upstream.RequireForwardedProto })},
+		{"VALLET_TLS_UPSTREAM_LISTEN_ADDR", setString(func(c *Config) *string { return &c.TLS.Upstream.ListenAddr })},
 		{"VALLET_TLS_ALLOW_SELF_SIGNED_IN_PRODUCTION", setBool(func(c *Config) *bool { return &c.TLS.AllowSelfSignedInProduction })},
 		{"VALLET_TLS_DOMAIN", setString(func(c *Config) *string { return &c.TLS.Domain })},
 		{"VALLET_TLS_SANS", setStringSlice(func(c *Config) *[]string { return &c.TLS.SANs })},

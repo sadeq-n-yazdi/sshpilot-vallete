@@ -419,9 +419,15 @@ func TestProtectedSetEndToEnd(t *testing.T) {
 			t.Fatalf("the baseline was %d, not a 404", absent.status)
 		}
 
+		// "the other set's real key" is the case the dropped 403 clause of
+		// ADR-0019 would have leaked through: a genuinely valid access key of
+		// this owner, minted for a DIFFERENT set, probing prod. It must be
+		// byte-indistinguishable from an absent set, or any token-holder could
+		// enumerate the owner's other set names off the difference.
 		refusals := map[string]map[string]string{
 			"no credential":            nil,
 			"a garbage token":          {"Authorization": "Bearer garbage"},
+			"a malformed bearer token": {"Authorization": "Bearer not-a-token"},
 			"the other set's real key": {"Authorization": "Bearer " + wrongSet.Reveal()},
 		}
 		for name, headers := range refusals {
@@ -430,6 +436,11 @@ func TestProtectedSetEndToEnd(t *testing.T) {
 				t.Errorf("%s: (%d, %q) differs from the absent set's (%d, %q)",
 					name, got.status, got.body, absent.status, absent.body)
 			}
+			// The property is byte-indistinguishability, not merely "both 404":
+			// two 404s differing in a header would still be an existence oracle.
+			// assertSameHeaders compares every header except the two that are
+			// per-response by construction (Date, X-Request-Id).
+			assertSameHeaders(t, absent.header, got.header)
 			if v := got.header.Get("Vary"); v != "" {
 				t.Errorf("%s: refusal carried Vary %q", name, v)
 			}

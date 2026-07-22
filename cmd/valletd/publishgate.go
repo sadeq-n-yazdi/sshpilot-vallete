@@ -40,9 +40,57 @@ func buildServer(
 	tel *telemetry.Provider,
 	counterStore counter.Store,
 ) (*httpserver.Server, error) {
-	publisher, err := newPublisher(ctx, cfg, logger, store)
+	publisher, opts, err := buildAPIDeps(ctx, cfg, logger, store, tel, counterStore)
 	if err != nil {
 		return nil, err
+	}
+	return httpserver.New(cfg, logger, db, publisher, opts...)
+}
+
+// buildUpstreamServer assembles the SAME serving stack behind the guarded
+// plaintext listener that upstream-termination mode uses (ADR-0015, Decision
+// 31). It shares buildAPIDeps with buildServer so the plaintext listener serves
+// the identical publish + management surface -- there is no reduced handler on
+// the upstream path -- and the only difference is the socket: plaintext, bound
+// to a fenced private address, wrapped in the require-secure-transport gate that
+// NewUpstreamServer installs.
+//
+// It is a separate constructor from buildServer, not a mode flag threaded
+// through it, so that *httpserver.Server keeps ServeTLS as its only serve method
+// and the HTTPS type can never emit plaintext -- the plaintext path lives only
+// on the distinct UpstreamServer type.
+func buildUpstreamServer(
+	ctx context.Context,
+	cfg *config.Config,
+	logger *slog.Logger,
+	db *sql.DB,
+	store *sqlite.Store,
+	tel *telemetry.Provider,
+	counterStore counter.Store,
+) (*httpserver.UpstreamServer, error) {
+	publisher, opts, err := buildAPIDeps(ctx, cfg, logger, store, tel, counterStore)
+	if err != nil {
+		return nil, err
+	}
+	return httpserver.NewUpstreamServer(cfg, logger, db, publisher, opts...)
+}
+
+// buildAPIDeps assembles the publisher and the handler options that both the
+// HTTPS server and the plaintext upstream server are built from. Factoring it
+// out is what guarantees the two listeners serve the same surface: a management
+// option added here reaches both, and neither can silently drift to a narrower
+// handler than the other.
+func buildAPIDeps(
+	ctx context.Context,
+	cfg *config.Config,
+	logger *slog.Logger,
+	store *sqlite.Store,
+	tel *telemetry.Provider,
+	counterStore counter.Store,
+) (*publish.Service, []httpserver.HandlerOption, error) {
+	publisher, err := newPublisher(ctx, cfg, logger, store)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// SEAM: the authenticated management surface is mounted but not yet wired.
@@ -76,7 +124,7 @@ func buildServer(
 	// the enforcement guard and the runtime editor share the one matcher.
 	policy, err := newNamePolicy(ctx, cfg, store.Repos().ListOverrides)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// The runtime list editor. It edits policy.Matcher through the matcher's
@@ -86,7 +134,7 @@ func buildServer(
 	// changes and has no business being able to erase the record of them.
 	emitter, err := audit.NewEmitter(store.AuditAppender())
 	if err != nil {
-		return nil, fmt.Errorf("audit sink: %w", err)
+		return nil, nil, fmt.Errorf("audit sink: %w", err)
 	}
 	listAdmin, err := listadmin.New(listadmin.Params{
 		Admins:    store.Repos().Admins,
@@ -95,7 +143,7 @@ func buildServer(
 		Matcher:   policy.Matcher,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("list admin service: %w", err)
+		return nil, nil, fmt.Errorf("list admin service: %w", err)
 	}
 
 	// SEAM: the authenticated management surface (device / public key / key set
@@ -130,7 +178,7 @@ func buildServer(
 	if counterStore != nil {
 		opts = append(opts, httpserver.WithCounterStore(counterStore))
 	}
-	return httpserver.New(cfg, logger, db, publisher, opts...)
+	return publisher, opts, nil
 }
 
 // newPublisher builds the publish service, wiring the access key verifier that

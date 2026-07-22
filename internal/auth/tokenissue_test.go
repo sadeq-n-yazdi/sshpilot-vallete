@@ -147,8 +147,8 @@ func TestIssueNeverPersistsTheRawToken(t *testing.T) {
 func TestIssuePopulatesTheRootCredential(t *testing.T) {
 	store, svc := newService(t)
 	scopes := []domain.Scope{
+		{Kind: domain.ScopeReadOnly},
 		{Kind: domain.ScopeSingleSet, ResourceID: "ks-1"},
-		{Kind: domain.ScopeSingleDevice, ResourceID: "dev-1"},
 	}
 	got, err := svc.Issue(context.Background(), testOwner, scopes, "ci runner", baseTime)
 	if err != nil {

@@ -247,7 +247,9 @@ func TestAuthorizedOwnerComesFromTheToken(t *testing.T) {
 // request served under the same Authorization.
 func TestScopesAreCopied(t *testing.T) {
 	f := newGuardFixture(t)
-	tok := f.issue(t, ownerA, "cred-a", scopeSetA, scopeDevice)
+	// A valid two-scope set (read-only modifying a single-set binding); Issue
+	// preserves order, so scopeSetA stays at index 0 for the assertion below.
+	tok := f.issue(t, ownerA, "cred-a", scopeSetA, scopeRead)
 
 	a, err := f.authorize(tok, auth.Access{Resource: auth.ResourceKeySet, ResourceID: scopeSetA.ResourceID})
 	if err != nil {
@@ -356,23 +358,46 @@ func TestScopeEnforcement(t *testing.T) {
 			acc:    auth.Access{},
 		},
 
-		// The union of two bound scopes reaches both, and nothing else.
+		// read-only as a modifier over a single-set binding: reads of exactly
+		// that set, and nothing else -- no write to it, no read of another set,
+		// no account-wide read.
 		{
-			name:   "union reaches the set",
-			scopes: []domain.Scope{scopeSetA, scopeDevice},
+			name:   "read only single set reads its own set",
+			scopes: []domain.Scope{scopeRead, scopeSetA},
 			acc:    auth.Access{Resource: auth.ResourceKeySet, ResourceID: scopeSetA.ResourceID},
 			want:   true,
 		},
 		{
-			name:   "union reaches the device",
-			scopes: []domain.Scope{scopeSetA, scopeDevice},
+			name:   "read only single set refuses a mutation of its own set",
+			scopes: []domain.Scope{scopeRead, scopeSetA},
+			acc:    auth.Access{Resource: auth.ResourceKeySet, ResourceID: scopeSetA.ResourceID, Mutating: true},
+		},
+		{
+			name:   "read only single set refuses reading another set",
+			scopes: []domain.Scope{scopeRead, scopeSetA},
+			acc:    auth.Access{Resource: auth.ResourceKeySet, ResourceID: "ks-beta"},
+		},
+		{
+			name:   "read only single set refuses an account wide read",
+			scopes: []domain.Scope{scopeRead, scopeSetA},
+			acc:    auth.Access{},
+		},
+		// The same shape on the device axis.
+		{
+			name:   "read only single device reads its own device",
+			scopes: []domain.Scope{scopeRead, scopeDevice},
 			acc:    auth.Access{Resource: auth.ResourceDevice, ResourceID: scopeDevice.ResourceID},
 			want:   true,
 		},
 		{
-			name:   "union reaches neither of a third resource",
-			scopes: []domain.Scope{scopeSetA, scopeDevice},
-			acc:    auth.Access{Resource: auth.ResourceKeySet, ResourceID: "ks-gamma"},
+			name:   "read only single device refuses a mutation of its own device",
+			scopes: []domain.Scope{scopeRead, scopeDevice},
+			acc:    auth.Access{Resource: auth.ResourceDevice, ResourceID: scopeDevice.ResourceID, Mutating: true},
+		},
+		{
+			name:   "read only single device refuses reading another device",
+			scopes: []domain.Scope{scopeRead, scopeDevice},
+			acc:    auth.Access{Resource: auth.ResourceDevice, ResourceID: "dev-beta"},
 		},
 	}
 	for _, tt := range tests {
@@ -398,6 +423,42 @@ func TestScopeEnforcement(t *testing.T) {
 				t.Fatal("a refused request must not yield an Authorization")
 			}
 		})
+	}
+}
+
+// TestReadOnlyModifierIntersects is the security proof for the read-only
+// modifier (ADR-0018, "read-only + single-set"): a token carrying read-only AND
+// a single-set binding must grant the INTERSECTION of the two, never the union.
+//
+// The union would be the bug: single-set alone permits read and write of its
+// set, and read-only alone permits reading anything, so a naive "any scope
+// permits" would let this token WRITE its set (single-set said yes) and READ
+// other sets (read-only said yes) -- widening past either half. The correct
+// grant is neither: read of exactly this one set, and nothing more.
+func TestReadOnlyModifierIntersects(t *testing.T) {
+	f := newGuardFixture(t)
+	tok := f.issue(t, ownerA, "cred-a", scopeRead, scopeSetA)
+
+	own := auth.Access{Owner: ownerA, Resource: auth.ResourceKeySet, ResourceID: scopeSetA.ResourceID}
+
+	// It MAY read its own set.
+	if _, err := f.authorize(tok, own); err != nil {
+		t.Fatalf("read-only+single-set was refused a read of its own set: %v", err)
+	}
+
+	// It must NOT mutate its own set: the binding's write authority does not
+	// survive the read-only modifier.
+	mutate := own
+	mutate.Mutating = true
+	if _, err := f.authorize(tok, mutate); !errors.Is(err, auth.ErrForbidden) {
+		t.Fatalf("mutation err = %v, want ErrForbidden: read-only must cap the binding's write", err)
+	}
+
+	// It must NOT read a DIFFERENT set: read-only does not widen the binding to
+	// account-wide read.
+	other := auth.Access{Owner: ownerA, Resource: auth.ResourceKeySet, ResourceID: "ks-beta"}
+	if _, err := f.authorize(tok, other); !errors.Is(err, auth.ErrForbidden) {
+		t.Fatalf("other-set err = %v, want ErrForbidden: read-only must not widen the binding", err)
 	}
 }
 
