@@ -373,21 +373,63 @@ func (g *Guard) decide(ctx context.Context, tok *domain.AccessToken, acc Access)
 	return nil
 }
 
-// permitsAccess reports whether any scope in the set covers acc.
+// permitsAccess reports whether the scope set as a whole covers acc.
 //
-// The set is a union: a token holding single-set and single-device scopes may
-// reach either resource. That is safe only because ValidateScopes has already
-// refused every set where a union would be ambiguous -- the account-wide kinds
-// must stand alone -- so "any scope permits" cannot here mean "a broad scope
-// silently widened a narrow one".
+// read-only is a MODIFIER over the rest of the set, not an independent grant
+// (ADR-0018: "read-only + single-set"). Composing it correctly is the whole
+// point of evaluating the set here rather than scope-by-scope, so the union
+// cannot let one half undo the other:
 //
-// An empty set permits nothing. That is the one case worth stating explicitly:
-// ValidateScopes refuses an empty set at issuance and Verify refuses one on
-// presentation, but the loop below would also silently permit everything if it
-// were written as "no scope objects, so allow", and the cost of the guarantee
-// holding locally is one comment and no code.
+//   - If read-only is present, a mutating request is refused BEFORE any positive
+//     grant is consulted. A single-set scope paired with read-only therefore
+//     cannot restore the write the modifier removed -- the intersection can only
+//     narrow, never widen back to the binding's own read+write authority.
+//   - read-only standing alone IS the grant: read of any of the owner's
+//     resources. Paired with a resource binding it contributes no positive
+//     authority of its own -- the binding alone decides which resource is
+//     reachable -- so a read of a DIFFERENT resource is refused, not widened to
+//     "read anything".
+//
+// ValidateScopes has already refused every set this evaluation cannot read
+// unambiguously: full-owner stands alone, read-only appears at most once, and at
+// most one resource binding is present. So the loop below is a union of at most
+// one positive grant, never two that could silently widen one another.
+//
+// An empty set permits nothing. ValidateScopes refuses one at issuance and
+// Verify refuses one on presentation, but stating it here keeps the guarantee
+// local: the code must not be rewritten into "no objections, so allow".
 func permitsAccess(scopes []domain.Scope, acc Access) bool {
+	readOnly := false
+	grants := 0
 	for _, s := range scopes {
+		if s.Kind == domain.ScopeReadOnly {
+			readOnly = true
+			continue
+		}
+		grants++
+	}
+
+	// The read-only cap. It is checked before any grant so that no positive
+	// scope in the set -- present or added later -- can be the reason a mutation
+	// under a read-only token succeeds.
+	if readOnly && acc.Mutating {
+		return false
+	}
+
+	// read-only alone: any non-mutating request against the owner's resources is
+	// permitted. Mutation was already refused above, and the owner boundary was
+	// settled before this function ran. Paired with a binding (grants > 0),
+	// read-only adds nothing here and the binding below is consulted instead.
+	if readOnly && grants == 0 {
+		return true
+	}
+
+	for _, s := range scopes {
+		if s.Kind == domain.ScopeReadOnly {
+			// A modifier, already accounted for above; it grants no resource of
+			// its own once a binding is present.
+			continue
+		}
 		if scopePermits(s, acc) {
 			return true
 		}
@@ -395,23 +437,19 @@ func permitsAccess(scopes []domain.Scope, acc Access) bool {
 	return false
 }
 
-// scopePermits reports whether a single scope covers acc.
+// scopePermits reports whether a single positive grant covers acc.
 //
-// The switch has no default that allows. An unknown kind -- a scope minted by a
-// future version, or a corrupted one -- permits nothing, so a kind this code
-// does not understand can never be the reason a request succeeds.
+// read-only is deliberately absent: it is a modifier handled in permitsAccess,
+// not a grant, so it never reaches here. The switch has no default that allows,
+// so an unknown kind -- a scope minted by a future version, a corrupted one, or
+// a read-only that somehow arrives here -- permits nothing and can never be the
+// reason a request succeeds.
 func scopePermits(s domain.Scope, acc Access) bool {
 	switch s.Kind {
 	case domain.ScopeFullOwner:
 		// Everything, within the owner. The owner boundary was settled before
 		// this function was called, so "everything" is not open-ended.
 		return true
-
-	case domain.ScopeReadOnly:
-		// Reads of any of the owner's resources, mutations of none. Whether a
-		// request mutates is decided from the HTTP method by the transport, not
-		// declared per route, so a new route is read-only-safe by default.
-		return !acc.Mutating
 
 	case domain.ScopeSingleSet:
 		return boundScopePermits(s, acc, ResourceKeySet)
