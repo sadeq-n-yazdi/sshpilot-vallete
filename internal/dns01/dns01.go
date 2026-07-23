@@ -153,6 +153,8 @@ func NewAPIProvider(name string, creds Credentials, client *http.Client) (Provid
 		return NewGandi(creds, client)
 	case "arvancloud":
 		return NewArvanCloud(creds, client)
+	case "namecheap":
+		return NewNamecheap(creds, client)
 	default:
 		// The provider NAME is echoed because it came from the operator's own
 		// config file and is the diagnostic. The credential is not touched.
