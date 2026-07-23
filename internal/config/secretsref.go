@@ -37,6 +37,7 @@ type RefRequirement struct {
 //   - tls mode cloudflare_origin   -> tls.cloudflare_origin.api_token_ref
 //   - acme + dns_01 + dns api mode -> tls.acme.dns.credentials_ref
 //   - production environment       -> auth.token_signing_key_ref
+//   - production environment       -> auth.admin_token_signing_key_ref
 //   - production, or ref set       -> auth.access_key_pepper_ref
 //   - shared rate-limit store      -> rate_limit.shared.password_ref (if set)
 //   - otlp metrics enabled         -> telemetry.metrics.otlp.headers_ref (if set)
@@ -73,6 +74,10 @@ func (c *Config) RequiredSecretRefs() []RefRequirement {
 	}
 	if c.Server.Environment == "production" {
 		add("auth.token_signing_key_ref", c.Auth.TokenSigningKeyRef)
+		// The admin signing key is required in production for the same reason as
+		// the owner one (ADR-0031): the admin routes are always mounted, so a
+		// missing key must be caught at resolution time as well as by Validate.
+		add("auth.admin_token_signing_key_ref", c.Auth.AdminTokenSigningKeyRef)
 	}
 	// The pepper is required in production, and required to RESOLVE wherever it
 	// was named. The second half is the load-bearing one: an operator who set

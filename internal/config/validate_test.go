@@ -22,6 +22,7 @@ func validConfig() Config {
 	c.TLS.ACME.CacheDir = "/var/lib/vallet/acme"
 	c.TLS.ACME.AcceptTOS = true
 	c.Auth.TokenSigningKeyRef = "env:VALLET_SIGNING_KEY"
+	c.Auth.AdminTokenSigningKeyRef = "env:VALLET_ADMIN_SIGNING_KEY"
 	c.Auth.AccessKeyPepperRef = "env:VALLET_ACCESS_KEY_PEPPER"
 	return c
 }
@@ -223,6 +224,9 @@ func TestValidateFailures(t *testing.T) {
 		{"prod missing signing key", func(c *Config) {
 			c.Auth.TokenSigningKeyRef = ""
 		}, "auth.token_signing_key_ref"},
+		{"prod missing admin signing key", func(c *Config) {
+			c.Auth.AdminTokenSigningKeyRef = ""
+		}, "auth.admin_token_signing_key_ref"},
 		{"shared missing address", func(c *Config) {
 			c.RateLimit.Store = "shared"
 		}, "rate_limit.shared.address"},
