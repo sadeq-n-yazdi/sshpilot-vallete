@@ -79,6 +79,11 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 		logger.LogAttrs(context.Background(), slog.LevelError,
 			"rate limit: management tier not mounted", slog.String("error", err.Error()))
 	}
+	adminLimiter, err := newAdminLimiter(cfg, limitStore)
+	if err != nil {
+		logger.LogAttrs(context.Background(), slog.LevelError,
+			"rate limit: admin tier not mounted", slog.String("error", err.Error()))
+	}
 	// The AUTH tier's two limiters. Unlike the tiers above they have no disabled
 	// state (newAuthLimiter falls back to in-process counters rather than nil):
 	// they are the only brute-force defense on the credential-check endpoints, so
@@ -316,10 +321,12 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// answer 500. Both are the fail-closed directions, and neither depends on
 	// how the process was configured being readable off the route table.
 	//
-	// The ADMIN rate-limit tier (ADR-0023) is deliberately still not attached:
-	// it keys per authenticated administrator, and that identity arrives with
-	// the admin authenticator these routes await. It is wired with that adapter,
-	// the same day a real AdminIdentifier replaces the deny-all stand-in.
+	// The ADMIN rate-limit tier (ADR-0023) keys per authenticated administrator.
+	// The reserved-identifier list routes below do not yet attach it; the owner
+	// provisioning route does, since it is the first admin route wired to a real
+	// AdminIdentifier (ADR-0033) and provisioning is the more consequential act
+	// to bound. adminRateLimit resolves the same identity the handler authorizes
+	// with, so the tier is keyed on the administrator rather than the source IP.
 	adminID := o.adminIdentifier
 	if adminID == nil {
 		adminID = denyAllAdminIdentifier{}
@@ -328,6 +335,16 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	mux.Handle("DELETE /api/v1/admin/reserved/allowlist", removeAllowlistEntryHandler(o.listAdmin, adminID, logger))
 	mux.Handle("POST /api/v1/admin/reserved/blocklist", addBlocklistTermHandler(o.listAdmin, adminID, logger))
 	mux.Handle("DELETE /api/v1/admin/reserved/blocklist", removeBlocklistTermHandler(o.listAdmin, adminID, logger))
+
+	// Admin-provisioned owner onboarding (ADR-0033, Phase-1 decision #14). Like
+	// the list routes it is not owner-scoped and does not pass through the owner
+	// Guardian; its authority is an administrator's, resolved by adminID and
+	// re-checked (active status) by the OwnerOnboardingService before an owner is
+	// created. Mounted unconditionally: with no service wired it answers 500,
+	// with no AdminIdentifier every request is the empty administrator the
+	// service refuses (403). The ADMIN rate-limit tier wraps it.
+	mux.Handle("POST /api/v1/admin/owners",
+		adminRateLimit(adminLimiter, adminID, logger, adminCreateOwnerHandler(o.ownerOnboarding, adminID, logger)))
 
 	// Outermost first: every response carries the transport policy, then every
 	// request gets an ID, then a span and a metric, then is logged, then is

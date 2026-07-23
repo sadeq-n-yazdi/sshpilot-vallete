@@ -95,6 +95,85 @@ func newManagementLimiter(cfg *config.Config, store counter.Store) (*ratelimit.L
 	return ratelimit.NewLimiter(store, ratelimit.TierManagement, tiersFromConfig(cfg).Management)
 }
 
+// newAdminLimiter builds the ADMIN tier's limiter, or nil when rate limiting is
+// disabled.
+//
+// It shares the one counter store, as the publish and management tiers do, so
+// the tier namespacing (ratelimit.TierAdmin) keeps its budget separate without
+// a second store to reason about. A nil limiter is the documented "disabled"
+// state, exactly as for the other fixed-window tiers.
+//
+// Unlike the AUTH tier this is an ordinary fixed-window Tier, not failure
+// counting: the admin surface authenticates a signed bearer, so there is no
+// guessable secret for backoff to defend. The tier fails CLOSED on a
+// counter-store outage (DefaultTiers sets Admin.FailOpen false), which is the
+// conservative answer for a privileged surface.
+func newAdminLimiter(cfg *config.Config, store counter.Store) (*ratelimit.Limiter, error) {
+	if store == nil || (cfg != nil && !cfg.RateLimit.Enabled) {
+		return nil, nil //nolint:nilnil // A nil limiter is the documented "disabled" state.
+	}
+	return ratelimit.NewLimiter(store, ratelimit.TierAdmin, tiersFromConfig(cfg).Admin)
+}
+
+// adminRateLimit enforces the ADMIN tier on an admin route, keyed by the
+// resolved administrator.
+//
+// # Why keyed by administrator, and why an empty key is not exempt
+//
+// ADR-0023 keys this tier per authenticated administrator, so one admin's
+// automation cannot exhaust another's budget. The key is resolved through the
+// same AdminIdentifier the handler authorizes with; a request that resolves to
+// no administrator lands in one shared empty-id bucket. That bucket only ever
+// holds requests the service is about to refuse as unauthorized anyway, and a
+// separate real administrator keeps their own bucket, so the shared bucket
+// throttles an anonymous flood without touching a legitimate caller -- the same
+// "an unidentifiable caller is refused, never exempt" rule the other tiers take.
+//
+// # Mounted OUTSIDE the handler, before any work
+//
+// Unlike the management tier, admin routes do not pass through Guardian.Protect,
+// so there is no verified credential to key on inside a ScopedHandler. The
+// identity is resolved here from the AdminIdentifier and the limiter runs before
+// the body is read, so a refused request costs nothing past the counter check.
+//
+// A nil limiter is the disabled state and the wrapper is a pass-through. The
+// outage policy is read from the decision, never from the error, so the tier's
+// configured FailOpen governs -- treating an error as deny would override it.
+func adminRateLimit(lim *ratelimit.Limiter, id AdminIdentifier, logger *slog.Logger, next http.Handler) http.Handler {
+	if lim == nil {
+		return next
+	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	if id == nil {
+		id = denyAllAdminIdentifier{}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := "admin:" + string(id.AdministratorID(r))
+		decision, err := lim.Allow(r.Context(), key)
+		if err != nil {
+			// A limiter that has stopped limiting must be visible. The admin id
+			// is NOT logged: an access log travels far more widely than the
+			// request, and this line would otherwise record which administrator
+			// acted when.
+			level := slog.LevelError
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				level = slog.LevelDebug
+			}
+			logger.LogAttrs(r.Context(), level, "admin rate limit: counter store unavailable",
+				slog.String("request_id", RequestIDFromContext(r.Context())),
+				slog.Bool("serving", decision.Allowed),
+				slog.String("error", err.Error()))
+		}
+		if !decision.Allowed {
+			writeRateLimited(w, decision)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // managementRateLimit enforces the management tier on an already-authorized
 // route.
 //
