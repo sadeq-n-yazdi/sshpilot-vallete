@@ -13,7 +13,6 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/schema"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/bootstrap"
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 )
 
 // bootstrapOwnerCmd is the subcommand name that seeds a first owner.
@@ -75,11 +74,14 @@ func runBootstrapOwner(args []string, stdout, stderr io.Writer) error {
 	defer func() { _ = db.Close() }()
 
 	ctx := context.Background()
-	if err := applyMigrations(ctx, sqlite.NewMigrateDB(db), migrate.EngineSQLite); err != nil {
+	if err := migrateDatabase(ctx, cfg, db); err != nil {
 		return err
 	}
 
-	store := sqlite.NewStore(db)
+	store, err := newStore(cfg, db)
+	if err != nil {
+		return err
+	}
 
 	// Bring stored handle look-alike folds current before seeding. Seed registers
 	// a handle, and the adapter refuses a registration while any existing fold is
