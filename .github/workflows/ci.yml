@@ -154,3 +154,35 @@ jobs:
           name: sbom-cyclonedx
           path: dist/sbom.cdx.json
           if-no-files-found: error
+
+  docker:
+    name: docker image build
+    runs-on: ubuntu-latest
+    # Build-only validation: prove the production Dockerfile still builds on
+    # every push/PR, the same way the jobs above prove `go build` and the
+    # reproducible binary. Nothing is pushed and no registry credential is
+    # used, so this job is fork-safe under the default contents:read token.
+    #
+    # Publishing and signing the image (cosign + SLSA provenance, per ADR-0027)
+    # is deliberately NOT wired here: ADR-0027 defers the registry, tag scheme,
+    # and signing-identity choices as owner decisions, and a release-only push
+    # job cannot be exercised by a PR. That belongs in release.yml as a separate
+    # change once those choices are made.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # Plain `docker build` on the runner's bundled Docker/BuildKit. This adds
+      # no new third-party action to SHA-pin (ADR-0027 favours a minimal, vetted
+      # action set); build-only validation needs no buildx cache export or
+      # multi-arch matrix. The image is loaded into the local store and never
+      # pushed. VERSION mirrors how scripts/build.sh / the Dockerfile stamp it,
+      # so the build arg is exercised rather than left at its dev default; the
+      # SHA reaches docker through the environment, never ${{ }} interpolation
+      # into the run block.
+      - name: Build image
+        env:
+          VERSION: 0.0.0-ci-${{ github.sha }}
+        run: docker build --build-arg "VERSION=${VERSION}" -t valletd:ci .
