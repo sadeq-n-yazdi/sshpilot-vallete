@@ -21,6 +21,8 @@ type handlerOptions struct {
 	keySets         KeySetService
 	listAdmin       ListAdminService
 	adminIdentifier AdminIdentifier
+	enrollment      EnrollmentService
+	tokens          TokenIssuer
 	telemetry       *telemetry.Provider
 	counter         counter.Store
 }
@@ -86,6 +88,22 @@ func WithKeySetService(s KeySetService) HandlerOption {
 // unconditional-mount-then-refuse shape the other management services take.
 func WithListAdminService(s ListAdminService) HandlerOption {
 	return func(o *handlerOptions) { o.listAdmin = s }
+}
+
+// WithEnrollmentService supplies the enrollment service backing the device-grant
+// and mint routes. Without it those routes are mounted but answer 500, the same
+// unconditional-mount-then-refuse shape the other management services take, so
+// the surface is constant and a missing service reads as a broken deployment
+// rather than an absent feature.
+func WithEnrollmentService(s EnrollmentService) HandlerOption {
+	return func(o *handlerOptions) { o.enrollment = s }
+}
+
+// WithTokenService supplies the token-exchange service backing POST /api/v1/token.
+// Without it that route is mounted but answers 500, for the same reason as
+// WithEnrollmentService.
+func WithTokenService(s TokenIssuer) HandlerOption {
+	return func(o *handlerOptions) { o.tokens = s }
 }
 
 // WithAdminIdentifier supplies the administrator identity resolver for the admin
