@@ -75,7 +75,14 @@ const (
 const (
 	refreshTokenPrefix = "svr_"
 	accessTokenPrefix  = "sva_"
-	tokenSeparator     = "."
+	// adminTokenPrefix marks an administrator bearer token (ADR-0031). It is
+	// deliberately a different word from the owner prefixes -- not "svm_" or a
+	// near-neighbor of "sva_" -- so an owner access token presented on the admin
+	// surface is rejected on shape, and so a leaked admin token is recognizable
+	// as the distinct, higher-authority credential it is. It is not a security
+	// control: the signature over a distinct signing key is.
+	adminTokenPrefix = "sadm_"
+	tokenSeparator   = "."
 )
 
 // tokenEncoding is unpadded base64url: URL- and header-safe, and free of the
