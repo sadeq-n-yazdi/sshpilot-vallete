@@ -22,6 +22,7 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/erasure"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/logging"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/postgres"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/sweep"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
@@ -109,7 +110,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	store := sqlite.NewStore(db)
+	store, err := newStore(cfg, db)
+	if err != nil {
+		return err
+	}
 
 	// Bring the stored handle look-alike folds current before anything is built
 	// that could accept a create or rename. This is fail-closed ordering: the
@@ -362,35 +366,74 @@ func newLogger(cfg *config.Config, w io.Writer) (*slog.Logger, error) {
 
 // migrateDatabase applies pending forward migrations to db using the dialect
 // for the configured driver, reusing the same applyMigrations helper the
-// bootstrap subcommand runs. Only forward migrations are applied: nothing here
+// bootstrap subcommands run. Only forward migrations are applied: nothing here
 // reverts, and destructive gating is never enabled.
 //
-// The driver switch mirrors openDatabase: sqlite is the one driver the server
-// can open today, and any other driver fails closed. When openDatabase learns
-// to open Postgres, its matching case (postgres.NewMigrateDB + EnginePostgres)
-// is added here in the one place the wiring lives.
+// The driver switch mirrors openDatabase and newStore: each engine has one case,
+// and any unknown driver fails closed. config.Validate rejects an unknown driver
+// first, so the default here is defense in depth.
 func migrateDatabase(ctx context.Context, cfg *config.Config, db *sql.DB) error {
 	switch cfg.Database.Driver {
 	case "sqlite":
 		return applyMigrations(ctx, sqlite.NewMigrateDB(db), migrate.EngineSQLite)
+	case "postgres":
+		return applyMigrations(ctx, postgres.NewMigrateDB(db), migrate.EnginePostgres)
 	default:
-		return fmt.Errorf("database driver %q is not supported yet", cfg.Database.Driver)
+		return fmt.Errorf("database driver %q is not supported", cfg.Database.Driver)
 	}
 }
 
 // openDatabase opens the configured datastore and verifies it answers before
 // the server starts, so a misconfigured path fails at startup instead of
 // showing up later as a permanently unready instance.
+//
+// The driver switch mirrors migrateDatabase and newStore. The unknown-driver
+// default fails closed; config.Validate rejects it first, so this is defense in
+// depth.
 func openDatabase(cfg *config.Config) (*sql.DB, error) {
-	if cfg.Database.Driver != "sqlite" {
-		return nil, fmt.Errorf("database driver %q is not supported yet", cfg.Database.Driver)
+	switch cfg.Database.Driver {
+	case "sqlite":
+		return openAndPing(sqlite.Open(sqlite.Options{Path: cfg.Database.SQLite.Path}))
+	case "postgres":
+		return openPostgres(cfg)
+	default:
+		return nil, fmt.Errorf("database driver %q is not supported", cfg.Database.Driver)
 	}
+}
 
-	db, err := sqlite.Open(sqlite.Options{Path: cfg.Database.SQLite.Path})
+// openPostgres resolves the DSN secret and opens the pgx-backed handle. The DSN
+// is a secret reference and is resolved here, near the open, rather than in
+// run()'s later resolveSecrets pass -- the same posture accessKeyPepper takes for
+// the pepper it resolves independently in buildServer. The resolved value stays a
+// secrets.Redacted and is revealed only at the postgres.Open call boundary, so no
+// error or log on this path can echo the connection string.
+func openPostgres(cfg *config.Config) (*sql.DB, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), secretResolveTimeout)
+	defer cancel()
+	dsn, err := postgresDSN(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
+	// dsn.Reveal() is passed inline and never bound to a named variable, so the
+	// plaintext connection string cannot reach a later log or error. postgres.Open
+	// itself does not echo the DSN on a parse failure (see its doc), so wrapping
+	// its error below is safe.
+	return openAndPing(postgres.Open(postgres.Options{DSN: dsn.Reveal()}))
+}
 
+// openAndPing verifies an already-opened handle answers within a bounded window
+// so a misconfigured datastore fails at startup rather than at the first request.
+// It takes the (db, err) pair straight from an adapter Open so both driver cases
+// share the one ping-and-close discipline. A ping failure joins the close error
+// so a leaked handle is never masked. The ping error is wrapped with %w only
+// because neither adapter's connect error echoes the secret: sqlite has no
+// credentials, and pgx redacts the DSN password (rendering it "xxxxxx") in every
+// error it produces, so the wrapped text carries only host/user/database
+// diagnostics, never the connection secret.
+func openAndPing(db *sql.DB, openErr error) (*sql.DB, error) {
+	if openErr != nil {
+		return nil, openErr
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
