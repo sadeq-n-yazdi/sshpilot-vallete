@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/audit"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/counter"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/accesskey"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/device"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/keyset"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/listadmin"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publickey"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
@@ -93,27 +98,18 @@ func buildAPIDeps(
 		return nil, nil, err
 	}
 
-	// SEAM: the authenticated management surface is mounted but not yet wired.
+	// The authenticated OWNER management surface (device / public key / key set
+	// services) is wired below, once the access-token signing key resolves; see
+	// mountOwnerManagement. It verifies bearer access tokens through an
+	// *auth.Guard and runs the real owner-scoped services, so the reserved-
+	// identifier policy composed here is enforced on the live create/rename
+	// paths, not only at bootstrap.
 	//
-	// httpserver.NewHandler registers the device, public key and key set
-	// management routes unconditionally, and with no httpserver.WithAuthorizer
-	// below they are guarded by an authorizer that refuses every credential.
-	// That is the intended interim state: the routes exist, they are
-	// documented, and they answer 401 to everyone, so no request is ever served
-	// unauthenticated.
-	//
-	// Completing the wiring needs an *auth.Guard, which needs the token verifier
-	// and the credential denylist, whose storage adapters are still in review
-	// (the auth/pairing adapters). When they land, this call gains
-	//
-	//	httpserver.WithAuthorizer(guard),
-	//	httpserver.WithDeviceService(deviceSvc),
-	//	httpserver.WithPublicKeyService(keySvc),
-	//	httpserver.WithKeySetService(setSvc),
-	//
-	// and nothing else here changes. (This comment moved here with the call it
-	// annotates when the publish gate was wired; the publish-side SEAM it used
-	// to sit beside is resolved.)
+	// Token ISSUANCE (enrollment / device pairing) is a separate track and is NOT
+	// mounted here, so the surface verifies but is not yet reachable end to end by
+	// an external client until that lands. WithAdminIdentifier is left unset on
+	// purpose: no admin authenticator exists yet (a separate ADR), so the admin
+	// list routes stay fail-closed.
 	//
 	// The reserved-identifier policy (ADR-0017, Fb4) is composed ONCE here:
 	// newNamePolicy builds one blocklist.Matcher from the curated defaults, the
@@ -146,31 +142,15 @@ func buildAPIDeps(
 		return nil, nil, fmt.Errorf("list admin service: %w", err)
 	}
 
-	// SEAM: the authenticated management surface (device / public key / key set
-	// services) is still not wired -- it needs the *auth.Guard whose adapters
-	// are in review. When it lands, this call gains
-	//
-	//	httpserver.WithAuthorizer(guard),
-	//	httpserver.WithDeviceService(deviceSvc),
-	//	httpserver.WithPublicKeyService(keySvc),
-	//	httpserver.WithKeySetService(setSvc),
-	//
-	// and setSvc/deviceSvc are built with policy.Guard -- the shared guard is
-	// ready now, so completing that wiring is only "inject policy.Guard here".
-	// Until then keyset/handle/device request services do not exist on this mux;
-	// the guard's enforcement reaches only the bootstrap-owner path (#36 closes
-	// end to end the day those services mount through policy.Guard).
-	//
 	// The admin list routes ARE mounted below via WithListAdminService. Their
 	// administrator identity seam is left at its fail-closed default (no
 	// WithAdminIdentifier): every edit is refused until an admin authenticator
 	// exists, which is a separate decision with its own ADR. Pinned by
-	// TestManagementRoutesFailClosedWithoutAnAuthorizer (owner surface) and
-	// TestAdminListRoutesFailClosedWithoutAnIdentifier (admin surface).
+	// TestAdminListRoutesFailClosedWithoutAnIdentifier.
 	//
 	// counterStore is appended only when the shared backend is configured; a nil
 	// one (the single-node default) leaves the option set unchanged, so the
-	// fail-closed tests above are unaffected.
+	// fail-closed tests are unaffected.
 	opts := []httpserver.HandlerOption{
 		httpserver.WithTelemetry(tel),
 		httpserver.WithListAdminService(listAdmin),
@@ -178,7 +158,184 @@ func buildAPIDeps(
 	if counterStore != nil {
 		opts = append(opts, httpserver.WithCounterStore(counterStore))
 	}
+
+	// The authenticated OWNER management surface. mountOwnerManagement returns
+	// the four options that flip device / public key / key set routes from the
+	// fail-closed 401 stub to real access-token verification plus the real
+	// owner-scoped services -- or none of them when no signing key is configured
+	// (development only), which leaves those routes refusing every credential.
+	// The mount is all-or-nothing; see mountOwnerManagement.
+	ownerOpts, err := mountOwnerManagement(ctx, cfg, logger, store, emitter, policy, counterStore)
+	if err != nil {
+		return nil, nil, err
+	}
+	opts = append(opts, ownerOpts...)
+
 	return publisher, opts, nil
+}
+
+// mountOwnerManagement builds the option set that wires the authenticated owner
+// management surface: the access-token authorizer and the three owner-scoped
+// services behind it. It returns all four options when an adequate signing key
+// resolves, and NONE when the deployment has deliberately selected the
+// signing-key-less development mode.
+//
+// The mount is all-or-nothing on purpose. Wiring the authorizer without the
+// services, or the services without the authorizer, would be a half-open door;
+// the routes are guarded as a unit, so they are wired as a unit.
+//
+// The three outcomes mirror accessKeyPepper exactly, because the failure a
+// missing signing key produces is the same shape: a surface that silently does
+// not work. A reference that is SET but does not resolve is a startup error, not
+// a quiet downgrade to the refuse-everyone stub; a reference UNSET in production
+// is refused (defense in depth over config.Validate); a reference UNSET in
+// development leaves the surface at its fail-closed 401 stub and warns loudly.
+func mountOwnerManagement(
+	ctx context.Context,
+	cfg *config.Config,
+	logger *slog.Logger,
+	store *sqlite.Store,
+	emitter *audit.Emitter,
+	policy *namePolicy,
+	counterStore counter.Store,
+) ([]httpserver.HandlerOption, error) {
+	keyBytes, err := tokenSigningKey(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if keyBytes == "" {
+		// Reachable only outside production (tokenSigningKey refuses an unset
+		// reference there). Warned about at every startup, not once at
+		// configuration time: the symptom -- every owner management call
+		// answering 401 with a token the operator believes is valid -- looks
+		// exactly like a credential fault, and an operator debugging it needs
+		// this line in the log they are already reading.
+		logger.Warn("no access token signing key configured; the owner management API is DISABLED and answers 401 to everyone",
+			slog.String("component", "auth"),
+			slog.String("config_field", "auth.token_signing_key_ref"),
+			slog.String("environment", cfg.Server.Environment),
+		)
+		return nil, nil
+	}
+
+	// Length is auth.NewAccessTokenSigner's ruling (MinSigningKeyLen), not this
+	// function's, so a resolved-but-too-short key surfaces as a returned startup
+	// error rather than a swallowed downgrade -- the same division newPublisher
+	// makes with accesskey.New.
+	signer, err := auth.NewAccessTokenSigner([]byte(keyBytes.Reveal()))
+	if err != nil {
+		// keyBytes is a secrets.Redacted and the signer never echoes key bytes,
+		// so this reports only the length rule and the field to set.
+		return nil, fmt.Errorf("access token signer (auth.token_signing_key_ref): %w", err)
+	}
+
+	// The revocation denylist shares the rate limiter's counter store when a
+	// shared backend is configured (it domain-separates its own keys); on the
+	// single-node default it gets an in-process store, because auth.NewDenylist
+	// refuses a nil one. Note-forward: an in-memory store cannot carry
+	// revocations across a restart or between replicas -- correct now, since no
+	// tokens are issued yet, but it must be revisited when the issuance track
+	// lands.
+	dlStore := counterStore
+	if dlStore == nil {
+		mem, memErr := counter.NewMemoryStore(time.Now)
+		if memErr != nil {
+			return nil, fmt.Errorf("token denylist counter store: %w", memErr)
+		}
+		dlStore = mem
+	}
+	denylist, err := auth.NewDenylist(dlStore)
+	if err != nil {
+		return nil, fmt.Errorf("token denylist: %w", err)
+	}
+	guard, err := auth.NewGuard(signer, denylist)
+	if err != nil {
+		return nil, fmt.Errorf("access token guard: %w", err)
+	}
+
+	// The owner-scoped services. deviceSvc and setSvc take policy.Guard, so the
+	// reserved-identifier policy composed in buildAPIDeps enforces on their live
+	// create/rename paths. keySvc takes no guard: a public key carries no
+	// user-chosen name to blocklist.
+	deviceSvc, err := device.New(store.Repos().Devices, emitter, policy.Guard)
+	if err != nil {
+		return nil, fmt.Errorf("device service: %w", err)
+	}
+	keySvc, err := publickey.New(store.Repos().PublicKeys, store.Repos().Devices, emitter)
+	if err != nil {
+		return nil, fmt.Errorf("public key service: %w", err)
+	}
+	setSvc, err := keyset.New(store, policy.Guard, emitter)
+	if err != nil {
+		return nil, fmt.Errorf("key set service: %w", err)
+	}
+
+	return []httpserver.HandlerOption{
+		httpserver.WithAuthorizer(guard),
+		httpserver.WithDeviceService(deviceSvc),
+		httpserver.WithPublicKeyService(keySvc),
+		httpserver.WithKeySetService(setSvc),
+	}, nil
+}
+
+// tokenSigningKey resolves the symmetric key that signs and verifies every
+// access token, or returns "" when a development deployment has deliberately
+// selected the management-API-disabled mode.
+//
+// It mirrors accessKeyPepper outcome for outcome, and for the same reasons:
+// there is no config literal, no default, and above all no generated-if-missing
+// fallback. A generated key would be the worst option -- every restart would
+// silently invalidate every access token while the server reported a clean
+// start, exactly the anti-pattern accessKeyPepper's own doc names.
+//
+// The three outcomes:
+//
+//   - reference set, resolves -> that value. Whether it is long enough is
+//     auth.NewAccessTokenSigner's ruling, so the one length rule lives next to
+//     the HMAC that depends on it.
+//   - reference set, does not resolve -> error. An operator who named a
+//     reference asked for a verifying management API; a missing environment
+//     variable or unreadable file is a deployment fault, and continuing would
+//     answer it by quietly leaving the surface refusing everyone.
+//   - reference unset -> "" in development, error in production. Production is
+//     refused (config.Validate enforces it too; this is defense in depth so a
+//     future entry point cannot reintroduce the disabled mode). Development is
+//     permitted so a checkout runs with no secret material, and it warns loudly
+//     (see mountOwnerManagement).
+//
+// The value is a secrets.Redacted throughout, so a log line or error that
+// reached it prints a marker rather than the key.
+func tokenSigningKey(ctx context.Context, cfg *config.Config) (secrets.Redacted, error) {
+	ref := cfg.Auth.TokenSigningKeyRef
+	if ref.IsZero() {
+		if cfg.Server.Environment == "production" {
+			// Checked here as well as in config.Validate on purpose, matching
+			// accessKeyPepper: this path must not depend on some caller having
+			// validated first, or a second entry point added later would
+			// silently reintroduce the disabled management API in production.
+			return "", errors.New("auth.token_signing_key_ref is required in production: " +
+				"without it no access token verifies and the owner management API answers 401 to everyone")
+		}
+		return "", nil
+	}
+
+	// The file provider's permission posture follows the environment, the same
+	// split accessKeyPepper makes: production refuses a world-readable signing
+	// key file, because a key any local account can read must be treated as
+	// already copied.
+	permMode := secrets.PermError
+	if cfg.Server.Environment != "production" {
+		permMode = secrets.PermWarn
+	}
+	resolver, err := secrets.NewResolver(secrets.Builtin(secrets.FileOptions{PermMode: permMode})...)
+	if err != nil {
+		return "", err
+	}
+	key, err := resolver.Resolve(ctx, ref)
+	if err != nil {
+		return "", fmt.Errorf("auth.token_signing_key_ref: %w", err)
+	}
+	return key, nil
 }
 
 // newPublisher builds the publish service, wiring the access key verifier that
