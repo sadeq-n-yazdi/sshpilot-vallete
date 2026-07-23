@@ -358,7 +358,7 @@ func TestUnsupportedProviderIsRefused(t *testing.T) {
 	// the two shapes that must never be accepted: the empty name, and a
 	// correct name in the wrong case. Matching is exact, so "CLOUDFLARE" and
 	// "ROUTE53" are refusals rather than case-insensitive hits.
-	for _, name := range []string{"godaddy", "rfc2136", "", "CLOUDFLARE", "ROUTE53"} {
+	for _, name := range []string{"nonexistent", "", "CLOUDFLARE", "ROUTE53"} {
 		if _, err := NewAPIProvider(name, NewSingleCredential(secrets.NewRedacted(testToken)), nil); !errors.Is(err, ErrUnsupportedProvider) {
 			t.Errorf("NewAPIProvider(%q) = %v, want ErrUnsupportedProvider", name, err)
 		}
