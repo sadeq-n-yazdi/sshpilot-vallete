@@ -229,26 +229,37 @@ func TestRunnerKeepsSweepingAfterAFailedPass(t *testing.T) {
 func TestRunnerDoesNotPassWhenStartedCanceled(t *testing.T) {
 	t.Parallel()
 
-	var calls atomic.Int64
-	r := newTestRunner(t)
-	if err := r.AddJob(Job{
-		Name:     "counter",
-		Interval: time.Millisecond,
-		Run: func(context.Context) error {
-			calls.Add(1)
-			return nil
-		},
-	}); err != nil {
-		t.Fatalf("AddJob: %v", err)
-	}
+	// The failure this pins is a scheduling race: once the immediate pass is
+	// skipped, the run loop selects between ctx.Done() and a ready timer, and
+	// when both are ready select chooses between them at random. A one-tick
+	// interval makes the timer ready before the loop reaches its select, so
+	// both branches are ready on every iteration -- turning a rare race into a
+	// near-certain one. Without the context re-check in the timer branch a
+	// removed guard then surfaces within a handful of the iterations below; a
+	// single run could step over it.
+	const iterations = 500
+	for i := 0; i < iterations; i++ {
+		var calls atomic.Int64
+		r := newTestRunner(t)
+		if err := r.AddJob(Job{
+			Name:     "counter",
+			Interval: time.Nanosecond,
+			Run: func(context.Context) error {
+				calls.Add(1)
+				return nil
+			},
+		}); err != nil {
+			t.Fatalf("AddJob: %v", err)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	join := r.Start(ctx)
-	join()
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		join := r.Start(ctx)
+		join()
 
-	if got := calls.Load(); got != 0 {
-		t.Errorf("an already-canceled Runner ran %d passes, want 0", got)
+		if got := calls.Load(); got != 0 {
+			t.Fatalf("iteration %d: an already-canceled Runner ran %d passes, want 0", i, got)
+		}
 	}
 }
 
