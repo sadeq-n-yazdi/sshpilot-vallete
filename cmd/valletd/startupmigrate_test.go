@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
@@ -113,7 +114,11 @@ func TestMigrateDatabaseFailsClosedWhenSchemaCannotApply(t *testing.T) {
 
 // TestMigrateDatabaseRejectsUnsupportedDriver pins the fail-closed default of
 // the driver switch: a driver the server cannot open is a startup error, never
-// a silent skip of migrations.
+// a silent skip of migrations. The example driver is a genuinely-unknown one
+// ("mysql"): postgres is now a supported engine, so using it here would exercise
+// a supported branch and stop pinning the default. The error must name the
+// offending driver, which is what distinguishes the fail-closed default from a
+// migration that ran and failed for some other reason.
 func TestMigrateDatabaseRejectsUnsupportedDriver(t *testing.T) {
 	cfg := sqliteConfig(t)
 	db, err := openDatabase(cfg)
@@ -122,8 +127,12 @@ func TestMigrateDatabaseRejectsUnsupportedDriver(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	cfg.Database.Driver = "postgres"
-	if err := migrateDatabase(context.Background(), cfg, db); err == nil {
+	cfg.Database.Driver = "mysql"
+	err = migrateDatabase(context.Background(), cfg, db)
+	if err == nil {
 		t.Fatal("migrateDatabase with an unsupported driver returned nil, want fail-closed error")
+	}
+	if !strings.Contains(err.Error(), "mysql") || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("migrateDatabase error = %q, want the fail-closed default naming the driver", err)
 	}
 }

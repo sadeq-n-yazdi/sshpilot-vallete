@@ -19,7 +19,6 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/listadmin"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publickey"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
 	httpserver "github.com/sadeq-n-yazdi/sshpilot-vallete/internal/transport/http"
 )
@@ -41,7 +40,7 @@ func buildServer(
 	cfg *config.Config,
 	logger *slog.Logger,
 	db *sql.DB,
-	store *sqlite.Store,
+	store datastore,
 	tel *telemetry.Provider,
 	counterStore counter.Store,
 ) (*httpserver.Server, error) {
@@ -69,7 +68,7 @@ func buildUpstreamServer(
 	cfg *config.Config,
 	logger *slog.Logger,
 	db *sql.DB,
-	store *sqlite.Store,
+	store datastore,
 	tel *telemetry.Provider,
 	counterStore counter.Store,
 ) (*httpserver.UpstreamServer, error) {
@@ -89,7 +88,7 @@ func buildAPIDeps(
 	ctx context.Context,
 	cfg *config.Config,
 	logger *slog.Logger,
-	store *sqlite.Store,
+	store datastore,
 	tel *telemetry.Provider,
 	counterStore counter.Store,
 ) (*publish.Service, []httpserver.HandlerOption, error) {
@@ -211,7 +210,7 @@ func mountOwnerManagement(
 	ctx context.Context,
 	cfg *config.Config,
 	logger *slog.Logger,
-	store *sqlite.Store,
+	store datastore,
 	emitter *audit.Emitter,
 	policy *namePolicy,
 	counterStore counter.Store,
@@ -467,7 +466,7 @@ func adminTokenSigningKey(ctx context.Context, cfg *config.Config) (secrets.Reda
 // ever allowed to select -- an inadequate pepper selects a startup failure
 // instead, because a digest keyed by a weak or empty key is one nothing
 // downstream would ever notice was weak.
-func newPublisher(ctx context.Context, cfg *config.Config, logger *slog.Logger, store *sqlite.Store) (*publish.Service, error) {
+func newPublisher(ctx context.Context, cfg *config.Config, logger *slog.Logger, store datastore) (*publish.Service, error) {
 	pepper, err := accessKeyPepper(ctx, cfg)
 	if err != nil {
 		return nil, err

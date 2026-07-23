@@ -12,8 +12,6 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/config"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/domain"
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/migrate"
-	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/storage/sqlite"
 )
 
 // bootstrapAdminCmd is the subcommand name that seeds a first administrator and
@@ -93,10 +91,13 @@ func runBootstrapAdmin(args []string, stdout, stderr io.Writer) error {
 	}
 	defer func() { _ = db.Close() }()
 
-	if err := applyMigrations(ctx, sqlite.NewMigrateDB(db), migrate.EngineSQLite); err != nil {
+	if err := migrateDatabase(ctx, cfg, db); err != nil {
 		return err
 	}
-	store := sqlite.NewStore(db)
+	store, err := newStore(cfg, db)
+	if err != nil {
+		return err
+	}
 
 	// The service supplies a fully-populated, already-minted entity; the
 	// repository persists exactly what it is given (CLAUDE.md). The id is random
