@@ -87,6 +87,7 @@ func upstreamConfig() Config {
 	c.TLS.Mode = "upstream"
 	c.TLS.Upstream.ListenAddr = "127.0.0.1:8080"
 	c.Auth.TokenSigningKeyRef = "env:VALLET_SIGNING_KEY"
+	c.Auth.AdminTokenSigningKeyRef = "env:VALLET_ADMIN_SIGNING_KEY"
 	c.Auth.AccessKeyPepperRef = "env:VALLET_ACCESS_KEY_PEPPER"
 	return c
 }

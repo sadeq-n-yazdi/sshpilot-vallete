@@ -285,6 +285,25 @@ type AuthConfig struct {
 	RefreshTokenMaxAge Duration    `yaml:"refresh_token_max_age"`
 	TokenSigningKeyRef secrets.Ref `yaml:"token_signing_key_ref"`
 
+	// AdminTokenSigningKeyRef references the symmetric key that signs and
+	// verifies administrator bearer tokens (ADR-0031). It is a DIFFERENT key
+	// from TokenSigningKeyRef, and that separation is the point: it enforces
+	// ADR-0018's "owner tokens can never grant administrator authority"
+	// cryptographically, so an owner-token signing-key compromise cannot forge
+	// an administrator token. It must resolve to at least auth.MinSigningKeyLen
+	// (32) bytes; a shorter or unresolvable value is a startup failure, never a
+	// downgrade.
+	//
+	// It is required in production for the same reason TokenSigningKeyRef is: the
+	// admin list-edit routes are always mounted, so a production deployment with
+	// no admin key answers 403 to every administrator with no complaint, which is
+	// the silent failure the validator exists to prevent. Left empty in
+	// development the admin API stays disabled (every edit 403), the same
+	// fail-closed development mode the owner management API takes. No generated
+	// default is ever synthesized: a per-restart key would silently invalidate
+	// every administrator token while reporting a clean start.
+	AdminTokenSigningKeyRef secrets.Ref `yaml:"admin_token_signing_key_ref"`
+
 	// AccessKeyPepperRef references the HMAC pepper that keys the stored digest
 	// of every key-set access key (ADR-0016). It must resolve to at least
 	// accesskey.MinPepperLen (32) bytes; a shorter or unresolvable value is a

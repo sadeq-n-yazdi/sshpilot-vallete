@@ -161,6 +161,21 @@ auth:
   refresh_token_max_age: 90d
   # Required in production. e.g. env:VALLET_TOKEN_SIGNING_KEY
   token_signing_key_ref: ""
+  # Signs and verifies administrator bearer tokens (ADR-0031). This is a
+  # DIFFERENT key from token_signing_key_ref above, and the separation is the
+  # point: it enforces "owner tokens can never grant administrator authority"
+  # (ADR-0018) cryptographically, so an owner-key compromise cannot forge an
+  # administrator token. Must resolve to at least 32 bytes.
+  #
+  #   openssl rand -hex 32   ->   store it, then reference it here
+  #
+  # Required in production: the admin list-edit routes are always mounted, so a
+  # deployment with no admin key answers 403 to every administrator with no
+  # complaint. Left empty in development the admin API stays disabled (every
+  # edit 403). No generated default is ever synthesized -- a per-restart key
+  # would silently invalidate every administrator token. Mint the first admin
+  # and a token with the bootstrap-admin subcommand. e.g. env:VALLET_ADMIN_TOKEN_SIGNING_KEY
+  admin_token_signing_key_ref: ""
   # HMAC pepper keying the stored digest of every key-set access key.
   # Must resolve to at least 32 bytes; a shorter or unresolvable value refuses
   # startup rather than weakening the digests.

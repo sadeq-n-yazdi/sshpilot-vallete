@@ -22,6 +22,9 @@ func TestRequiredSecretRefsGating(t *testing.T) {
 	if _, ok := got["auth.token_signing_key_ref"]; !ok {
 		t.Error("production should require signing key ref")
 	}
+	if _, ok := got["auth.admin_token_signing_key_ref"]; !ok {
+		t.Error("production should require admin signing key ref")
+	}
 	// acme with tls_alpn_01 does NOT need dns creds.
 	if _, ok := got["tls.acme.dns.credentials_ref"]; ok {
 		t.Error("tls_alpn_01 must not require dns creds")
@@ -84,8 +87,9 @@ func TestRequiredSecretRefsOptionalWhenUnset(t *testing.T) {
 
 func TestResolveRequiredSecrets(t *testing.T) {
 	t.Setenv("VALLET_SIGNING_KEY", "the-signing-secret")
+	t.Setenv("VALLET_ADMIN_SIGNING_KEY", "the-admin-signing-secret")
 	t.Setenv("VALLET_ACCESS_KEY_PEPPER", "0123456789abcdef0123456789abcdef")
-	c := validConfig() // production: the signing key and the access key pepper
+	c := validConfig() // production: signing key, admin signing key, access key pepper
 
 	resolver, err := secrets.NewResolver(secrets.Builtin(secrets.FileOptions{})...)
 	if err != nil {
@@ -99,11 +103,14 @@ func TestResolveRequiredSecrets(t *testing.T) {
 	for _, r := range resolved {
 		got[r.Field] = r.Value.Reveal()
 	}
-	if len(got) != 2 {
-		t.Fatalf("resolved %d secrets, want 2: %v", len(got), resolved)
+	if len(got) != 3 {
+		t.Fatalf("resolved %d secrets, want 3: %v", len(got), resolved)
 	}
 	if got["auth.token_signing_key_ref"] != "the-signing-secret" {
 		t.Errorf("signing key not resolved correctly")
+	}
+	if got["auth.admin_token_signing_key_ref"] != "the-admin-signing-secret" {
+		t.Errorf("admin signing key not resolved correctly")
 	}
 	if got["auth.access_key_pepper_ref"] != "0123456789abcdef0123456789abcdef" {
 		t.Errorf("access key pepper not resolved correctly")

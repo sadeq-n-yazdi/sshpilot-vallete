@@ -164,6 +164,7 @@ func bindings() []binding {
 		{"VALLET_AUTH_ACCESS_TOKEN_TTL", setDuration(func(c *Config) *Duration { return &c.Auth.AccessTokenTTL })},
 		{"VALLET_AUTH_REFRESH_TOKEN_MAX_AGE", setDuration(func(c *Config) *Duration { return &c.Auth.RefreshTokenMaxAge })},
 		{"VALLET_AUTH_TOKEN_SIGNING_KEY_REF", setRef(func(c *Config) *secrets.Ref { return &c.Auth.TokenSigningKeyRef })},
+		{"VALLET_AUTH_ADMIN_TOKEN_SIGNING_KEY_REF", setRef(func(c *Config) *secrets.Ref { return &c.Auth.AdminTokenSigningKeyRef })},
 		{"VALLET_AUTH_ACCESS_KEY_PEPPER_REF", setRef(func(c *Config) *secrets.Ref { return &c.Auth.AccessKeyPepperRef })},
 		{"VALLET_AUTH_ACCESS_KEY_GRACE_WINDOW", setDuration(func(c *Config) *Duration { return &c.Auth.AccessKeyGraceWindow })},
 		{"VALLET_AUTH_PROVIDERS_API_TOKEN_ENABLED", setBool(func(c *Config) *bool { return &c.Auth.Providers.APIToken.Enabled })},

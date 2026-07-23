@@ -465,6 +465,13 @@ func (c *Config) validateAuth(v *validator, prod bool) {
 	if prod && a.TokenSigningKeyRef.IsZero() {
 		v.add("auth.token_signing_key_ref", "required in production")
 	}
+	// The admin signing key is required in production for the same reason the
+	// owner one is (ADR-0031): the admin list-edit routes are always mounted, so
+	// without it every administrator is refused with no complaint. Development is
+	// allowed the disabled mode so a checkout runs with no secret material.
+	if prod && a.AdminTokenSigningKeyRef.IsZero() {
+		v.add("auth.admin_token_signing_key_ref", "required in production")
+	}
 	// Without a pepper no access key can be verified, so every protected key set
 	// answers 404 to everyone. That is safe but it is also silent, and a
 	// production deployment that believes it is serving protected sets and is
@@ -846,6 +853,7 @@ func (c *Config) allRefs() []refField {
 		{"tls.cloudflare_origin.api_token_ref", c.TLS.CloudflareOrigin.APITokenRef},
 		{"database.postgres.dsn_ref", c.Database.Postgres.DSNRef},
 		{"auth.token_signing_key_ref", c.Auth.TokenSigningKeyRef},
+		{"auth.admin_token_signing_key_ref", c.Auth.AdminTokenSigningKeyRef},
 		{"auth.access_key_pepper_ref", c.Auth.AccessKeyPepperRef},
 		{"rate_limit.shared.password_ref", c.RateLimit.Shared.PasswordRef},
 		{"telemetry.metrics.otlp.headers_ref", c.Telemetry.Metrics.OTLP.HeadersRef},
