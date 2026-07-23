@@ -90,12 +90,18 @@ services:
       - ALL
 
   # ---------------------------------------------------------------------------
-  # FORWARD-LOOKING, OPT-IN. Postgres is a documented second engine, but the
-  # server's openDatabase/migrateDatabase currently REFUSE any driver != sqlite
-  # ("database driver ... is not supported yet"). So this service is DB-only
-  # scaffolding — it is deliberately NOT wired into valletd. If you point
-  # VALLET_DATABASE_DRIVER=postgres at it today, valletd will CRASH ON STARTUP,
-  # not run degraded. Enable with: `docker compose --profile postgres up`.
+  # OPT-IN second engine. valletd speaks PostgreSQL as well as SQLite. The
+  # server-side wiring (openDatabase/migrateDatabase honouring a non-sqlite
+  # driver) is added by PR #121 (feat/wire-postgres-composition-root). With that
+  # wiring in place, point valletd at this service by setting, in the valletd
+  # `environment:` block above:
+  #     VALLET_DATABASE_DRIVER: postgres
+  #     VALLET_DATABASE_POSTGRES_DSN_REF: file:/run/secrets/pg_dsn
+  # The DSN is a secret, so the ref is a `scheme:opaque` pointer (e.g. a mounted
+  # file or an env var), never the raw connection string in this file. Until the
+  # #121 wiring is present, driver=postgres is refused at startup, so on this
+  # branch alone the service is still DB-only. Bring the database up on its own
+  # with: `docker compose --profile postgres up`.
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:17
