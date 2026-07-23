@@ -19,6 +19,77 @@ mark an entry done (or delete it) once the work lands.
 
 ---
 
+## Container image signing and SLSA provenance
+
+### Header
+Sign the published `valletd` container image and emit SLSA build provenance, so
+a consumer can verify an image was built from this repository by this pipeline
+and was not tampered with in the registry.
+
+### Description
+This is the **unfinished tail of a Phase-1 decision**, not a new idea: decision
+**#33 / ADR-0027** commits to "pinned deps + CI vuln scanning + SBOM +
+signed/reproducible artifacts **& images** (SLSA-style provenance)." The
+dependency pinning, `govulncheck` gate, CycloneDX SBOM, and reproducible-binary
+build all ship in CI today, and the production image now **builds** on every push
+and PR (`docker` job, PRs #120/#123) — but that image is **built-only, never
+pushed and never signed**. The remaining work is the publish-and-attest step:
+push the image to a registry and attach a cryptographic signature plus
+build-provenance attestation so `#33`'s "& images" clause is actually satisfied.
+
+It sits here rather than in the active queue only because it is **blocked on
+owner decisions** (registry, tag scheme, signing identity), and a
+`release: published` push/sign job cannot be meaningfully exercised by a pull
+request — so it belongs in a release workflow as its own change once those
+choices are made.
+
+### How-to
+0. **Owner decisions first (the actual blockers):**
+   - **Registry** — e.g. GHCR (`ghcr.io/sadeq-n-yazdi/...`) vs Docker Hub vs a
+     private registry.
+   - **Tag scheme** — `vX.Y.Z` release tags, `sha-<commit>`, `latest` policy.
+   - **Signing identity** — keyless OIDC (cosign + Fulcio/Rekor, no long-lived
+     key) vs a managed key in the secret provider. Keyless is the low-ops
+     default and needs no secret material.
+1. **Add a publish + sign job to `release.yml`** (not `ci.yml`), gated on
+   `release: published` (or a tag push) so it runs only on real releases and is
+   never triggered by a fork PR. Reuse the exact multi-stage `Dockerfile` and
+   build args the existing `docker` CI job already validates — do not fork the
+   build.
+2. **Push, then sign, then attest**, in that order:
+   - `cosign sign` the pushed image digest (keyless: `id-token: write`
+     permission on the job; the OIDC identity becomes the verifiable subject).
+   - Attach the **SBOM** already produced by `make sbom` as an attestation
+     (`cosign attest --type cyclonedx`), so the SBOM travels with the image.
+   - Emit **SLSA provenance** — either the GitHub-native
+     `actions/attest-build-provenance` or the SLSA generator — recording the
+     source repo, commit, and builder identity.
+3. **SHA-pin every new third-party action** (cosign-installer, attest, SLSA
+   generator) per ADR-0027 — the whole point of #33 is a vetted, pinned action
+   set; adding unpinned tags here would contradict the decision it completes.
+4. **Least privilege**: scope `packages: write` / `id-token: write` to the one
+   publish job; the fork-safe build job keeps `contents: read` only.
+5. **Document verification** — the `cosign verify` / `gh attestation verify`
+   incantation a consumer runs, in the install docs, so the signature is usable
+   rather than decorative.
+
+### Notes
+- Completes decision **#33** / **ADR-0027**; the image *build* half is done
+  (PRs #120, #123), this is the *publish + sign + provenance* half.
+- Deliberately deferred at build time: PR #123's `docker` job is **build-only,
+  fork-safe** (no registry credential, image loaded locally) precisely because
+  pushing/signing needs the decisions above and cannot be exercised by a PR.
+- ADR-0027 leaves registry/tag/signing-identity choices to the operator, so this
+  cannot be pre-decided in code — it is genuinely owner-gated, not just unbuilt.
+- Prefer **keyless (Sigstore/Fulcio/Rekor)** signing to avoid holding a signing
+  key; if a key is chosen instead it must live in the pluggable secret provider
+  (ADR-0022), never in the repo or CI plaintext.
+- Do not weaken the existing fork-safe `ci.yml` `docker` job; this is an
+  *additional* release-only job, mirroring how the helper artifact is signed on
+  release (ADR-0013).
+
+---
+
 ## mTLS administrator authentication
 
 ### Header
