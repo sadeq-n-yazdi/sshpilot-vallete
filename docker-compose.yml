@@ -1,0 +1,130 @@
+# docker-compose for valletd.
+#
+# Two things to understand before you `up`:
+#
+#   1. valletd is HTTPS-only and fail-closed. The default service below runs in
+#      DEVELOPMENT mode with tls.mode=self_signed so it boots with zero secrets
+#      for a local smoke test. Production (environment=production) refuses
+#      self-signed TLS and requires an https public_base_url plus a token
+#      signing key — see the commented `# --- PRODUCTION ---` block.
+#
+#   2. Secrets are NEVER put in this file. Config `*_ref` values are references
+#      of the form `scheme:opaque` (e.g. file:/run/secrets/token_key), and the
+#      real secret is mounted at that path or provided via an env var the ref
+#      names. Placeholders below show the shape; fill them via an .env file
+#      (see .env.example) or mounted files under ./secrets.
+
+services:
+  valletd:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Pass a real version for release images: VERSION=$(git describe --tags)
+        VERSION: ${VALLET_VERSION:-0.0.0-dev}
+    image: valletd:local
+    restart: unless-stopped
+    ports:
+      # HTTPS API. No plaintext port exists by design.
+      - "8443:8443"
+    environment:
+      # --- DEV DEFAULTS: boots with no secrets, self-signed TLS -------------
+      VALLET_SERVER_ENVIRONMENT: development
+      VALLET_SERVER_LISTEN_ADDR: ":8443"
+      VALLET_TLS_MODE: self_signed
+      VALLET_DATABASE_DRIVER: sqlite
+      VALLET_DATABASE_SQLITE_PATH: /data/vallet.db
+      VALLET_TELEMETRY_LOG_FORMAT: json
+      VALLET_TELEMETRY_LOG_LEVEL: info
+
+      # --- PRODUCTION (uncomment + set; remove the dev block above) ---------
+      # VALLET_SERVER_ENVIRONMENT: production
+      # VALLET_SERVER_PUBLIC_BASE_URL: https://ssh-id.example.com
+      # Token signing key: the ref names WHERE to read the secret, never the
+      # secret itself. Here it points at a mounted file (see `secrets:` below).
+      # VALLET_AUTH_TOKEN_SIGNING_KEY_REF: file:/run/secrets/token_signing_key
+      # VALLET_AUTH_ACCESS_KEY_PEPPER_REF: file:/run/secrets/access_key_pepper
+      #
+      # Pick ONE TLS mode:
+      #   acme (publicly-trusted, recommended for a directly-reachable origin):
+      # VALLET_TLS_MODE: acme
+      # VALLET_TLS_DOMAIN: ssh-id.example.com
+      # VALLET_TLS_ACME_SOLVER: tls_alpn_01
+      # VALLET_TLS_ACME_ACCEPT_TOS: "true"
+      # VALLET_TLS_ACME_CONTACT_EMAIL: ops@example.com
+      # VALLET_TLS_ACME_CACHE_DIR: /data/acme        # persisted on the volume
+      #   manual (bring your own cert + key, mounted read-only):
+      # VALLET_TLS_MODE: manual
+      # VALLET_TLS_MANUAL_CERT_FILE: /certs/tls.crt
+      # VALLET_TLS_MANUAL_KEY_FILE: /certs/tls.key
+
+    volumes:
+      # Persistent SQLite database (and any on-disk cert/ACME cache under /data).
+      - vallet-data:/data
+      # Mount TLS material read-only for manual mode (uncomment with the block
+      # above). Never bake certs/keys into the image.
+      # - ./certs:/certs:ro
+
+    # Production secrets via Docker secrets → mounted at /run/secrets/<name>,
+    # matched by the file: refs above. Uncomment together with the production
+    # env block. Do NOT inline secret values anywhere in this file.
+    # secrets:
+    #   - token_signing_key
+    #   - access_key_pepper
+
+    # HEALTHCHECK is defined in the image (a static HTTPS /healthz probe that
+    # tolerates the self-signed cert). It is repeated here only to document the
+    # knobs; remove if you rely solely on the image's HEALTHCHECK.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+    # Harden the runtime: the image is already non-root; also drop the ability
+    # to escalate. valletd needs no extra Linux capabilities.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # ---------------------------------------------------------------------------
+  # FORWARD-LOOKING, OPT-IN. Postgres is a documented second engine, but the
+  # server's openDatabase/migrateDatabase currently REFUSE any driver != sqlite
+  # ("database driver ... is not supported yet"). So this service is DB-only
+  # scaffolding — it is deliberately NOT wired into valletd. If you point
+  # VALLET_DATABASE_DRIVER=postgres at it today, valletd will CRASH ON STARTUP,
+  # not run degraded. Enable with: `docker compose --profile postgres up`.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17
+    profiles: ["postgres"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vallet
+      POSTGRES_DB: vallet
+      # Provide the password via .env (POSTGRES_PASSWORD) — never hard-code it.
+      # Left empty by default so the primary (sqlite) stack is unaffected; the
+      # postgres image refuses to start with an empty password, which is the
+      # intended clear failure if you enable this profile without a value set.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - vallet-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vallet -d vallet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  vallet-data:
+  vallet-pg:
+
+# Uncomment alongside the production secrets block above. Each source file holds
+# ONE secret value and stays out of version control (see .dockerignore).
+# secrets:
+#   token_signing_key:
+#     file: ./secrets/token_signing_key
+#   access_key_pepper:
+#     file: ./secrets/access_key_pepper
