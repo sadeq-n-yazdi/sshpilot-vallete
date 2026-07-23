@@ -173,3 +173,35 @@ func TestNewLoggerRedactsByDefault(t *testing.T) {
 		t.Errorf("default format must be JSON (ADR-0025), got: %s", out)
 	}
 }
+
+// TestWarnUnimplementedOnboardingModeConsumesTheMode proves run() actually reads
+// onboarding.mode (ADR-0033): "open" produces a visible warning that the mode is
+// not implemented, and every other value -- "invite", the default, included --
+// stays silent. Without this, the one stated "consume onboarding.mode"
+// requirement would have no test and a refactor could silently drop the branch.
+func TestWarnUnimplementedOnboardingModeConsumesTheMode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		mode     string
+		wantWarn bool
+	}{
+		{"open warns", "open", true},
+		{"invite is quiet", "invite", false},
+		{"empty is quiet", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs syncBuffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			cfg := config.Default()
+			cfg.Onboarding.Mode = tc.mode
+
+			warnUnimplementedOnboardingMode(&cfg, logger)
+
+			out := logs.String()
+			warned := strings.Contains(out, "onboarding.mode") && strings.Contains(out, "not implemented")
+			if warned != tc.wantWarn {
+				t.Fatalf("mode %q: warned = %v, want %v; log = %q", tc.mode, warned, tc.wantWarn, out)
+			}
+		})
+	}
+}
