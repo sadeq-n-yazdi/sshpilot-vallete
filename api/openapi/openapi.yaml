@@ -159,6 +159,14 @@ tags:
       owner carried by the bearer token. Creating and listing address the
       account; renaming and deleting address one set, so a set-bound token
       reaches only the set it was issued for.
+  - name: enrollment
+    description: |
+      Enrollment and token issuance (ADR-0032, ADR-0018 modes 1 and 2). An
+      unauthenticated client starts, polls, and redeems a device-authorization
+      grant, or exchanges a refresh token; an authenticated owner mints a
+      credential or approves a pending device grant. Every credential-check
+      endpoint is metered by the AUTH tier and answers a rejection as one
+      indistinguishable status. Mode 3 (in-client interactive/OIDC) is deferred.
   - name: admin
     description: |
       Instance administration of the reserved-identifier lists (ADR-0017, Fb4).
@@ -1083,6 +1091,238 @@ paths:
           $ref: "#/components/responses/AdminEntryNotFound"
         "500":
           $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/enroll/device:
+    post:
+      tags: [enrollment]
+      operationId: startDeviceGrant
+      summary: Start a device-authorization grant (mode 1).
+      description: |
+        Opens a pending pairing for an unauthenticated client and returns the
+        device code the client keeps and the short user code its human operator
+        transcribes into an authenticated session to approve it (ADR-0032,
+        ADR-0018 mode 1).
+
+        This endpoint is deliberately unauthenticated: the caller has not yet
+        proven to be anybody, and the pairing is unusable until an owner approves
+        it. It carries no owner field — there is no owner yet — and an
+        unrecognized field is refused rather than ignored.
+
+        It is metered by the AUTH tier keyed on the client IP so an address
+        already locked out for spraying the redeem endpoint cannot open fresh
+        pairings here either; a successful start is not counted as a failure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantRequest"
+            example:
+              client_label: "ci runner"
+              scopes: [{ kind: full_owner }]
+      responses:
+        "201":
+          $ref: "#/components/responses/GrantIssued"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/enroll/poll:
+    post:
+      tags: [enrollment]
+      operationId: pollDeviceGrant
+      summary: Poll a pending device grant for approval.
+      description: |
+        Reports whether the pairing the presented device code identifies has been
+        approved yet: `200` approved, `202` still pending, `401` refused. The
+        client already holds the pairing's own 256-bit device code, so telling it
+        "keep waiting" from "give up" reveals nothing it does not already have,
+        and a device-authorization client cannot function without the
+        distinction.
+
+        Unauthenticated and metered by the AUTH tier keyed on the client IP. The
+        device code is unguessable and the service throttles poll cadence per
+        code, so a poll is not counted as a credential-guess failure; the IP
+        lockout earned on the minting endpoints still applies.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceCodeRequest"
+            example:
+              device_code: "b0f3…redeemable-256-bit-code"
+      responses:
+        "200":
+          $ref: "#/components/responses/EnrollApproved"
+        "202":
+          $ref: "#/components/responses/EnrollPending"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/EnrollRejected"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/enroll/redeem:
+    post:
+      tags: [enrollment]
+      operationId: redeemDeviceGrant
+      summary: Redeem an approved device grant for the first credential pair.
+      description: |
+        Exchanges an approved device code for the pairing's first refresh and
+        access tokens, disclosed exactly once in the response body.
+
+        Unauthenticated and metered by the full AUTH-tier pattern keyed on the
+        client IP: the check runs before the service call, a genuine rejection
+        climbs the backoff curve, and a correct redemption clears the count. An
+        unknown, expired, unapproved, or already-redeemed code is one
+        indistinguishable `401`, so a redeemer learns nothing about which. A
+        malformed body is a `400` and is not counted — a parse failure is not a
+        credential guess.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceCodeRequest"
+            example:
+              device_code: "b0f3…approved-256-bit-code"
+      responses:
+        "200":
+          $ref: "#/components/responses/CredentialIssued"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/EnrollRejected"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/enroll/mint:
+    post:
+      tags: [enrollment]
+      operationId: mintCredential
+      summary: Mint a credential for the token owner (mode 2).
+      description: |
+        Mints a fresh pairing already approved for the bearer token's owner and
+        returns its device code (mode 2, the manual-paste flow: ADR-0032,
+        ADR-0018). The user code is empty and omitted — the mint IS the approval,
+        so there is nothing for an operator to transcribe.
+
+        The owner is the verified token's and nothing in the request body reaches
+        it (ADR-0004). It requires a token that permits mutation and is not bound
+        to a single resource: enrollment is an account-wide act.
+
+        It carries no AUTH-tier failure counter of its own — it verifies no
+        guessable secret — and runs behind the per-credential management tier like
+        the device routes.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantRequest"
+            example:
+              client_label: "backup host"
+              scopes: [{ kind: full_owner }]
+      responses:
+        "201":
+          $ref: "#/components/responses/GrantIssued"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/enroll/approve:
+    post:
+      tags: [enrollment]
+      operationId: approveDeviceGrant
+      summary: Approve a pending device grant for the token owner (mode 1).
+      description: |
+        Binds a pending pairing to the bearer token's owner on the strength of the
+        short user code the operator transcribed from the pairing client.
+
+        The owner is the verified token's (ADR-0004); the request carries only the
+        user code. It requires a token that permits mutation and is not bound to a
+        single resource. An unknown code, an expired or already-approved pairing,
+        and an exhausted attempt budget are one indistinguishable `403`, so an
+        owner cannot confirm a hit on another pairing's code; the bearer already
+        passed authorization, so a refusal is `403` (the action is refused) rather
+        than `401` (which would wrongly invite a token refresh).
+
+        It is metered by the AUTH tier keyed on the VERIFIED OWNER, not the client
+        IP: the user code is the ~40-bit secret this surface protects, so guessing
+        is bounded independently of IP rotation and behind an authenticated
+        identity, with exponential backoff layered over the service's own flat
+        per-pairing attempt cap.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveRequest"
+            example:
+              user_code: "WDGH-6RTF"
+      responses:
+        "204":
+          $ref: "#/components/responses/PairingApproved"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/token:
+    post:
+      tags: [enrollment]
+      operationId: exchangeToken
+      summary: Exchange a refresh token for a fresh credential pair.
+      description: |
+        Rotates a refresh token single-use and mints a fresh access token,
+        disclosed once in the response body (ADR-0032, ADR-0018 reuse-theft
+        detection). A replayed refresh token additionally revokes its whole
+        lineage inside the service, but the wire response is the same
+        indistinguishable `401` as any other rejection, so a replayer cannot tell
+        a live lineage it just burned from a dead one.
+
+        Unauthenticated — the refresh token is itself the credential — and metered
+        by the full AUTH-tier pattern keyed on the client IP. It is the sibling of
+        the redeem endpoint and shares that IP key space, so a campaign that sprays
+        one is throttled on the other. A malformed body is a `400` and is not
+        counted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExchangeRequest"
+            example:
+              refresh_token: "5d1c…single-use-refresh-token"
+      responses:
+        "200":
+          $ref: "#/components/responses/CredentialIssued"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/EnrollRejected"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
 components:
   securitySchemes:
     bearerAuth:
@@ -1868,6 +2108,107 @@ components:
           schema:
             type: string
           example: "internal server error\n"
+    GrantIssued:
+      description: |
+        A pairing was opened (device-grant start) or minted (mode 2). The body is
+        the one and only disclosure of its device code, and — for the device-grant
+        flow — the short user code an operator transcribes to approve it. On the
+        mint path there is no user code and the field is omitted.
+
+        These are secrets in transit: the response is not cacheable and the values
+        appear nowhere else, so a client that loses them starts a new pairing
+        rather than re-reading these.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GrantResponse"
+    CredentialIssued:
+      description: |
+        A credential pair was issued (redeem) or rotated (exchange). The body is
+        the one-time disclosure of the fresh refresh and access tokens; on the
+        exchange path the previous refresh token is now spent.
+
+        These are bearer secrets, so the response is not cacheable and the tokens
+        appear nowhere else.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/IssuedCredential"
+    EnrollApproved:
+      description: The polled pairing has been approved and is ready to redeem.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/EnrollStatus"
+          example: { status: approved }
+    EnrollPending:
+      description: |
+        The polled pairing exists and is still awaiting an owner's approval. The
+        client should keep polling no faster than the interval the grant reported.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/EnrollStatus"
+          example: { status: pending }
+    PairingApproved:
+      description: |
+        The pairing was bound to the token owner. No body: the poll and redeem
+        endpoints carry the result the client acts on.
+      headers:
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+    EnrollRejected:
+      description: |
+        The presented device or refresh token was not accepted — unknown, expired,
+        revoked, unapproved, or already spent. The cases are one indistinguishable
+        answer, so a caller learns nothing about which.
+
+        Unlike the management surface's `401` this carries no `WWW-Authenticate`
+        challenge: the credential is a device/refresh token in the body, not a
+        bearer header, so there is no scheme to challenge and nothing to erase.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    RateLimited:
+      description: |
+        The AUTH tier refused the request: the caller's key (client IP, or the
+        verified owner on the approval route) has exhausted its budget or is in
+        backoff, the counter store was unavailable and the tier fails closed, or
+        the client address could not be resolved. The body names no count, limit,
+        or tier — that would be a calibration oracle for pacing a slower campaign.
+      headers:
+        Retry-After:
+          description: |
+            Seconds until the caller's window resets, rounded up. Derived from the
+            actual remaining life of the window, not a constant.
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
   schemas:
     Status:
       type: object
@@ -2223,4 +2564,147 @@ components:
           description: |
             A fixed string naming which ingest rule the submission broke. It
             never contains any part of the submission.
+      additionalProperties: false
+    Scope:
+      type: object
+      description: |
+        One capability a credential asks for or carries. The field names are the
+        domain's own vocabulary so the wire contract cannot drift from the model
+        it serializes. `resource_id` is present only for a resource-bound kind and
+        omitted otherwise.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          description: The scope kind, e.g. `full_owner`, `key_set`, or `device`.
+        resource_id:
+          type: string
+          description: The opaque id of the bound resource, for a resource-bound kind.
+      additionalProperties: false
+    GrantRequest:
+      type: object
+      description: |
+        A request to open a device-authorization grant or to mint a credential.
+        It carries a short client label and the scopes the pairing asks for, and
+        deliberately NO owner: on the mint path the owner is the verified token's,
+        and on the device-grant path there is no owner yet. An owner field here
+        would be the one change that turned the owner boundary into a
+        client-supplied value, so the strict decoder refuses any unknown field.
+      required: [client_label, scopes]
+      properties:
+        client_label:
+          type: string
+          description: A short human label for the pairing, for an owner to recognize it by.
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+      additionalProperties: false
+    ApproveRequest:
+      type: object
+      description: |
+        The short user code an owner transcribed from a pairing client, and
+        nothing else. There is no owner field: the owner is the verified token's.
+      required: [user_code]
+      properties:
+        user_code:
+          type: string
+          description: The short code the device-grant start disclosed to its operator.
+      additionalProperties: false
+    DeviceCodeRequest:
+      type: object
+      description: |
+        The 256-bit device code a pairing client holds, presented to poll or
+        redeem the pairing. It is the pairing's own secret, so it is the whole
+        body and the strict decoder refuses any companion field.
+      required: [device_code]
+      properties:
+        device_code:
+          type: string
+          description: The device code the grant disclosed to this client.
+      additionalProperties: false
+    ExchangeRequest:
+      type: object
+      description: |
+        The refresh token to rotate. Its single field is the secret, and the
+        strict decoder refuses any companion field — there is nothing else a
+        caller may assert here.
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          description: The current refresh token, spent single-use by a successful exchange.
+      additionalProperties: false
+    EnrollStatus:
+      type: object
+      description: |
+        The poll outcome for a pending pairing. `approved` (also `200`) means the
+        pairing may now be redeemed; `pending` (also `202`) means keep waiting. A
+        refusal is a `401` carrying the uniform Error body, not this schema.
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [approved, pending]
+      additionalProperties: false
+    GrantResponse:
+      type: object
+      description: |
+        The one-time disclosure of a pairing's codes. The secrets appear here and
+        nowhere else; a client that loses them starts a new pairing. `user_code`
+        is present for a device-grant start and omitted for a mint, where the mint
+        itself is the approval.
+      required: [pairing_id, device_code, expires_at, poll_interval_seconds]
+      properties:
+        pairing_id:
+          type: string
+          description: The pairing's opaque, non-secret identifier.
+        device_code:
+          type: string
+          description: The 256-bit code the client keeps and presents to poll and redeem.
+        user_code:
+          type: string
+          description: The short code an operator transcribes to approve; omitted on a mint.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the pairing expires if it is not redeemed.
+        poll_interval_seconds:
+          type: integer
+          minimum: 0
+          description: The minimum seconds a client should wait between polls.
+      additionalProperties: false
+    IssuedCredential:
+      type: object
+      description: |
+        The one-time disclosure of a freshly issued or rotated credential pair.
+        The refresh and access tokens are bearer secrets that appear here and
+        nowhere else.
+      required:
+        - refresh_token
+        - refresh_expires_at
+        - access_token
+        - access_expires_at
+        - owner_id
+        - scopes
+      properties:
+        refresh_token:
+          type: string
+          description: The refresh token, spent single-use by a future exchange.
+        refresh_expires_at:
+          type: string
+          format: date-time
+        access_token:
+          type: string
+          description: The short-lived access token presented as a bearer credential.
+        access_expires_at:
+          type: string
+          format: date-time
+        owner_id:
+          type: string
+          description: The owner the credential authenticates as.
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
       additionalProperties: false
