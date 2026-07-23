@@ -65,6 +65,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) > 0 && args[0] == bootstrapOwnerCmd {
 		return runBootstrapOwner(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == bootstrapAdminCmd {
+		return runBootstrapAdmin(args[1:], stdout, stderr)
+	}
 
 	fs := flag.NewFlagSet("valletd", flag.ContinueOnError)
 	fs.SetOutput(stderr)
