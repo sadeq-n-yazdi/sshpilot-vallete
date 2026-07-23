@@ -54,6 +54,7 @@ func TestAPIProvidersRejectBlankCredential(t *testing.T) {
 		{"digitalocean", ErrDigitalOceanAPI},
 		{"dnsimple", ErrDNSimpleAPI},
 		{"gandi", ErrGandiAPI},
+		{"godaddy", ErrGoDaddyAPI},
 		{"arvancloud", ErrArvanCloudAPI},
 	}
 
@@ -138,6 +139,7 @@ func TestAPIProvidersAcceptCredentialWithSurroundingWhitespace(t *testing.T) {
 		{"digitalocean", "  do-token  "},
 		{"dnsimple", "  ds-token  "},
 		{"gandi", "  gandi-token  "},
+		{"godaddy", "  gd-key:gd-secret  "},
 		{"arvancloud", "  arvan-key  "},
 	}
 

@@ -19,8 +19,8 @@ this program holds, so two rules apply to every provider below:
 Providers that authenticate with a **single value** (Cloudflare, DigitalOcean,
 DNSimple, Gandi, ArvanCloud) use `credentials_ref`.
 
-Providers that need **several named values** — currently Route 53 — use
-`credentials_refs`, a map from a credential name to its own reference:
+Providers that need **several named values** — currently Route 53 and GoDaddy —
+use `credentials_refs`, a map from a credential name to its own reference:
 
 ```yaml
 tls:
@@ -350,6 +350,109 @@ Give DNS-01 its own token rather than reusing one, store it in the secret
 provider, and rotate it if it is ever exposed. If your threat model cannot accept
 an organization-wide credential on this host, use a provider whose API supports
 finer scoping, or run DNS-01 in `manual` mode.
+
+---
+
+## GoDaddy
+
+GoDaddy needs **two values** — an API key and its matching secret — issued from
+*Developer Portal → API Keys* (create a **Production** key, not an OTE/test key).
+They are presented together as `Authorization: sso-key <KEY>:<SECRET>`.
+
+### Credential format
+
+The preferred form is the named `credentials_refs` map, with `api_key` and
+`api_secret` as separate references:
+
+```yaml
+tls:
+  acme:
+    dns:
+      mode: api
+      provider: godaddy
+      credentials_refs:
+        api_key: env:VALLET_DNS_GODADDY_KEY
+        api_secret: env:VALLET_DNS_GODADDY_SECRET
+```
+
+For back-compatibility with the single-value seam the two values may instead be
+supplied as one `credentials_ref` with the halves packed by a colon:
+
+```
+dLDeEgWA8Mnw_46Kmr6dqBFRmqTuavXZfpU:46Kmr6dqBFRmqTuavXZfpU
+```
+
+Either form works. With the named map, supply both `api_key` and `api_secret`;
+supplying only one is refused (it is a configuration mistake, not a packed value
+to split). With the packed single reference, both halves must be present and
+non-empty. A GoDaddy key or secret never contains a colon — the `sso-key` header
+itself joins them with one — so the pack is unambiguous. In both forms a
+malformed value is refused at startup rather than at the first renewal, and
+surrounding whitespace and a trailing newline are tolerated, so a file-backed
+secret works without special handling.
+
+### The scope is coarse
+
+GoDaddy's API keys are **account-wide**. There is no way to narrow one to a
+single domain, record type, or record name, so a key that can edit DNS can edit
+every domain in the account. That is a limit of the API, not something this code
+can close, and none of the safety below comes from the key:
+
+- The program only ever removes a TXT **value it published itself**, matched
+  exactly. GoDaddy addresses records by (name, type) — a *set* of values — so on
+  cleanup the program reads the current set, writes back every other value
+  unchanged, and deletes the set outright **only** when its own value was the
+  last one in it. It therefore cannot remove a record it did not create,
+  including your own TXT record at the same name, and including the second
+  challenge of a wildcard certificate, which sits at the same name with a
+  different digest. That is a property of *this program*, not a limit the key
+  enforces.
+- Anything else holding the same key is unconstrained by any of that.
+
+GoDaddy also gates the DNS API behind account requirements (historically a
+minimum number of domains or a paid tier); a key that is not entitled is refused
+with a `403` at the first lookup rather than silently walking past it. Give
+DNS-01 its own key rather than reusing one, store it in the secret provider, and
+rotate it if it is ever exposed. If your threat model cannot accept an
+account-wide credential on this host, use a provider whose API supports scoping,
+or run DNS-01 in `manual` mode.
+
+### Domains: what will be refused
+
+The program picks the domain rather than trusting configuration, and it fails
+loudly instead of guessing:
+
+- **The most specific domain wins.** If you hold both `example.com` and a
+  delegated `eu.example.com`, a name under the latter is written there. Writing
+  to the parent would put the record in a zone that is not authoritative for the
+  name.
+- **No matching domain is an error.** The name being validated must sit under a
+  domain in the account. `GET /v1/domains/{domain}` answers `404` for a domain
+  absent from the account, which is the only status treated as "try the parent";
+  a rejected or under-privileged key (`401`/`403`) or a server error is surfaced
+  rather than swallowed as a miss. Guessing would write the challenge somewhere
+  the CA never queries, and issuance would fail ten minutes later with a message
+  about DNS rather than about your account.
+- **There is no ambiguity to resolve.** A domain name is the API's own path key,
+  so an account cannot hold two domains with the same name — unlike Route 53,
+  where duplicate hosted zones are possible and are refused.
+
+Record names are stored **relative** to the domain (the apex is `@`), and the
+program computes that split itself; a name that does not sit inside the resolved
+domain is refused rather than written. Sending the fully qualified name would
+create the record at `_acme-challenge.example.com.example.com`, which the API
+accepts and no CA ever queries. The challenge TTL is set to GoDaddy's floor of
+**600 seconds** — GoDaddy rejects a lower value — and an existing record set's
+own TTL is preserved when the program merges a challenge into it.
+
+The API base is fixed at `https://api.godaddy.com/v1` and is never configurable —
+a settable endpoint would be a way to point this zone-editing key at another
+host. The program does not poll GoDaddy for the change to be applied. The solver
+already waits until every authoritative nameserver for the zone serves the value,
+which is a strictly stronger condition.
+
+---
+
 ## ArvanCloud
 
 Set `credentials_ref` to an ArvanCloud **API key**, issued from *Machine User →

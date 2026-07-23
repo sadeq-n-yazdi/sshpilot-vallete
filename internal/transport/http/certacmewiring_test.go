@@ -199,7 +199,7 @@ func TestUnsupportedDNSProviderIsRefused(t *testing.T) {
 	cfg.TLS.ACME.DNS.Mode = "api"
 	// Must name a provider still absent from the compiled switch in
 	// dns01.NewAPIProvider; update this when the named one lands.
-	cfg.TLS.ACME.DNS.Provider = "godaddy"
+	cfg.TLS.ACME.DNS.Provider = "namecheap"
 	cfg.TLS.ACME.DNS.CredentialsRef = "env:VALLET_TEST_DNS_TOKEN"
 
 	_, err := newDNSProvider(t.Context(), cfg, nil)

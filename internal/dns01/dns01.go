@@ -151,6 +151,8 @@ func NewAPIProvider(name string, creds Credentials, client *http.Client) (Provid
 		return NewDNSimple(creds, client)
 	case "gandi":
 		return NewGandi(creds, client)
+	case "godaddy":
+		return NewGoDaddy(creds, client)
 	case "arvancloud":
 		return NewArvanCloud(creds, client)
 	default:
