@@ -63,12 +63,19 @@ const DefaultSetName = "default"
 // record.
 const DefaultClientLabel = "owner-enrollment"
 
-// Minter mints a one-time enrollment credential for an owner. It is the seam
-// onto auth.EnrollmentService.Mint, declared here at the point of use so this
+// Minter mints a one-time enrollment credential for an owner through a
+// caller-supplied, transaction-bound repos handle. It is the seam onto
+// auth.EnrollmentService.MintInto, declared here at the point of use so this
 // package depends on the capability rather than on the enrollment service's
 // concrete type.
+//
+// The transaction-bound variant (not standalone Mint) is deliberate: it lets the
+// mint join the owner-create transaction so the owner and its enrollment
+// credential either both commit or both roll back. A mint that ran after the
+// owner-create commit could strand an owner with a claimed handle and no way to
+// enroll, and there is no API path to re-issue a credential for an existing owner.
 type Minter interface {
-	Mint(ctx context.Context, ownerID domain.OwnerID, clientLabel string, scopes []domain.Scope) (*auth.Grant, error)
+	MintInto(ctx context.Context, r repository.Repos, ownerID domain.OwnerID, clientLabel string, scopes []domain.Scope) (*auth.Grant, error)
 }
 
 // Auditor appends an audit record to a transaction-bound sink. It is the seam
@@ -220,6 +227,15 @@ func (s *Service) ProvisionOwner(ctx context.Context, actor domain.Administrator
 	}
 	handleID := domain.HandleID(newID())
 	keySetID := domain.KeySetID(newID())
+	clientLabel := req.ClientLabel
+	if clientLabel == "" {
+		clientLabel = DefaultClientLabel
+	}
+
+	// grant is filled inside the transaction and read after it commits. It is
+	// captured here so the mint can join the same unit of work as the owner it is
+	// for -- see the mint step at the end of the closure.
+	var grant *auth.Grant
 
 	err := s.store.WithTx(ctx, func(ctx context.Context, r repository.Repos) error {
 		if err := r.Owners.Create(ctx, &domain.Owner{
@@ -274,28 +290,31 @@ func (s *Service) ProvisionOwner(ctx context.Context, actor domain.Administrator
 		}); err != nil {
 			return fmt.Errorf("audit owner created: %w", err)
 		}
+
+		// Mint the one-time enrollment credential INSIDE this transaction, through
+		// the same repos handle. Full-owner scope: the redeemed tokens must let the
+		// owner manage their own resources. Because the mint joins the owner-create
+		// unit of work, a mint failure rolls the owner, handle, key set and audit
+		// record back with it -- no owner can be left with a claimed handle and no
+		// way to enroll. The link is written after the owner row exists in-tx, so
+		// the LinkedIdentity's owner reference resolves.
+		g, err := s.minter.MintInto(ctx, r, res.OwnerID, clientLabel, []domain.Scope{{Kind: domain.ScopeFullOwner}})
+		if err != nil {
+			return fmt.Errorf("mint enrollment credential: %w", err)
+		}
+		if g == nil {
+			// A nil grant with no error would be a minter contract violation.
+			// Refuse -- and roll the whole provision back -- rather than commit an
+			// owner with an empty code it could never redeem.
+			return fmt.Errorf("minter returned no grant: %w", domain.ErrInvalidInput)
+		}
+		grant = g
 		return nil
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("onboarding: %w", err)
 	}
 
-	// Mint the one-time enrollment credential for the owner. Full-owner scope:
-	// the redeemed tokens must let the owner manage their own resources. This
-	// runs in the enrollment service's own transaction, after the owner exists.
-	clientLabel := req.ClientLabel
-	if clientLabel == "" {
-		clientLabel = DefaultClientLabel
-	}
-	grant, err := s.minter.Mint(ctx, res.OwnerID, clientLabel, []domain.Scope{{Kind: domain.ScopeFullOwner}})
-	if err != nil {
-		return Result{}, fmt.Errorf("onboarding: mint enrollment credential: %w", err)
-	}
-	if grant == nil {
-		// A nil grant with no error would be a minter contract violation.
-		// Refuse rather than return an empty code the owner could never redeem.
-		return Result{}, fmt.Errorf("onboarding: minter returned no grant: %w", domain.ErrInvalidInput)
-	}
 	res.EnrollmentCode = grant.DeviceCode
 	res.ExpiresAt = grant.ExpiresAt
 	res.PairingID = grant.PairingID
