@@ -79,6 +79,28 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 		logger.LogAttrs(context.Background(), slog.LevelError,
 			"rate limit: management tier not mounted", slog.String("error", err.Error()))
 	}
+	// The AUTH tier's two limiters. Unlike the tiers above they have no disabled
+	// state (newAuthLimiter falls back to in-process counters rather than nil):
+	// they are the only brute-force defense on the credential-check endpoints, so
+	// a build failure here leaves them nil and the handlers refuse (fail closed)
+	// rather than serve an unmetered guessing oracle. The IP-keyed one guards the
+	// un-guarded minting endpoints (redeem, exchange) and gates start/poll; the
+	// owner-keyed one guards approval, where the ~40-bit user code must be bounded
+	// independently of IP rotation (ADR-0032).
+	authIPLimiter, err := newAuthLimiter(cfg, limitStore, authTierIP, logger)
+	if err != nil {
+		authIPLimiter = nil
+		logger.LogAttrs(context.Background(), slog.LevelError,
+			"rate limit: auth ip tier unavailable; credential-minting routes will refuse",
+			slog.String("error", err.Error()))
+	}
+	authOwnerLimiter, err := newAuthLimiter(cfg, limitStore, authTierApprove, logger)
+	if err != nil {
+		authOwnerLimiter = nil
+		logger.LogAttrs(context.Background(), slog.LevelError,
+			"rate limit: auth owner tier unavailable; approval route will refuse",
+			slog.String("error", err.Error()))
+	}
 
 	mux := http.NewServeMux()
 	// Method-qualified patterns mean a POST to /healthz is answered with 405
@@ -179,19 +201,45 @@ func NewHandler(cfg *config.Config, logger *slog.Logger, pinger Pinger, publishe
 	// site: dropping mgmt from any one of them fails that route's rate-limit
 	// test rather than only the suite's first.
 	//
-	// Not mounted, because the routes do not exist yet: the AUTH tier
-	// (ratelimit.AuthLimiter, which is failure-counting with backoff and is
-	// driven by an auth handler around the credential check rather than mounted
-	// as a limiter at all) and the ADMIN tier. There is no login, enrollment or
-	// instance-administration route on this mux to attach either to; inventing
-	// one to hang a limiter on would be a larger security decision than the
-	// limiter itself. Both are wired the day their routes land.
+	// The AUTH tier is now mounted: its routes have landed (the enrollment and
+	// token-exchange surface below, ADR-0032). It is not a middleware -- the
+	// AuthLimiter is failure-counting with backoff and must be driven by the
+	// handler around the credential check so a correct credential does not climb
+	// the same curve as a guess -- so it is threaded into those handlers rather
+	// than wrapped here; see enrollment.go and token.go. The ADMIN tier remains
+	// unmounted: no instance-administration authenticator exists yet to key it on.
 	guardian := managementGuardian(o.authorizer, logger)
 	mgmt := managementRateLimit(managementLimiter, logger)
 	mux.Handle("POST /api/v1/devices", guardian.Protect(AccountAccess, mgmt(registerDeviceHandler(o.devices, logger))))
 	mux.Handle("GET /api/v1/devices", guardian.Protect(AccountAccess, mgmt(listDevicesHandler(o.devices, logger))))
 	mux.Handle("DELETE /api/v1/devices/{deviceID}",
 		guardian.Protect(DeviceAccess, mgmt(revokeDeviceHandler(o.devices, logger))))
+
+	// The enrollment and token-issuance surface (ADR-0032, modes 1 and 2).
+	//
+	// Three of these are deliberately UN-guarded: an unauthenticated client
+	// starts a device grant, polls it, and redeems it, so they are plain handlers
+	// that carry the AUTH tier keyed by client IP inside themselves. The proxy
+	// trust list is the same one the publish tier uses, so an X-Forwarded-For is
+	// believed only from a configured proxy. Redeem and exchange are the
+	// credential-minting checks and carry the full failure-counting pattern;
+	// start and poll only consult the shared IP lockout.
+	proxies := newTrustedPeers(trustedProxies(cfg))
+	mux.Handle("POST /api/v1/enroll/device", startDeviceGrantHandler(o.enrollment, authIPLimiter, proxies, logger))
+	mux.Handle("POST /api/v1/enroll/poll", pollHandler(o.enrollment, authIPLimiter, proxies, logger))
+	mux.Handle("POST /api/v1/enroll/redeem", redeemHandler(o.enrollment, authIPLimiter, proxies, logger))
+	mux.Handle("POST /api/v1/token", exchangeHandler(o.tokens, authIPLimiter, proxies, nil, logger))
+
+	// Mint and approve are owner actions, so they go through the Guardian (which
+	// hands them the verified owner) and the management tier, exactly like the
+	// device routes. Approve additionally carries the owner-keyed AUTH limiter for
+	// the user-code oracle; mint verifies no guessable secret and needs none.
+	// Both declare AccountAccess: enrollment is an account-wide act, so a
+	// resource-bound token must not reach it.
+	mux.Handle("POST /api/v1/enroll/mint",
+		guardian.Protect(AccountAccess, mgmt(mintHandler(o.enrollment, logger))))
+	mux.Handle("POST /api/v1/enroll/approve",
+		guardian.Protect(AccountAccess, mgmt(approveHandler(o.enrollment, authOwnerLimiter, logger))))
 
 	// The public key routes all declare AccountAccess, including the one that
 	// addresses a single key by id. That is not an oversight: auth.ResourceKind

@@ -104,10 +104,12 @@ func buildAPIDeps(
 	// identifier policy composed here is enforced on the live create/rename
 	// paths, not only at bootstrap.
 	//
-	// Token ISSUANCE (enrollment / device pairing) is a separate track and is NOT
-	// mounted here, so the surface verifies but is not yet reachable end to end by
-	// an external client until that lands. The ADMINISTRATOR surface, by contrast,
-	// IS wired end to end below (mountAdminIdentifier, ADR-0031): once the admin
+	// Token ISSUANCE (enrollment / device pairing, ADR-0032 modes 1 and 2) is
+	// wired alongside the authorizer in mountOwnerManagement: the same access-token
+	// signing key that verifies bearer tokens also gates issuing them, so the
+	// enrollment and token-exchange routes come up exactly when the owner surface
+	// does and share its one revocation denylist. The ADMINISTRATOR surface is
+	// wired end to end below (mountAdminIdentifier, ADR-0031): once the admin
 	// signing key resolves the admin list routes verify a bootstrap-admin token,
 	// and without it they stay fail-closed.
 	//
@@ -191,10 +193,11 @@ func buildAPIDeps(
 }
 
 // mountOwnerManagement builds the option set that wires the authenticated owner
-// management surface: the access-token authorizer and the three owner-scoped
-// services behind it. It returns all four options when an adequate signing key
-// resolves, and NONE when the deployment has deliberately selected the
-// signing-key-less development mode.
+// management surface: the access-token authorizer, the three owner-scoped
+// services behind it, and the enrollment and token-exchange services that issue
+// the credentials it verifies (ADR-0032). It returns all six options when an
+// adequate signing key resolves, and NONE when the deployment has deliberately
+// selected the signing-key-less development mode.
 //
 // The mount is all-or-nothing on purpose. Wiring the authorizer without the
 // services, or the services without the authorizer, would be a half-open door;
@@ -248,10 +251,15 @@ func mountOwnerManagement(
 	// The revocation denylist shares the rate limiter's counter store when a
 	// shared backend is configured (it domain-separates its own keys); on the
 	// single-node default it gets an in-process store, because auth.NewDenylist
-	// refuses a nil one. Note-forward: an in-memory store cannot carry
-	// revocations across a restart or between replicas -- correct now, since no
-	// tokens are issued yet, but it must be revisited when the issuance track
-	// lands.
+	// refuses a nil one. This ONE denylist is threaded into the owner Guard, the
+	// token service, and the enrollment service below, so a revocation any of them
+	// records is a refusal all of them honor.
+	//
+	// Durability now matters: the issuance track has landed, so revocations are
+	// real. An in-memory store cannot carry them across a restart or between
+	// replicas, which means a multi-node deployment MUST configure the shared
+	// counter store -- otherwise a token revoked on one replica stays live on the
+	// others until it expires. The single-node default is correct for one process.
 	dlStore := counterStore
 	if dlStore == nil {
 		mem, memErr := counter.NewMemoryStore(time.Now)
@@ -267,6 +275,44 @@ func mountOwnerManagement(
 	guard, err := auth.NewGuard(signer, denylist)
 	if err != nil {
 		return nil, fmt.Errorf("access token guard: %w", err)
+	}
+
+	// The token-issuance and enrollment services (ADR-0032, modes 1 and 2). They
+	// SHARE the one denylist built above with the owner Guard: a revocation the
+	// token service records on a replayed lineage, and one the enrollment service
+	// records when a device is unpaired, must be the same set the Guard consults
+	// when it verifies an access token. Handing either a second denylist would
+	// compile and pass every happy-path flow while silently letting a revoked
+	// lineage's access tokens live out their fifteen minutes -- the exact failure
+	// the shared counter store exists to prevent -- so the sharing is threaded
+	// explicitly here rather than left to construction order.
+	tokenSvc, err := auth.NewTokenService(store, signer, denylist)
+	if err != nil {
+		return nil, fmt.Errorf("token service: %w", err)
+	}
+	// The device-code provider authenticates a redeemed device code against its
+	// pending pairing; the enrollment service's Redeem resolves an owner through
+	// it. It is the only provider registered -- mode 3 (interactive/OIDC) is
+	// deferred by ADR-0032, so no external identity provider is wired.
+	apiProvider, err := auth.NewAPITokenProvider(store.Repos().DevicePairings, time.Now)
+	if err != nil {
+		return nil, fmt.Errorf("device code provider: %w", err)
+	}
+	registry, err := auth.NewRegistry(apiProvider)
+	if err != nil {
+		return nil, fmt.Errorf("auth provider registry: %w", err)
+	}
+	authenticator, err := auth.NewAuthenticator(registry, store.Repos().LinkedIdentities, store.Repos().Owners)
+	if err != nil {
+		return nil, fmt.Errorf("authenticator: %w", err)
+	}
+	// The enrollment limiter shares dlStore, the same counter backend the denylist
+	// uses, so the service's flat per-owner approval cap lives in the same
+	// durability domain as the revocations -- both cross a restart together on the
+	// shared backend, and both are per-instance together on the single-node default.
+	enrollSvc, err := auth.NewEnrollmentService(store, authenticator, tokenSvc, denylist, dlStore, time.Now)
+	if err != nil {
+		return nil, fmt.Errorf("enrollment service: %w", err)
 	}
 
 	// The owner-scoped services. deviceSvc and setSvc take policy.Guard, so the
@@ -291,6 +337,8 @@ func mountOwnerManagement(
 		httpserver.WithDeviceService(deviceSvc),
 		httpserver.WithPublicKeyService(keySvc),
 		httpserver.WithKeySetService(setSvc),
+		httpserver.WithEnrollmentService(enrollSvc),
+		httpserver.WithTokenService(tokenSvc),
 	}, nil
 }
 
