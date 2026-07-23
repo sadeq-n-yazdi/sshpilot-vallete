@@ -22,8 +22,10 @@ The pieces an admin-provisioned path needs already existed, unconnected:
 - **Administrator authority.** ADR-0031 gave administrators a signed bearer
   token on a **dedicated** signing key and an `AdminIdentifier` transport seam,
   with the real authorization being the `Admins.Get → status == Active` check
-  (a validly-signed token for a disabled admin is refused). Owner tokens can
-  never carry admin authority (ADR-0018).
+  (a validly-signed token for a disabled admin is refused). Administrator
+  authentication is one of the pluggable management-auth identities of ADR-0009,
+  kept on its own signing key so owner tokens can never carry admin authority
+  (ADR-0018).
 - **First-credential issuance.** ADR-0032 wired the enrollment/token surface.
   `auth.EnrollmentService.Mint(ownerID, label, scopes)` creates a **pre-approved**
   device pairing bound to an owner and returns a `Grant` whose `DeviceCode` is a
