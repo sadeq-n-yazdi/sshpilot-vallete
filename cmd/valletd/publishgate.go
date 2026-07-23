@@ -107,9 +107,10 @@ func buildAPIDeps(
 	//
 	// Token ISSUANCE (enrollment / device pairing) is a separate track and is NOT
 	// mounted here, so the surface verifies but is not yet reachable end to end by
-	// an external client until that lands. WithAdminIdentifier is left unset on
-	// purpose: no admin authenticator exists yet (a separate ADR), so the admin
-	// list routes stay fail-closed.
+	// an external client until that lands. The ADMINISTRATOR surface, by contrast,
+	// IS wired end to end below (mountAdminIdentifier, ADR-0031): once the admin
+	// signing key resolves the admin list routes verify a bootstrap-admin token,
+	// and without it they stay fail-closed.
 	//
 	// The reserved-identifier policy (ADR-0017, Fb4) is composed ONCE here:
 	// newNamePolicy builds one blocklist.Matcher from the curated defaults, the
@@ -142,11 +143,12 @@ func buildAPIDeps(
 		return nil, nil, fmt.Errorf("list admin service: %w", err)
 	}
 
-	// The admin list routes ARE mounted below via WithListAdminService. Their
-	// administrator identity seam is left at its fail-closed default (no
-	// WithAdminIdentifier): every edit is refused until an admin authenticator
-	// exists, which is a separate decision with its own ADR. Pinned by
-	// TestAdminListRoutesFailClosedWithoutAnIdentifier.
+	// The admin list routes are mounted via WithListAdminService, and their
+	// administrator identity is wired by mountAdminIdentifier below (ADR-0031):
+	// an adequate admin signing key builds the verifier and closes the seam; an
+	// absent one leaves the routes at their fail-closed default (denyAllAdmin-
+	// Identifier), so every edit is refused. The mount is all-or-nothing, the
+	// same shape mountOwnerManagement takes.
 	//
 	// counterStore is appended only when the shared backend is configured; a nil
 	// one (the single-node default) leaves the option set unchanged, so the
@@ -170,6 +172,21 @@ func buildAPIDeps(
 		return nil, nil, err
 	}
 	opts = append(opts, ownerOpts...)
+
+	// The administrator authenticator. Like mountOwnerManagement it returns the
+	// option that flips the admin list routes from the fail-closed stub to real
+	// token verification -- or none when no admin signing key is configured
+	// (development only), which leaves those routes refusing every credential.
+	//
+	// It is resolved AFTER mountOwnerManagement on purpose: buildAPIDeps fails on
+	// the first missing required secret, and keeping the owner key ahead of the
+	// admin key means a production deployment missing the owner key still reports
+	// that first, rather than being masked by the admin refusal.
+	adminOpts, err := mountAdminIdentifier(ctx, cfg, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	opts = append(opts, adminOpts...)
 
 	return publisher, opts, nil
 }
@@ -334,6 +351,109 @@ func tokenSigningKey(ctx context.Context, cfg *config.Config) (secrets.Redacted,
 	key, err := resolver.Resolve(ctx, ref)
 	if err != nil {
 		return "", fmt.Errorf("auth.token_signing_key_ref: %w", err)
+	}
+	return key, nil
+}
+
+// mountAdminIdentifier builds the option that wires the administrator
+// authenticator behind the admin list-edit routes (ADR-0031). It returns the
+// WithAdminIdentifier option when an adequate admin signing key resolves, and
+// NONE when the deployment has deliberately selected the signing-key-less
+// development mode.
+//
+// The mount is all-or-nothing, mirroring mountOwnerManagement exactly: with a
+// key the routes verify a bootstrap-admin token; without one they stay at the
+// fail-closed denyAllAdminIdentifier stub and every edit is refused. There is
+// no half state -- the identifier is the whole authentication of this surface,
+// so it is present or the surface is dark.
+func mountAdminIdentifier(ctx context.Context, cfg *config.Config, logger *slog.Logger) ([]httpserver.HandlerOption, error) {
+	keyBytes, err := adminTokenSigningKey(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if keyBytes == "" {
+		// Reachable only outside production (adminTokenSigningKey refuses an unset
+		// reference there). Warned about at every startup, not once at
+		// configuration time: the symptom -- every administrator edit answering 403
+		// with a token the operator believes is valid -- looks exactly like a
+		// credential fault, and an operator debugging it needs this line in the log
+		// they are already reading.
+		logger.Warn("no admin token signing key configured; the administrator API is DISABLED and answers 403 to everyone",
+			slog.String("component", "auth"),
+			slog.String("config_field", "auth.admin_token_signing_key_ref"),
+			slog.String("environment", cfg.Server.Environment),
+		)
+		return nil, nil
+	}
+
+	// Length is auth.NewAdminTokenSigner's ruling (MinSigningKeyLen), not this
+	// function's, so a resolved-but-too-short key surfaces as a returned startup
+	// error rather than a swallowed downgrade -- the same division
+	// mountOwnerManagement makes with auth.NewAccessTokenSigner.
+	signer, err := auth.NewAdminTokenSigner([]byte(keyBytes.Reveal()))
+	if err != nil {
+		// keyBytes is a secrets.Redacted and the signer never echoes key bytes, so
+		// this reports only the length rule and the field to set.
+		return nil, fmt.Errorf("admin token signer (auth.admin_token_signing_key_ref): %w", err)
+	}
+
+	id := httpserver.NewSignedAdminIdentifier(signer, time.Now)
+	return []httpserver.HandlerOption{httpserver.WithAdminIdentifier(id)}, nil
+}
+
+// adminTokenSigningKey resolves the symmetric key that signs and verifies every
+// administrator bearer token, or returns "" when a development deployment has
+// deliberately selected the admin-API-disabled mode.
+//
+// It mirrors tokenSigningKey outcome for outcome, and for the same reasons:
+// there is no config literal, no default, and above all no generated-if-missing
+// fallback. A generated key would silently invalidate every administrator token
+// on every restart while the server reported a clean start.
+//
+// The three outcomes:
+//
+//   - reference set, resolves -> that value. Whether it is long enough is
+//     auth.NewAdminTokenSigner's ruling.
+//   - reference set, does not resolve -> error. An operator who named a reference
+//     asked for an authenticating admin API; a missing environment variable or
+//     unreadable file is a deployment fault, and continuing would answer it by
+//     quietly leaving the surface refusing everyone.
+//   - reference unset -> "" in development, error in production. Production is
+//     refused (config.Validate enforces it too; this is defense in depth so a
+//     future entry point cannot reintroduce the disabled mode). Development is
+//     permitted so a checkout runs with no secret material.
+//
+// The value is a secrets.Redacted throughout, so a log line or error that
+// reached it prints a marker rather than the key.
+func adminTokenSigningKey(ctx context.Context, cfg *config.Config) (secrets.Redacted, error) {
+	ref := cfg.Auth.AdminTokenSigningKeyRef
+	if ref.IsZero() {
+		if cfg.Server.Environment == "production" {
+			// Checked here as well as in config.Validate on purpose, matching
+			// tokenSigningKey: this path must not depend on some caller having
+			// validated first, or a second entry point added later would silently
+			// reintroduce the disabled administrator API in production.
+			return "", errors.New("auth.admin_token_signing_key_ref is required in production: " +
+				"without it no administrator token verifies and the admin API answers 403 to everyone")
+		}
+		return "", nil
+	}
+
+	// The file provider's permission posture follows the environment, the same
+	// split tokenSigningKey makes: production refuses a world-readable signing key
+	// file, because a key any local account can read must be treated as already
+	// copied.
+	permMode := secrets.PermError
+	if cfg.Server.Environment != "production" {
+		permMode = secrets.PermWarn
+	}
+	resolver, err := secrets.NewResolver(secrets.Builtin(secrets.FileOptions{PermMode: permMode})...)
+	if err != nil {
+		return "", err
+	}
+	key, err := resolver.Resolve(ctx, ref)
+	if err != nil {
+		return "", fmt.Errorf("auth.admin_token_signing_key_ref: %w", err)
 	}
 	return key, nil
 }
