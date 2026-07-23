@@ -45,6 +45,7 @@ consequences. They are the project's decision memory.
 | [0029](0029-served-helper-installer-and-pinned-hash-install.md) | Served helper installer and pinned-hash install | Accepted |
 | [0030](0030-handle-fold-storage-and-recompute.md) | Handle look-alike fold: stored column, fail-closed drift, startup recompute | Accepted |
 | [0031](0031-administrator-authentication-and-provisioning.md) | Administrator authentication and provisioning | Proposed |
+| [0032](0032-enrollment-and-token-issuance-http-surface.md) | Enrollment and token-issuance HTTP surface | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.
