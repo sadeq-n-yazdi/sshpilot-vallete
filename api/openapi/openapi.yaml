@@ -1096,14 +1096,24 @@ components:
       type: http
       scheme: bearer
       description: |
-        The administrator credential for the reserved-identifier list routes.
+        A signed administrator bearer token (ADR-0031). The token names an
+        administrator and is signed with a DEDICATED administrator signing key,
+        distinct from the owner access-token signing key, so an owner token can
+        never grant administrator authority (ADR-0018) and an owner-key
+        compromise cannot forge one. Provision the first administrator and mint
+        its token with the `bootstrap-admin` subcommand.
 
-        PROVISIONAL: how an administrator authenticates is a separate security
-        decision with its own ADR and is not finalized. Until it is wired the
-        server resolves no administrator from any request, so every edit is
-        attributed to no one and refused with `403`. The scheme is documented
-        here so the routes' authorization requirement is explicit, not so a
-        token of this shape is accepted today.
+        Verification checks the signature and validity window only; the actual
+        authority is the `administrators` table, consulted on every request, so
+        a validly-signed token for a disabled or unknown administrator is
+        refused with `403`. There is no per-token revocation in v1: disabling
+        the administrator row revokes all of that admin's tokens at once, and a
+        bounded token lifetime caps a leaked token's exposure until then.
+
+        Whether the server accepts these tokens depends on deployment wiring: an
+        administrator signing key must be configured
+        (`auth.admin_token_signing_key_ref`), required in production. Without it
+        the admin routes stay fail-closed and every edit is refused with `403`.
   parameters:
     Handle:
       name: handle
