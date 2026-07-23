@@ -42,12 +42,13 @@ const deviceCodeSecret = "device-code-secret"
 
 var fixedNow = time.Date(2026, 7, 22, 12, 0, 0, 0, time.UTC)
 
-// recordingMinter stands in for auth.EnrollmentService.Mint. It records the
+// recordingMinter stands in for auth.EnrollmentService.MintInto. It records the
 // arguments it was called with — so a test can prove the new owner id and the
 // full-owner scope reach the minter — and returns a fixed grant, or an error.
 type recordingMinter struct {
 	mu      sync.Mutex
 	calls   int
+	sawTx   bool
 	ownerID domain.OwnerID
 	label   string
 	scopes  []domain.Scope
@@ -55,10 +56,13 @@ type recordingMinter struct {
 	err     error
 }
 
-func (m *recordingMinter) Mint(_ context.Context, ownerID domain.OwnerID, label string, scopes []domain.Scope) (*auth.Grant, error) {
+func (m *recordingMinter) MintInto(_ context.Context, r repository.Repos, ownerID domain.OwnerID, label string, scopes []domain.Scope) (*auth.Grant, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
+	// The mint must run through the transaction-bound repos, not the ambient
+	// store — a non-nil handle here is what makes the provision atomic.
+	m.sawTx = r.Owners != nil
 	m.ownerID = ownerID
 	m.label = label
 	m.scopes = slices.Clone(scopes)
@@ -368,15 +372,41 @@ func TestProvisionOwnerRejectsDisabledAdministrator(t *testing.T) {
 	wantErr(t, err, domain.ErrForbidden, "disabled administrator")
 }
 
-// TestProvisionOwnerMintFailurePropagates proves a failed credential mint
-// surfaces as an error rather than a silent half-success.
-func TestProvisionOwnerMintFailurePropagates(t *testing.T) {
+// TestProvisionOwnerMintFailureRollsBackWholeProvision proves the provision is
+// all-or-nothing: because the credential mint runs INSIDE the owner-create
+// transaction (MintInto), a mint failure rolls the owner, handle, key set and
+// audit record back with it. No owner is stranded with a claimed handle and no
+// way to enroll, and the handle is immediately reclaimable by a retry.
+func TestProvisionOwnerMintFailureRollsBackWholeProvision(t *testing.T) {
 	f := newFixture(t)
 	f.minter.err = errors.New("mint boom")
+	ctx := context.Background()
 
-	_, err := f.svc.ProvisionOwner(context.Background(), activeAdmin, onboarding.Request{Handle: "frank"})
+	_, err := f.svc.ProvisionOwner(ctx, activeAdmin, onboarding.Request{Handle: "frank"})
 	if err == nil {
 		t.Fatal("mint failure did not surface")
+	}
+	if !f.minter.sawTx {
+		t.Fatal("mint did not run through the transaction-bound repos; the provision is not atomic")
+	}
+	// Nothing committed: no handle, and (the audit record only commits with the
+	// owner) no owner.created record.
+	if _, err := f.store.Repos().Handles.GetByName(ctx, "frank"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("handle survived a rolled-back provision: err = %v, want ErrNotFound", err)
+	}
+	if recs := f.records(); len(recs) != 0 {
+		t.Fatalf("audit record survived a rolled-back provision: %d records", len(recs))
+	}
+
+	// The handle is reclaimable — a fresh provision with a working minter succeeds
+	// on the very same handle, proving the first attempt left no trace.
+	f.minter.err = nil
+	res, err := f.svc.ProvisionOwner(ctx, activeAdmin, onboarding.Request{Handle: "frank"})
+	if err != nil {
+		t.Fatalf("retry after rollback failed: %v", err)
+	}
+	if _, err := f.store.Repos().Owners.Get(ctx, res.OwnerID); err != nil {
+		t.Fatalf("retry did not create the owner: %v", err)
 	}
 }
 

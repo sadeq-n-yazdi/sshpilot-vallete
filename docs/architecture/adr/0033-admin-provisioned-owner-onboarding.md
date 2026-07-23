@@ -86,14 +86,25 @@ device code redeems for tokens; the provisioning route simply surfaces that
 code. There is no new redeem path, no new revocation surface, and the owner's
 first credential is minted by the same code the owner ultimately controls.
 
-### Mint runs after the owner-create transaction commits
+### The provision is atomic: owner and enrollment code commit or roll back together
 
-The owner-create writes + audit are one transaction; `Mint` runs in the
-enrollment service's **own** transaction afterward. A mint failure leaves a real
-owner with no issued code — the administrator sees the error and re-issues —
-rather than the provision silently half-succeeding. This is the same
-deliberately-separate posture `Redeem` takes; owner existence and code issuance
-are not one atomic unit and are not pretended to be.
+Owner + handle + key set + `owner.created` audit **and** the enrollment-credential
+mint are all one transaction. The mint uses `EnrollmentService.MintInto`, which
+performs exactly the same validation and writes as `Mint` but through the
+caller-supplied transaction-bound repos handle instead of the ambient store, so
+the pairing and its identity link join the owner-create unit of work. `Mint` and
+`MintInto` share one implementation, so single-use, TTL and identity-linking
+semantics cannot drift between the standalone and composed paths.
+
+Atomicity is deliberate rather than the earlier "mint afterward" posture: there
+is **no API path to re-issue a credential for an already-provisioned owner**, and
+adding one would be an admin→owner privilege escalation (an administrator could
+mint a full-owner credential for any existing owner by handle), which ADR-0031's
+axis separation forbids without its own ADR. So a mint that ran after the
+owner-create commit could strand an active owner with a claimed handle and no way
+to enroll. Composing the mint into the transaction removes that state entirely: a
+mint failure rolls the owner, handle, key set and audit record back with it, and
+the handle is immediately reclaimable by a retry.
 
 ### Rate limiting: the ADMIN tier, keyed per administrator
 
