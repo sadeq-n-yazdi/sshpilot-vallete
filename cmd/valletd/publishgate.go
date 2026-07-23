@@ -17,6 +17,7 @@ import (
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/device"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/keyset"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/listadmin"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/onboarding"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publickey"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/service/publish"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
@@ -332,6 +333,27 @@ func mountOwnerManagement(
 		return nil, fmt.Errorf("key set service: %w", err)
 	}
 
+	// Admin-provisioned owner onboarding (ADR-0033). It is built here, alongside
+	// the enrollment service it mints through, because the one-time enrollment
+	// code it returns IS an enrollSvc.Mint grant -- the owner redeems it at the
+	// same /enroll/redeem route this surface already serves. It shares the one
+	// composed policy.Guard so a provisioned handle passes the same blocklist as
+	// every other create, and the same insert-only emitter so the owner.created
+	// record cannot be rewritten. Gated behind the owner signing key with
+	// everything else here: with no key the route answers 500 (no service), and
+	// with no admin identity every request is the empty administrator the service
+	// refuses (403). Administrator authority is re-checked inside the service.
+	onboardingSvc, err := onboarding.New(onboarding.Params{
+		Store:   store,
+		Guard:   policy.Guard,
+		Minter:  enrollSvc,
+		Auditor: emitter,
+		Now:     time.Now,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("owner onboarding service: %w", err)
+	}
+
 	return []httpserver.HandlerOption{
 		httpserver.WithAuthorizer(guard),
 		httpserver.WithDeviceService(deviceSvc),
@@ -339,6 +361,7 @@ func mountOwnerManagement(
 		httpserver.WithKeySetService(setSvc),
 		httpserver.WithEnrollmentService(enrollSvc),
 		httpserver.WithTokenService(tokenSvc),
+		httpserver.WithOwnerOnboardingService(onboardingSvc),
 	}, nil
 }
 
