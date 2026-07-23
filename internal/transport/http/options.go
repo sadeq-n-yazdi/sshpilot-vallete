@@ -21,6 +21,7 @@ type handlerOptions struct {
 	keySets         KeySetService
 	listAdmin       ListAdminService
 	adminIdentifier AdminIdentifier
+	ownerOnboarding OwnerOnboardingService
 	enrollment      EnrollmentService
 	tokens          TokenIssuer
 	telemetry       *telemetry.Provider
@@ -104,6 +105,15 @@ func WithEnrollmentService(s EnrollmentService) HandlerOption {
 // WithEnrollmentService.
 func WithTokenService(s TokenIssuer) HandlerOption {
 	return func(o *handlerOptions) { o.tokens = s }
+}
+
+// WithOwnerOnboardingService supplies the admin-provisioned owner onboarding
+// service backing POST /api/v1/admin/owners. Without it that route is mounted
+// but answers 500, the same unconditional-mount-then-refuse shape the other
+// management services take, so the surface is constant and a missing service
+// reads as a broken deployment rather than an absent feature.
+func WithOwnerOnboardingService(s OwnerOnboardingService) HandlerOption {
+	return func(o *handlerOptions) { o.ownerOnboarding = s }
 }
 
 // WithAdminIdentifier supplies the administrator identity resolver for the admin
