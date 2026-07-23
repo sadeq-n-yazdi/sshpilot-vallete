@@ -184,4 +184,18 @@ var (
 	// every edit through denyAllAdminIdentifier, so an absent identity fails
 	// closed rather than 500.
 	ErrNilListAdminService = errors.New("httpserver: nil list admin service")
+
+	// ErrNilEnrollmentService is logged when an enrollment route is reached with
+	// no service behind it. Like the management services above it is a 500 on the
+	// route rather than a startup refusal: the enrollment routes are mounted
+	// unconditionally so the surface is constant, and a missing service must read
+	// as a broken deployment (500) rather than as an empty or absent feature
+	// (404), which a scanner could not tell from a locked-down instance.
+	ErrNilEnrollmentService = errors.New("httpserver: nil enrollment service")
+
+	// ErrNilTokenService is logged when the token-exchange route is reached with
+	// no service behind it. It is a 500 on the route for the same reason as
+	// ErrNilEnrollmentService: the route is mounted unconditionally, so an absent
+	// service is a wiring fault to surface loudly, never a quiet not-found.
+	ErrNilTokenService = errors.New("httpserver: nil token service")
 )

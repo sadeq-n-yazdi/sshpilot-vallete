@@ -241,6 +241,93 @@ func newLimitStore(cfg *config.Config, logger *slog.Logger) counter.Store {
 	return store
 }
 
+// authTierIP and authTierApprove are the two AUTH-tier key-space names. They
+// derive from ratelimit.TierAuth so the operator's auth-tier configuration
+// (limit, window) applies to both, while the distinct suffixes keep the IP-keyed
+// credential-minting endpoints and the owner-keyed approval endpoint from
+// spending each other's budget. They are constants for the same reason the tier
+// names are: a typo would silently create a fresh, unmetered key space.
+const (
+	authTierIP      = ratelimit.TierAuth + "-ip"
+	authTierApprove = ratelimit.TierAuth + "-approve"
+)
+
+// newAuthLimiter builds one AUTH-tier limiter (failure counting with backoff)
+// under the given key-space name.
+//
+// # The AUTH tier has no disabled state
+//
+// The publish and management tiers return a nil limiter when rate limiting is
+// switched off, and their callers treat that as "not mounted". The AUTH tier
+// does not get that option: it is the ONLY brute-force defense standing in front
+// of the credential-check endpoints, and ADR-0023 classes its posture as a
+// security invariant rather than a knob -- tiersFromConfig already refuses to
+// let an operator flip it fail-open for the same reason. So when no counter
+// store is available (an embedder who disabled rate limiting, or one who mounted
+// NewHandler without wiring the shared store) this falls back to an in-process
+// store rather than returning nil. The failure count may then be per-instance
+// rather than deployment-wide, but it is never simply absent, and a route that
+// checks it can assume a non-nil limiter.
+//
+// The name is the key-space prefix, so two limiters built here with different
+// names (one keyed by client IP for the un-guarded credential endpoints, one
+// keyed by owner for approval) share the store without spending each other's
+// budget, exactly as the tier constants do for the other tiers.
+func newAuthLimiter(cfg *config.Config, store counter.Store, name string, logger *slog.Logger) (*ratelimit.AuthLimiter, error) {
+	if store == nil {
+		// NewMemoryStore fails only on a nil clock, which is a constant here.
+		store, _ = counter.NewMemoryStore(time.Now)
+		if logger != nil {
+			logger.LogAttrs(context.Background(), slog.LevelWarn,
+				"rate limit: auth tier using in-process counters; brute-force protection is per instance, not deployment-wide",
+				slog.String("tier", name))
+		}
+	}
+	return ratelimit.NewAuthLimiter(store, name, tiersFromConfig(cfg).Auth)
+}
+
+// authPrecheck runs the AUTH tier's read-only Check for key and reports whether
+// the request may proceed to the credential check. On any denial it writes the
+// 429 and returns false.
+//
+// # It fails CLOSED, in two directions
+//
+// An empty key -- clientIP could not resolve the caller's address -- is refused
+// rather than waved through, so the one caller we cannot identify is never the
+// one caller exempt from the limit. And AuthLimiter.Check already returns
+// Allowed=false when the store will not answer, so a counter-store outage
+// refuses logins too: unlike the publish tier this is the only defense against
+// an unmetered guessing oracle, and serving one during an incident -- when an
+// attacker is the likeliest reason the store is unhealthy -- is the failure this
+// posture exists to prevent. The store error is logged (a limiter that has
+// stopped limiting must be visible) but never changes the decision, which is
+// read straight from Check.
+func authPrecheck(w http.ResponseWriter, r *http.Request, lim *ratelimit.AuthLimiter, key string, logger *slog.Logger) bool {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
+	if key == "" {
+		logger.LogAttrs(r.Context(), slog.LevelWarn, "auth rate limit: unresolvable client address",
+			slog.String("request_id", RequestIDFromContext(r.Context())))
+		writeRateLimited(w, ratelimit.Decision{RetryAfter: lim.Tier().Window})
+		return false
+	}
+	decision, err := lim.Check(r.Context(), key)
+	if err != nil {
+		// The key is NOT logged: an access log travels far more widely than the
+		// request, and naming the caller on every refusal would turn the log into
+		// a record of who was active when.
+		logger.LogAttrs(r.Context(), slog.LevelError, "auth rate limit: counter store unavailable",
+			slog.String("request_id", RequestIDFromContext(r.Context())),
+			slog.String("error", err.Error()))
+	}
+	if !decision.Allowed {
+		writeRateLimited(w, decision)
+		return false
+	}
+	return true
+}
+
 // rateLimitMiddleware enforces one per-IP tier.
 //
 // # Keyed by IP, never by identity
