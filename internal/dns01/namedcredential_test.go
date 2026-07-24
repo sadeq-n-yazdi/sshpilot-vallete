@@ -28,6 +28,7 @@ func TestAPIProvidersRejectEmptyCredentialSet(t *testing.T) {
 		{"arvancloud", ErrArvanCloudAPI},
 		{"namecheap", ErrNamecheapAPI},
 		{"ovh", ErrOVHAPI},
+		{"gcp", ErrGCPAPI},
 	}
 
 	for _, prov := range providers {

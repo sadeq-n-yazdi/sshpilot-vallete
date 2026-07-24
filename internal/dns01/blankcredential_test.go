@@ -56,6 +56,7 @@ func TestAPIProvidersRejectBlankCredential(t *testing.T) {
 		{"gandi", ErrGandiAPI},
 		{"godaddy", ErrGoDaddyAPI},
 		{"arvancloud", ErrArvanCloudAPI},
+		{"gcp", ErrGCPAPI},
 	}
 
 	for _, prov := range providers {
