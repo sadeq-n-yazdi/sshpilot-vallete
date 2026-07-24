@@ -20,8 +20,8 @@ Providers that authenticate with a **single value** (Cloudflare, DigitalOcean,
 DNSimple, Gandi, ArvanCloud, Google Cloud DNS) use `credentials_ref`.
 
 Providers that need **several named values** — currently Route 53, GoDaddy,
-Namecheap, and OVH — use `credentials_refs`, a map from a credential name to
-its own reference:
+Namecheap, OVH, and Azure DNS — use `credentials_refs`, a map from a credential
+name to its own reference:
 
 ```yaml
 tls:
@@ -775,5 +775,89 @@ subdomain), and the program computes that split itself; a name that does not sit
 inside the resolved zone is refused rather than written.
 
 The program does not poll OVH for the change to be applied. The solver already
+waits until every authoritative nameserver for the zone serves the value, which
+is a strictly stronger condition.
+
+---
+
+## Azure DNS
+
+Azure does not authenticate with a single token. An **Azure AD service
+principal** presents a tenant id, a client (application) id and a client secret
+to Entra ID's token endpoint, receives a short-lived bearer token, and sends
+that to the Azure DNS management API. The subscription id is not secret and is
+not part of authentication, but it is required to address any resource. Azure is
+therefore configured only through `credentials_refs`, never `credentials_ref`:
+
+```yaml
+tls:
+  acme:
+    dns:
+      mode: api
+      provider: azure
+      credentials_refs:
+        tenant_id: env:VALLET_DNS_AZURE_TENANT_ID
+        client_id: env:VALLET_DNS_AZURE_CLIENT_ID
+        client_secret: env:VALLET_DNS_AZURE_CLIENT_SECRET
+        subscription_id: env:VALLET_DNS_AZURE_SUBSCRIPTION_ID
+```
+
+Each value is resolved independently through the secret provider. All four are
+required and refused at startup if missing or blank:
+
+- **`tenant_id`** — the Entra ID (Azure AD) tenant the service principal lives
+  in. It appears in the token endpoint URL; it is not secret.
+- **`client_id`** — the application (client) id of the service principal, from
+  *Entra ID → App registrations*. Not secret.
+- **`client_secret`** — the application password, from the app registration's
+  *Certificates & secrets*. This is the one secret of the four. It is exchanged
+  at the token endpoint and never sent to the management API; it never appears in
+  a log, an error or a span.
+- **`subscription_id`** — the subscription holding the DNS zone. Not secret, but
+  it is required to address the zone and is refused at startup if absent.
+
+Both endpoints are fixed — `https://login.microsoftonline.com` for the token and
+`https://management.azure.com` for the API — and are never configurable: a
+settable endpoint would be a way to point the client secret or the bearer token
+at another host.
+
+### Scope: give the service principal only the DNS Zone Contributor role
+
+The service principal should hold the **DNS Zone Contributor** role, scoped to
+the specific DNS zone (or its resource group) rather than the whole
+subscription. A principal that can edit DNS can edit every zone it is scoped
+over, so narrow the scope to what DNS-01 needs. Give DNS-01 its own service
+principal rather than reusing one, store the client secret in the secret
+provider, and rotate it if it is ever exposed.
+
+Azure keys a TXT record set by name and holds a **set** of values. This program
+reads the current set, adds the one `_acme-challenge` value on publish, and
+subtracts exactly that value on cleanup — deleting the record set only when the
+value it created was the last one in it. Every co-existing value, including your
+own TXT record at the same name and the second challenge of a wildcard
+certificate, is carried through untouched. The read-modify-write is not atomic;
+a second writer to the same record set concurrently could race it.
+
+### Zones: what will be refused
+
+The program discovers the zone and its resource group by **listing** the
+subscription's zones (following pagination) — no resource-group or zone-name
+config field is needed — and fails loudly instead of guessing:
+
+- **The most specific zone wins.** If you hold both `example.com` and a delegated
+  `eu.example.com`, a name under the latter is written there.
+- **No matching zone is an error.** The name being validated must sit under a
+  zone in the subscription; guessing a split would write the challenge somewhere
+  the CA never queries.
+- **Two zones with the same name are refused.** Azure permits two zones with the
+  same name in different resource groups, and only the one the registrar
+  delegates to is real; picking one would be a silent coin flip.
+
+The zone name and the resource group parsed from the zone's resource id are both
+validated against their documented shapes before they enter a request path, so a
+malformed value from the API cannot steer a credentialed write at another
+resource.
+
+The program does not poll Azure for the change to be applied. The solver already
 waits until every authoritative nameserver for the zone serves the value, which
 is a strictly stronger condition.
