@@ -1,7 +1,7 @@
 openapi: 3.1.1
 info:
   title: sshpilot-vallete API
-  version: 1.0.0-rc1
+  version: 1.0.0-rc2
   summary: Publishes SSH public key sets as native authorized_keys documents.
   description: |
     The contract for what the server implements **today**: the two probe
@@ -1551,9 +1551,9 @@ components:
             $ref: "#/components/schemas/Status"
           examples:
             live:
-              value: { status: ok, version: 1.0.0-rc1 }
+              value: { status: ok, version: 1.0.0-rc2 }
             ready:
-              value: { status: ready, version: 1.0.0-rc1 }
+              value: { status: ready, version: 1.0.0-rc2 }
     Unavailable:
       description: |
         The instance is not ready to serve traffic and should be removed from
