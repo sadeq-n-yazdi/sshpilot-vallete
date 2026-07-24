@@ -310,6 +310,13 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	//     Authorization header. Its constructor's emptiness check compares the
 	//     wrapped value against "" for the same reason Cloudflare's does.
 	//   - gandi.go: in do, where the bearer PAT is written into the
+	//     Authorization header. Its constructor's blank check asks the wrapped
+	//     value rather than revealing it, so no second site exists.
+	//   - godaddy.go: in splitGoDaddyCredential, the single place the packed
+	//     "KEY:SECRET" pair is unwrapped. Like route53's, it is called from the
+	//     constructor (to fail a malformed credential at startup) and from do
+	//     (to build the sso-key header), but there is still exactly one line of
+	//     source that can produce plaintext.
 	//   - arvancloud.go: in do, where the API key is written into the
 	//     Authorization header. Its constructor's emptiness check compares the
 	//     wrapped value against "" for the same reason Cloudflare's does.
@@ -336,7 +343,7 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	// path to plaintext and must be justified by editing this list.
 	want := map[string]int{
 		"cloudflare.go": 1, "route53.go": 1, "digitalocean.go": 1, "dnsimple.go": 1,
-		"gandi.go": 1, "arvancloud.go": 1, "namecheap.go": 1, "ovh.go": 4,
+		"gandi.go": 1, "godaddy.go": 1, "arvancloud.go": 1, "namecheap.go": 1, "ovh.go": 4,
 	}
 	if !maps.Equal(reveals, want) {
 		t.Errorf("Reveal() call sites = %v, want %v: the plaintext credential must "+

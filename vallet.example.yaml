@@ -44,7 +44,7 @@ tls:
       # manual | api
       mode: ""
       # Required for dns_01 + api: cloudflare | route53 | digitalocean |
-      #   dnsimple | gandi | arvancloud | namecheap | ovh
+      #   dnsimple | gandi | godaddy | arvancloud | namecheap | ovh
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -63,6 +63,10 @@ tls:
       #                 deprecated by Gandi and not accepted. Scope the PAT to
       #                 the one organization holding the domain and to DNS
       #                 management only; see the doc below.
+      #   godaddy    -> an API key AND secret. Prefer credentials_refs with
+      #                 api_key and api_secret; the single credentials_ref form
+      #                 is "KEY:SECRET" (colon-packed). This key is account-wide;
+      #                 see the doc below.
       #   arvancloud -> the API key from the machine-user API keys page (the
       #                 bare key; valletd adds the "Apikey " prefix). This key
       #                 is account-wide; see the doc below.
@@ -87,6 +91,10 @@ tls:
       #     credentials_refs:
       #       access_key_id: env:VALLET_DNS_AWS_KEY_ID
       #       secret_access_key: env:VALLET_DNS_AWS_SECRET
+      #   godaddy -> api_key and api_secret as separate references:
+      #     credentials_refs:
+      #       api_key: env:VALLET_DNS_GODADDY_KEY
+      #       api_secret: env:VALLET_DNS_GODADDY_SECRET
       #
       #   namecheap -> api_user, api_key, username and client_ip (all required):
       #     credentials_refs:
