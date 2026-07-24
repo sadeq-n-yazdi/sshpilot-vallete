@@ -198,4 +198,11 @@ var (
 	// ErrNilEnrollmentService: the route is mounted unconditionally, so an absent
 	// service is a wiring fault to surface loudly, never a quiet not-found.
 	ErrNilTokenService = errors.New("httpserver: nil token service")
+
+	// ErrNilOwnerOnboardingService is logged when the admin owner-provisioning
+	// route is reached with no service behind it. It is a 500 on the route for
+	// the same reason as ErrNilEnrollmentService: the route is mounted
+	// unconditionally so the surface is constant, and a missing service must read
+	// as a broken deployment (500) rather than an absent feature (404).
+	ErrNilOwnerOnboardingService = errors.New("httpserver: nil owner onboarding service")
 )

@@ -208,6 +208,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	// Its readiness reflects the same database ping the HTTPS listener reports.
 	healthSrv := httpserver.NewHealthServer(cfg, logger, db)
 
+	warnUnimplementedOnboardingMode(cfg, logger)
+
 	logger.Info("starting valletd",
 		slog.String("version", version.String()),
 		slog.String("environment", cfg.Server.Environment),
@@ -216,6 +218,25 @@ func run(args []string, stdout, stderr io.Writer) error {
 	)
 
 	return serve(srv, metricsSrv, healthSrv, logger, purge, sweeps)
+}
+
+// warnUnimplementedOnboardingMode consumes cfg.Onboarding.Mode at startup.
+//
+// onboarding.mode "open" (public self-signup) is a configured intent this build
+// does not yet implement: only admin-provisioned onboarding is wired (ADR-0033,
+// Phase-1 decision #14 defers open self-signup). Warn loudly so an operator who
+// set "open" expecting a public signup route learns the route is not there
+// rather than discovering it by a 404. "invite" (the default) is the implemented
+// mode and stays quiet.
+func warnUnimplementedOnboardingMode(cfg *config.Config, logger *slog.Logger) {
+	if cfg.Onboarding.Mode != "open" {
+		return
+	}
+	logger.Warn("onboarding.mode is \"open\" but public self-signup is not implemented; only admin-provisioned onboarding is active",
+		slog.String("component", "onboarding"),
+		slog.String("config_field", "onboarding.mode"),
+		slog.String("active_mode", "invite (admin-provisioned)"),
+	)
 }
 
 // shutdownTelemetry flushes the exporters on the way out, under its own bounded
