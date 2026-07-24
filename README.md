@@ -1,7 +1,12 @@
 # sshpilot-vallet
 
-> **Status: pre-implementation (phase-1 design).** These documents are *living* —
-> they capture decisions as they're made. There is no backend code yet, by design.
+> **Status: phase 1 implemented.** `valletd` builds and runs: the publish read
+> path, the owner management API, enrollment and token issuance, and instance
+> administration are all live. The design documents remain *living* — they capture
+> decisions as they're made.
+>
+> **Writing a client?** Start with the
+> [Frontend & API Guide](docs/api-guide/README.md).
 
 A clientless **"SSH ID"** backend. An owner registers their SSH **public** keys
 from their devices, organizes them into named **key sets**, and publishes each set
@@ -30,6 +35,8 @@ device ──register public key──▶  sshpilot-vallet  ──GET /{handle}/
 
 | You want… | Read |
 | --- | --- |
+| **To build a client — quick start, config, every endpoint** | **[docs/api-guide/README.md](docs/api-guide/README.md)** |
+| The machine-readable API contract | [api/openapi/openapi.yaml](api/openapi/openapi.yaml), or `GET /docs/` on a running server |
 | A one-page roll-up of every decision | [docs/spec-overview.md](docs/spec-overview.md) |
 | The authoritative scope & requirements | [docs/requirements/phase-1.md](docs/requirements/phase-1.md) |
 | The decision log (ADRs) | [docs/architecture/adr/README.md](docs/architecture/adr/README.md) |

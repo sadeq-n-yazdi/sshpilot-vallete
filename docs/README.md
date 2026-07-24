@@ -1,9 +1,12 @@
 # sshpilot-vallet — Documentation
 
-> **Status: pre-implementation.** Requirements for phase 1 are still being
-> gathered. These documents are *living*: they capture decisions as they are
-> made so nothing is lost, and they will change as requirements evolve. No
-> backend implementation exists yet — by design.
+> **Status: implemented, phase 1.** The backend is built and running: `valletd`
+> serves the publish read path, the owner management API, enrollment and token
+> issuance, and instance administration. These documents remain *living* — they
+> capture decisions as they are made and change as requirements evolve.
+>
+> New here and writing a client? Start with the
+> **[Frontend & API Guide](api-guide/README.md)**.
 
 `sshpilot-vallet` is the backend for an **"SSH ID"**-style service: an owner
 registers their SSH **public** keys from their devices, and those keys are
@@ -20,8 +23,9 @@ described in Termius's "SSH ID / passkeys for SSH".
 | **Everyone (detail)** | [Requirements — Phase 1](requirements/phase-1.md) — the single source of truth for scope, decisions, and open questions. |
 | **Architects / reviewers** | [Architecture Decision Records](architecture/adr/README.md) — every significant decision, with status. |
 | **Security reviewers** | [Threat model](security/threat-model.md) — assets, trust boundaries, and the core risks. |
-| **Backend developers** | Requirements + ADRs today; a developer guide will be added when implementation starts. |
-| **Frontend / client developers (human + AI)** | Requirements today; an API contract (OpenAPI) and client guide will be added once the API surface is agreed. |
+| **Backend developers** | [CONTRIBUTING.md](../CONTRIBUTING.md) for the build and test workflow, plus Requirements + ADRs for the why. |
+| **Frontend / client developers (human + AI)** | [Frontend & API Guide](api-guide/README.md) — quick start, configuration, every endpoint with real curl samples. The machine-readable contract is [`api/openapi/openapi.yaml`](../api/openapi/openapi.yaml), also served at `GET /docs/`. |
+| **Operators deploying valletd** | [Configuration reference](api-guide/02-configuration.md) — every `VALLET_*` variable, TLS modes, datastores, and telemetry. |
 | **Contributors** | The ADR process below, plus [CONTRIBUTING.md](../CONTRIBUTING.md) and the [Code of Conduct](../CODE_OF_CONDUCT.md). |
 | **Security researchers** | [SECURITY.md](../SECURITY.md) — private disclosure policy. |
 | **Operators installing the helper** | [Installing the managed-block helper](install-helper.md) — verified, fail-closed install instructions. |
