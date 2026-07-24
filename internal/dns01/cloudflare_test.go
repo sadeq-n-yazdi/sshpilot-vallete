@@ -328,6 +328,12 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	//     can produce plaintext, which is the property this test defends. The
 	//     constructor's per-field presence check uses IsBlank, which inspects the
 	//     wrapped value without revealing it.
+	//   - rfc2136.go: in update, where the TSIG secret seeds the per-exchange
+	//     TsigSecret map miekg/dns reads to compute the MAC. The constructor's
+	//     blank check asks the wrapped value (IsBlank) rather than revealing it,
+	//     and the SOA zone-discovery query is unsigned, so there is exactly one
+	//     line of source that can produce plaintext, which is the property this
+	//     test defends.
 	//   - ovh.go: FOUR sites, because OVH's scheme genuinely needs several
 	//     distinct values rather than one packed credential (unlike route53).
 	//     Each is documented and each writes straight into the outbound request:
@@ -344,6 +350,7 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	want := map[string]int{
 		"cloudflare.go": 1, "route53.go": 1, "digitalocean.go": 1, "dnsimple.go": 1,
 		"gandi.go": 1, "godaddy.go": 1, "arvancloud.go": 1, "namecheap.go": 1, "ovh.go": 4,
+		"rfc2136.go": 1,
 	}
 	if !maps.Equal(reveals, want) {
 		t.Errorf("Reveal() call sites = %v, want %v: the plaintext credential must "+

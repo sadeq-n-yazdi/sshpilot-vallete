@@ -2,12 +2,42 @@ package config
 
 import (
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/dns01"
 	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
 )
+
+// TestTSIGAlgorithmParity pins config's local TSIG allowlist to the provider's.
+// config keeps its own copy (see tsigAlgorithms in validate.go) so the DNS wire
+// stack never enters the production config dependency closure; this test — which
+// may freely import dns01 — proves the two lists are identical, so a token config
+// accepts is exactly one the provider can sign with, and no strong algorithm the
+// provider supports is silently rejected by config.
+func TestTSIGAlgorithmParity(t *testing.T) {
+	configNames := make([]string, 0, len(tsigAlgorithms))
+	for name := range tsigAlgorithms {
+		configNames = append(configNames, name)
+	}
+	sort.Strings(configNames)
+
+	providerNames := dns01.TSIGAlgorithmNames()
+
+	if strings.Join(configNames, ",") != strings.Join(providerNames, ",") {
+		t.Fatalf("config TSIG allowlist %v diverged from provider allowlist %v; the two MUST stay identical",
+			configNames, providerNames)
+	}
+
+	// Belt and braces: every config token must actually resolve in the provider.
+	for _, name := range configNames {
+		if _, ok := dns01.TSIGAlgorithm(name); !ok {
+			t.Errorf("config accepts %q but the provider cannot sign with it", name)
+		}
+	}
+}
 
 // validConfig returns a Config that passes Validate, used as the baseline that
 // each failure case mutates in exactly one way.
@@ -31,6 +61,24 @@ func TestValidateBaselineValid(t *testing.T) {
 	c := validConfig()
 	if err := c.Validate(); err != nil {
 		t.Fatalf("baseline should be valid, got: %v", err)
+	}
+}
+
+// TestValidateRFC2136Valid is the positive control for the rfc2136 failure
+// cases below: a config with all three non-secret settings present and a
+// supported algorithm, plus the TSIG secret reference, must validate.
+func TestValidateRFC2136Valid(t *testing.T) {
+	c := validConfig()
+	c.TLS.ACME.Solver = "dns_01"
+	c.TLS.ACME.DNS.Mode = "api"
+	c.TLS.ACME.DNS.Provider = "rfc2136"
+	c.TLS.ACME.DNS.Server = "ns1.example.com:53"
+	c.TLS.ACME.DNS.TSIGKeyName = "acme-update.example.com."
+	c.TLS.ACME.DNS.TSIGAlgorithm = "hmac-sha256"
+	c.TLS.ACME.DNS.CredentialsRef = "env:VALLET_DNS_TSIG_SECRET"
+
+	if err := c.Validate(); err != nil {
+		t.Fatalf("valid rfc2136 config rejected: %v", err)
 	}
 }
 
@@ -118,6 +166,39 @@ func TestValidateFailures(t *testing.T) {
 			c.TLS.ACME.DNS.Provider = "route53"
 			c.TLS.ACME.DNS.CredentialsRefs = map[string]secrets.Ref{"": "env:Y"}
 		}, "tls.acme.dns.credentials_refs"},
+		{"rfc2136 missing server", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "api"
+			c.TLS.ACME.DNS.Provider = "rfc2136"
+			c.TLS.ACME.DNS.CredentialsRef = "env:X"
+			c.TLS.ACME.DNS.TSIGKeyName = "acme.example.com."
+			c.TLS.ACME.DNS.TSIGAlgorithm = "hmac-sha256"
+		}, "tls.acme.dns.server"},
+		{"rfc2136 missing key name", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "api"
+			c.TLS.ACME.DNS.Provider = "rfc2136"
+			c.TLS.ACME.DNS.CredentialsRef = "env:X"
+			c.TLS.ACME.DNS.Server = "127.0.0.1:53"
+			c.TLS.ACME.DNS.TSIGAlgorithm = "hmac-sha256"
+		}, "tls.acme.dns.tsig_key_name"},
+		{"rfc2136 missing algorithm", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "api"
+			c.TLS.ACME.DNS.Provider = "rfc2136"
+			c.TLS.ACME.DNS.CredentialsRef = "env:X"
+			c.TLS.ACME.DNS.Server = "127.0.0.1:53"
+			c.TLS.ACME.DNS.TSIGKeyName = "acme.example.com."
+		}, "tls.acme.dns.tsig_algorithm"},
+		{"rfc2136 weak algorithm refused", func(c *Config) {
+			c.TLS.ACME.Solver = "dns_01"
+			c.TLS.ACME.DNS.Mode = "api"
+			c.TLS.ACME.DNS.Provider = "rfc2136"
+			c.TLS.ACME.DNS.CredentialsRef = "env:X"
+			c.TLS.ACME.DNS.Server = "127.0.0.1:53"
+			c.TLS.ACME.DNS.TSIGKeyName = "acme.example.com."
+			c.TLS.ACME.DNS.TSIGAlgorithm = "hmac-md5"
+		}, "tls.acme.dns.tsig_algorithm"},
 		{"dns_01 missing mode", func(c *Config) {
 			c.TLS.ACME.Solver = "dns_01"
 		}, "tls.acme.dns.mode"},

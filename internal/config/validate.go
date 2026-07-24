@@ -350,6 +350,9 @@ func (c *Config) validateACMEDNS(v *validator) {
 			v.add("tls.acme.dns.provider", "required for dns_01 api mode")
 		}
 		validateACMEDNSCredentials(v, d)
+		if d.Provider == "rfc2136" {
+			validateACMEDNSRFC2136(v, d)
+		}
 	case "":
 		v.add("tls.acme.dns.mode", "required for dns_01 solver (manual or api)")
 	default:
@@ -389,6 +392,50 @@ func validateACMEDNSCredentials(v *validator, d ACMEDNSConfig) {
 			if d.CredentialsRefs[name].IsZero() {
 				v.add("tls.acme.dns.credentials_refs."+name, "must not be empty")
 			}
+		}
+	}
+}
+
+// tsigAlgorithms is config's own copy of the TSIG algorithm allowlist. It is a
+// deliberate duplicate of internal/dns01's map rather than an import of it: config
+// is a foundational package and must not pull the DNS wire stack (miekg/dns) into
+// the dependency closure of everything that reads configuration. The two lists are
+// pinned to one source of truth by a parity test (TestTSIGAlgorithmParity), which
+// asserts this set equals dns01.TSIGAlgorithmNames() — so a token config accepts is
+// always one the provider can actually sign with, and the reverse.
+//
+// It is an allowlist, not a passthrough: HMAC-MD5 and HMAC-SHA1 (TSIG's historical
+// defaults) are deliberately absent, because a weak signing primitive lets a forged
+// UPDATE rewrite the zone. SHA-224 is the floor.
+var tsigAlgorithms = map[string]struct{}{
+	"hmac-sha224": {},
+	"hmac-sha256": {},
+	"hmac-sha384": {},
+	"hmac-sha512": {},
+}
+
+// validateACMEDNSRFC2136 fails closed on the settings the "rfc2136" provider
+// needs and no other provider does: the authoritative nameserver, the TSIG key
+// name, and the TSIG algorithm.
+//
+// These three are plain config, not secret references, so they are validated
+// here for presence and (for the algorithm) against the allowlist. Only the TSIG
+// SECRET is a credential, and it is checked by validateACMEDNSCredentials like
+// any other provider's — it rides credentials_ref/credentials_refs.
+func validateACMEDNSRFC2136(v *validator, d ACMEDNSConfig) {
+	if strings.TrimSpace(d.Server) == "" {
+		v.add("tls.acme.dns.server", "required for the rfc2136 provider (host:port of the authoritative nameserver)")
+	}
+	if strings.TrimSpace(d.TSIGKeyName) == "" {
+		v.add("tls.acme.dns.tsig_key_name", "required for the rfc2136 provider")
+	}
+	switch {
+	case strings.TrimSpace(d.TSIGAlgorithm) == "":
+		v.add("tls.acme.dns.tsig_algorithm", "required for the rfc2136 provider")
+	default:
+		if _, ok := tsigAlgorithms[strings.ToLower(strings.TrimSpace(d.TSIGAlgorithm))]; !ok {
+			v.add("tls.acme.dns.tsig_algorithm",
+				"unsupported algorithm %q (want hmac-sha224, hmac-sha256, hmac-sha384 or hmac-sha512)", d.TSIGAlgorithm)
 		}
 	}
 }

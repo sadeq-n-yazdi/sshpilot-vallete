@@ -338,6 +338,21 @@ func newDNSProvider(ctx context.Context, cfg *config.Config, logger *slog.Logger
 		if err != nil {
 			return nil, err
 		}
+		if d.Provider == "rfc2136" {
+			// RFC 2136 is the one provider the seam's (creds, client) signature
+			// cannot build: it speaks signed DNS UPDATE, not a vendor HTTP API,
+			// so it needs the nameserver address, the TSIG key name and the TSIG
+			// algorithm — non-secret settings that ride config rather than the
+			// credential set. It is therefore constructed HERE, from config, while
+			// the TSIG secret still arrives through the same resolved credentials
+			// as every other provider (ADR-0034). A malformed setting fails the
+			// process at startup, like every other provider's constructor.
+			provider, err := dns01.NewRFC2136(d.Server, d.TSIGKeyName, d.TSIGAlgorithm, creds)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrTLSCertificateInvalid, err)
+			}
+			return provider, nil
+		}
 		provider, err := dns01.NewAPIProvider(d.Provider, creds, nil)
 		if err != nil {
 			// Mapped onto the transport's existing unsupported-mode sentinel so

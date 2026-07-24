@@ -208,6 +208,41 @@ func TestUnsupportedDNSProviderIsRefused(t *testing.T) {
 	}
 }
 
+// TestRFC2136ProviderIsWiredFromConfig proves the RFC 2136 provider — the one
+// the dns01 seam cannot build from (creds, client) alone — is constructed in
+// this layer from its non-secret config plus the resolved TSIG secret.
+//
+// It is the wiring counterpart to dns01's own constructor tests: those prove the
+// provider is correct, this proves config actually reaches it. A malformed
+// setting must fail closed here, at startup.
+func TestRFC2136ProviderIsWiredFromConfig(t *testing.T) {
+	t.Setenv("VALLET_TEST_TSIG_SECRET", "dHNpZy1zZWNyZXQtdmFsdWU=")
+
+	cfg := acmeTestConfig(t)
+	cfg.TLS.ACME.Solver = "dns_01"
+	cfg.TLS.ACME.DNS.Mode = "api"
+	cfg.TLS.ACME.DNS.Provider = "rfc2136"
+	cfg.TLS.ACME.DNS.Server = "127.0.0.1:53"
+	cfg.TLS.ACME.DNS.TSIGKeyName = "acme-update.example.com."
+	cfg.TLS.ACME.DNS.TSIGAlgorithm = "hmac-sha256"
+	cfg.TLS.ACME.DNS.CredentialsRef = "env:VALLET_TEST_TSIG_SECRET"
+
+	provider, err := newDNSProvider(t.Context(), cfg, nil)
+	if err != nil {
+		t.Fatalf("newDNSProvider(rfc2136): %v", err)
+	}
+	if got := provider.Name(); got != "rfc2136" {
+		t.Errorf("Name() = %q, want rfc2136", got)
+	}
+
+	// A malformed non-secret setting fails closed at startup rather than at the
+	// first renewal — an unsupported algorithm here.
+	cfg.TLS.ACME.DNS.TSIGAlgorithm = "hmac-md5"
+	if _, err := newDNSProvider(t.Context(), cfg, nil); !errors.Is(err, ErrTLSCertificateInvalid) {
+		t.Errorf("error = %v, want ErrTLSCertificateInvalid for a weak algorithm", err)
+	}
+}
+
 // TestDNS01ProviderDefersIssuanceAndAdvertisesNoALPN pins the two wiring
 // properties DNS-01 depends on, in the directions that break silently.
 //

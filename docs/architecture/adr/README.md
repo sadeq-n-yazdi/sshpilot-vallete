@@ -47,6 +47,7 @@ consequences. They are the project's decision memory.
 | [0031](0031-administrator-authentication-and-provisioning.md) | Administrator authentication and provisioning | Proposed |
 | [0032](0032-enrollment-and-token-issuance-http-surface.md) | Enrollment and token-issuance HTTP surface | Accepted |
 | [0033](0033-admin-provisioned-owner-onboarding.md) | Admin-provisioned owner onboarding | Proposed |
+| [0034](0034-rfc2136-dns01-provider.md) | RFC 2136 (dynamic DNS UPDATE + TSIG) DNS-01 provider | Proposed |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.
