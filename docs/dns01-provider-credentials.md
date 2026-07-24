@@ -17,7 +17,7 @@ this program holds, so two rules apply to every provider below:
 ### One credential or several
 
 Providers that authenticate with a **single value** (Cloudflare, DigitalOcean,
-DNSimple, Gandi, ArvanCloud) use `credentials_ref`.
+DNSimple, Gandi, ArvanCloud, Google Cloud DNS) use `credentials_ref`.
 
 RFC 2136 (dynamic DNS UPDATE) is different again: it authenticates with a **TSIG
 key**, whose shared secret rides `credentials_ref` while three *non-secret*
@@ -25,8 +25,8 @@ settings — the nameserver, the key name and the algorithm — are plain config
 See [RFC 2136](#rfc-2136) below.
 
 Providers that need **several named values** — currently Route 53, GoDaddy,
-Namecheap, and OVH — use `credentials_refs`, a map from a credential name to
-its own reference:
+Namecheap, OVH, and Azure DNS — use `credentials_refs`, a map from a credential
+name to its own reference:
 
 ```yaml
 tls:
@@ -176,6 +176,63 @@ scoping, so a token that can edit DNS in a zone can edit any record in it. The
 program only ever deletes by the record ID its own create returned, so it cannot
 remove a record it did not create — but that is a property of this program, not
 a limit the token enforces.
+
+---
+
+## Google Cloud DNS
+
+Set `credentials_ref` to a **service account JSON key** — the entire key file,
+as issued from *IAM & Admin → Service Accounts → Keys → Add key → JSON*. The
+blob contains the account's RSA private key, so it is the highest-privilege
+value here; store it in the secret provider (for example
+`file:/run/secrets/vallet-gcp.json`) and never in the config file.
+
+The program authenticates the way Google's own libraries do: it signs a JWT with
+the key's private key and exchanges it at Google's OAuth token endpoint
+(`https://oauth2.googleapis.com/token`, a constant — the key's `token_uri` is
+ignored so a tampered key cannot redirect the signed assertion) for a
+short-lived access token scoped to Cloud DNS read/write only. The private key is
+unwrapped in a single place, to sign that assertion, and never appears in a log,
+an error, or telemetry.
+
+### Least-privilege service account
+
+Grant the service account the **DNS Administrator** role
+(`roles/dns.admin`) on the project, or — narrower — a custom role limited to the
+managed zone holding the domain with only these permissions:
+
+- `dns.managedZones.list` — to find the zone that holds the record.
+- `dns.resourceRecordSets.list` — to read the current TXT set (Cloud DNS has no
+  per-record identifier; a record set is keyed by name and type and holds a
+  *set* of values).
+- `dns.changes.create` and `dns.changes.get` — to add and remove the challenge
+  value.
+
+Use a dedicated service account for this program and attach nothing else to it.
+
+### Zones: what will be refused
+
+The program picks the zone rather than trusting configuration, and it fails
+loudly instead of guessing:
+
+- **The most specific zone wins.** If the project holds both `example.com` and a
+  delegated `eu.example.com`, a name under the latter is written there. Writing
+  to the parent would put the record in a zone that is not authoritative for the
+  name.
+- **Private zones are ignored.** A private managed zone is visible only inside
+  its associated networks; the CA queries the public internet. Only zones whose
+  visibility is `public` are considered.
+- **More than one public zone for the same DNS name is refused.** A project may
+  hold duplicate public zones for a name, and only the one the registrar
+  delegates to is real — the same ambiguity Route 53 has. Picking one would be a
+  coin flip resolved silently.
+
+The program only ever removes the TXT **value it published itself**, matched
+exactly, so cleanup cannot delete a record it did not create — including your
+own TXT record at the same name and the sibling challenge of a wildcard
+certificate. It does not poll Cloud DNS for the change to be applied; the solver
+already waits until every authoritative nameserver for the zone serves the
+value, which is a strictly stronger condition.
 
 ---
 
@@ -727,6 +784,88 @@ waits until every authoritative nameserver for the zone serves the value, which
 is a strictly stronger condition.
 
 ---
+
+## Azure DNS
+
+Azure does not authenticate with a single token. An **Azure AD service
+principal** presents a tenant id, a client (application) id and a client secret
+to Entra ID's token endpoint, receives a short-lived bearer token, and sends
+that to the Azure DNS management API. The subscription id is not secret and is
+not part of authentication, but it is required to address any resource. Azure is
+therefore configured only through `credentials_refs`, never `credentials_ref`:
+
+```yaml
+tls:
+  acme:
+    dns:
+      mode: api
+      provider: azure
+      credentials_refs:
+        tenant_id: env:VALLET_DNS_AZURE_TENANT_ID
+        client_id: env:VALLET_DNS_AZURE_CLIENT_ID
+        client_secret: env:VALLET_DNS_AZURE_CLIENT_SECRET
+        subscription_id: env:VALLET_DNS_AZURE_SUBSCRIPTION_ID
+```
+
+Each value is resolved independently through the secret provider. All four are
+required and refused at startup if missing or blank:
+
+- **`tenant_id`** — the Entra ID (Azure AD) tenant the service principal lives
+  in. It appears in the token endpoint URL; it is not secret.
+- **`client_id`** — the application (client) id of the service principal, from
+  *Entra ID → App registrations*. Not secret.
+- **`client_secret`** — the application password, from the app registration's
+  *Certificates & secrets*. This is the one secret of the four. It is exchanged
+  at the token endpoint and never sent to the management API; it never appears in
+  a log, an error or a span.
+- **`subscription_id`** — the subscription holding the DNS zone. Not secret, but
+  it is required to address the zone and is refused at startup if absent.
+
+Both endpoints are fixed — `https://login.microsoftonline.com` for the token and
+`https://management.azure.com` for the API — and are never configurable: a
+settable endpoint would be a way to point the client secret or the bearer token
+at another host.
+
+### Scope: give the service principal only the DNS Zone Contributor role
+
+The service principal should hold the **DNS Zone Contributor** role, scoped to
+the specific DNS zone (or its resource group) rather than the whole
+subscription. A principal that can edit DNS can edit every zone it is scoped
+over, so narrow the scope to what DNS-01 needs. Give DNS-01 its own service
+principal rather than reusing one, store the client secret in the secret
+provider, and rotate it if it is ever exposed.
+
+Azure keys a TXT record set by name and holds a **set** of values. This program
+reads the current set, adds the one `_acme-challenge` value on publish, and
+subtracts exactly that value on cleanup — deleting the record set only when the
+value it created was the last one in it. Every co-existing value, including your
+own TXT record at the same name and the second challenge of a wildcard
+certificate, is carried through untouched. The read-modify-write is not atomic;
+a second writer to the same record set concurrently could race it.
+
+### Zones: what will be refused
+
+The program discovers the zone and its resource group by **listing** the
+subscription's zones (following pagination) — no resource-group or zone-name
+config field is needed — and fails loudly instead of guessing:
+
+- **The most specific zone wins.** If you hold both `example.com` and a delegated
+  `eu.example.com`, a name under the latter is written there.
+- **No matching zone is an error.** The name being validated must sit under a
+  zone in the subscription; guessing a split would write the challenge somewhere
+  the CA never queries.
+- **Two zones with the same name are refused.** Azure permits two zones with the
+  same name in different resource groups, and only the one the registrar
+  delegates to is real; picking one would be a silent coin flip.
+
+The zone name and the resource group parsed from the zone's resource id are both
+validated against their documented shapes before they enter a request path, so a
+malformed value from the API cannot steer a credentialed write at another
+resource.
+
+The program does not poll Azure for the change to be applied. The solver already
+waits until every authoritative nameserver for the zone serves the value, which
+is a strictly stronger condition.
 
 ## RFC 2136
 

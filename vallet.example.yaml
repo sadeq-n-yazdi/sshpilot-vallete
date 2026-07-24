@@ -43,8 +43,8 @@ tls:
     dns:
       # manual | api
       mode: ""
-      # Required for dns_01 + api: cloudflare | route53 | digitalocean |
-      #   dnsimple | gandi | godaddy | arvancloud | namecheap | ovh | rfc2136
+      # Required for dns_01 + api: cloudflare | route53 | gcp | digitalocean |
+      #   dnsimple | gandi | godaddy | arvancloud | namecheap | ovh | azure | rfc2136
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -52,6 +52,9 @@ tls:
       #   cloudflare -> the API token
       #   route53    -> "ACCESS_KEY_ID:SECRET_ACCESS_KEY" (no region; Route 53
       #                 is global and always signed for us-east-1)
+      #   gcp        -> a service account JSON key (the whole key file). It
+      #                 contains the RSA private key, so prefer a file: ref such
+      #                 as file:/run/secrets/vallet-gcp.json. See the doc below.
       #   digitalocean -> a personal access token with write scope. NOTE: this
       #                 token is account-wide -- DigitalOcean has no per-domain
       #                 or per-record scoping. See the doc below.
@@ -77,6 +80,9 @@ tls:
       #                 fields, so it is set only through credentials_refs
       #                 (application_key, application_secret, consumer_key, and
       #                 an optional endpoint). See credentials_refs below.
+      #   azure      -> NOT a single value: an Azure AD service principal, so it
+      #                 is set only through credentials_refs (tenant_id,
+      #                 client_id, client_secret, subscription_id). See below.
       #   rfc2136    -> the base64 TSIG shared secret. The nameserver, key name
       #                 and algorithm are the NON-secret server/tsig_key_name/
       #                 tsig_algorithm fields below, not part of this reference.
@@ -113,6 +119,13 @@ tls:
       #       application_secret: env:VALLET_DNS_OVH_APP_SECRET
       #       consumer_key: env:VALLET_DNS_OVH_CONSUMER_KEY
       #       endpoint: env:VALLET_DNS_OVH_ENDPOINT   # optional; default ovh-eu
+      #   azure -> tenant_id, client_id, client_secret and subscription_id (all
+      #     required); the resource group and DNS zone are discovered, not set:
+      #     credentials_refs:
+      #       tenant_id: env:VALLET_DNS_AZURE_TENANT_ID
+      #       client_id: env:VALLET_DNS_AZURE_CLIENT_ID
+      #       client_secret: env:VALLET_DNS_AZURE_CLIENT_SECRET
+      #       subscription_id: env:VALLET_DNS_AZURE_SUBSCRIPTION_ID
       #
       # The single-value providers above also accept credentials_refs with one
       # entry; the provider uses the sole value.

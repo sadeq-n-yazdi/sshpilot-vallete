@@ -154,6 +154,8 @@ func NewAPIProvider(name string, creds Credentials, client *http.Client) (Provid
 		return NewCloudflare(creds, client)
 	case "route53":
 		return NewRoute53(creds, client)
+	case "gcp":
+		return NewGCP(creds, client)
 	case "digitalocean":
 		return NewDigitalOcean(creds, client)
 	case "dnsimple":
@@ -168,6 +170,8 @@ func NewAPIProvider(name string, creds Credentials, client *http.Client) (Provid
 		return NewNamecheap(creds, client)
 	case "ovh":
 		return NewOVH(creds, client)
+	case "azure":
+		return NewAzure(creds, client)
 	default:
 		// The provider NAME is echoed because it came from the operator's own
 		// config file and is the diagnostic. The credential is not touched.
