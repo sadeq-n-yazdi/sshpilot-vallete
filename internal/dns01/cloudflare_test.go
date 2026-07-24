@@ -338,12 +338,24 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	//     from the allowlist — it is not a secret, but it arrives redacted). The
 	//     constructor's blank checks compare the wrapped values against blank
 	//     without revealing, so they add no site.
+	//   - azure.go: FOUR sites, because Azure's service-principal flow genuinely
+	//     needs several distinct values. Each is documented and each writes
+	//     straight into the outbound request: the tenant id, client id and client
+	//     secret are revealed only in token (the tenant id into the token URL
+	//     path, the other two into the OAuth2 form body), and the subscription id
+	//     only in subscriptionPath (into every management URL — it is not a
+	//     secret, but it arrives redacted). Only the client secret is truly
+	//     secret; the bearer token the flow returns is held in a LOCAL string and
+	//     written into the Authorization header without a Reveal, so it adds no
+	//     site. The constructor's per-field checks use IsBlank, which inspects the
+	//     wrapped value without revealing it.
 	//
 	// Any other file, or a second unexplained site in any of these, means a new
 	// path to plaintext and must be justified by editing this list.
 	want := map[string]int{
 		"cloudflare.go": 1, "route53.go": 1, "digitalocean.go": 1, "dnsimple.go": 1,
 		"gandi.go": 1, "godaddy.go": 1, "arvancloud.go": 1, "namecheap.go": 1, "ovh.go": 4,
+		"azure.go": 4,
 	}
 	if !maps.Equal(reveals, want) {
 		t.Errorf("Reveal() call sites = %v, want %v: the plaintext credential must "+

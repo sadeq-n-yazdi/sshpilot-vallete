@@ -44,7 +44,7 @@ tls:
       # manual | api
       mode: ""
       # Required for dns_01 + api: cloudflare | route53 | digitalocean |
-      #   dnsimple | gandi | godaddy | arvancloud | namecheap | ovh
+      #   dnsimple | gandi | godaddy | arvancloud | namecheap | ovh | azure
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -77,6 +77,9 @@ tls:
       #                 fields, so it is set only through credentials_refs
       #                 (application_key, application_secret, consumer_key, and
       #                 an optional endpoint). See credentials_refs below.
+      #   azure      -> NOT a single value: an Azure AD service principal, so it
+      #                 is set only through credentials_refs (tenant_id,
+      #                 client_id, client_secret, subscription_id). See below.
       #
       # See docs/dns01-provider-credentials.md for the least-privilege policy
       # each provider needs. These credentials can rewrite your zone, so scope
@@ -110,6 +113,13 @@ tls:
       #       application_secret: env:VALLET_DNS_OVH_APP_SECRET
       #       consumer_key: env:VALLET_DNS_OVH_CONSUMER_KEY
       #       endpoint: env:VALLET_DNS_OVH_ENDPOINT   # optional; default ovh-eu
+      #   azure -> tenant_id, client_id, client_secret and subscription_id (all
+      #     required); the resource group and DNS zone are discovered, not set:
+      #     credentials_refs:
+      #       tenant_id: env:VALLET_DNS_AZURE_TENANT_ID
+      #       client_id: env:VALLET_DNS_AZURE_CLIENT_ID
+      #       client_secret: env:VALLET_DNS_AZURE_CLIENT_SECRET
+      #       subscription_id: env:VALLET_DNS_AZURE_SUBSCRIPTION_ID
       #
       # The single-value providers above also accept credentials_refs with one
       # entry; the provider uses the sole value.
