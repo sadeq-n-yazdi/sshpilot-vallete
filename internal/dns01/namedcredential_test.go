@@ -24,6 +24,7 @@ func TestAPIProvidersRejectEmptyCredentialSet(t *testing.T) {
 		{"digitalocean", ErrDigitalOceanAPI},
 		{"dnsimple", ErrDNSimpleAPI},
 		{"gandi", ErrGandiAPI},
+		{"godaddy", ErrGoDaddyAPI},
 		{"arvancloud", ErrArvanCloudAPI},
 		{"ovh", ErrOVHAPI},
 	}
