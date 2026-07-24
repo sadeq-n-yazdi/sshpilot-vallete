@@ -19,8 +19,8 @@ this program holds, so two rules apply to every provider below:
 Providers that authenticate with a **single value** (Cloudflare, DigitalOcean,
 DNSimple, Gandi, ArvanCloud) use `credentials_ref`.
 
-Providers that need **several named values** — currently Route 53 and GoDaddy —
-use `credentials_refs`, a map from a credential name to its own reference:
+Providers that need **several named values** — currently Route 53, GoDaddy, and
+OVH — use `credentials_refs`, a map from a credential name to its own reference:
 
 ```yaml
 tls:
@@ -533,3 +533,104 @@ value in code rather than trusting the API's `search` filter.
 The program does not poll ArvanCloud for the change to be applied. The solver
 already waits until every authoritative nameserver for the zone serves the value,
 which is a strictly stronger condition.
+
+---
+
+## OVH
+
+OVH does not authenticate with a single token. Every request is **signed** with
+three distinct values, so OVH is configured only through `credentials_refs`,
+never `credentials_ref`:
+
+```yaml
+tls:
+  acme:
+    dns:
+      mode: api
+      provider: ovh
+      credentials_refs:
+        application_key: env:VALLET_DNS_OVH_APP_KEY
+        application_secret: env:VALLET_DNS_OVH_APP_SECRET
+        consumer_key: env:VALLET_DNS_OVH_CONSUMER_KEY
+        endpoint: env:VALLET_DNS_OVH_ENDPOINT   # optional; default ovh-eu
+```
+
+- `application_key` and `application_secret` identify the application. Create
+  them at <https://api.ovh.com/createApp/> (EU) or the regional console.
+- `consumer_key` is the per-user token authorizing that application. Create it
+  with a validation request scoped to the DNS operations below, then have the
+  account owner validate it once.
+- `endpoint` selects the region and is **optional**, defaulting to `ovh-eu`. It
+  is chosen from a fixed allowlist — `ovh-eu`, `ovh-ca`, `ovh-us` — and any
+  other value is refused at startup. It is **not** a free-form URL: a settable
+  base would be a way to point a zone-editing credential at another host, so the
+  region name maps to a fixed OVH base URL and nothing else is accepted.
+
+Supplying only some of the three required fields, or a blank one, is refused at
+startup rather than at the first renewal. The `application_secret` is the only
+field OVH never transmits — it is the SHA-1 signing key — and it never appears in
+a log or an error.
+
+### Scope the consumer key as narrowly as OVH allows
+
+OVH scopes a consumer key by **method and path pattern**. Grant only what DNS-01
+needs against your zone, for example:
+
+```
+GET    /domain/zone/*
+POST   /domain/zone/*/record
+GET    /domain/zone/*/record
+GET    /domain/zone/*/record/*
+DELETE /domain/zone/*/record/*
+POST   /domain/zone/*/refresh
+```
+
+That is far narrower than an all-`/*` grant. The program only ever deletes a
+record whose **value it published itself**, matched exactly, so it cannot remove
+a record it did not create — including your own TXT record at the same name, and
+including the second challenge of a wildcard certificate. That is a property of
+*this program*, not a limit the key enforces, so still give DNS-01 its own
+consumer key, store every field in the secret provider, and rotate them if
+exposed.
+
+### The refresh step
+
+OVH stages zone edits and does **not** serve them until the zone is refreshed.
+The program issues `POST /domain/zone/{zone}/refresh` after creating the
+challenge record and again after deleting it on cleanup, so the change the CA
+needs is actually served. A create that was not refreshed reports success and is
+never visible, which would fail issuance ten minutes later with a message about
+DNS rather than about the record.
+
+### Signed requests and the timestamp
+
+Each request carries `X-Ovh-Application`, `X-Ovh-Consumer`, `X-Ovh-Timestamp`
+and `X-Ovh-Signature`, where the signature is
+`"$1$" + SHA1(application_secret + "+" + consumer_key + "+" + METHOD + "+" +
+fullURL + "+" + body + "+" + timestamp)`. The timestamp is adjusted by the
+delta between OVH's clock and this host's, fetched once from the unauthenticated
+`/auth/time` endpoint, so a skewed local clock does not make OVH reject every
+call.
+
+### Zones: what will be refused
+
+The program picks the zone rather than trusting configuration, and it fails
+loudly instead of guessing:
+
+- **The most specific zone wins.** If you hold both `example.com` and a delegated
+  `eu.example.com`, a name under the latter is written there.
+- **No matching zone is an error.** The name being validated must sit under a
+  zone the consumer key can manage; `GET /domain/zone/{zone}` answers `404` for a
+  zone it does not, which is the only status treated as "try the parent". A
+  rejected credential or a server error is surfaced rather than swallowed.
+- **There is no ambiguity to resolve.** A zone name is the API's own path key, so
+  an account cannot hold two zones with the same name — unlike Route 53, where
+  duplicate hosted zones are possible and are refused.
+
+Record names are stored **relative** to the zone (the apex is the empty
+subdomain), and the program computes that split itself; a name that does not sit
+inside the resolved zone is refused rather than written.
+
+The program does not poll OVH for the change to be applied. The solver already
+waits until every authoritative nameserver for the zone serves the value, which
+is a strictly stronger condition.

@@ -44,7 +44,7 @@ tls:
       # manual | api
       mode: ""
       # Required for dns_01 + api: cloudflare | route53 | digitalocean |
-      #   dnsimple | gandi | godaddy | arvancloud
+      #   dnsimple | gandi | godaddy | arvancloud | ovh
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -70,6 +70,10 @@ tls:
       #   arvancloud -> the API key from the machine-user API keys page (the
       #                 bare key; valletd adds the "Apikey " prefix). This key
       #                 is account-wide; see the doc below.
+      #   ovh        -> NOT a single value: OVH signs each request with three
+      #                 fields, so it is set only through credentials_refs
+      #                 (application_key, application_secret, consumer_key, and
+      #                 an optional endpoint). See credentials_refs below.
       #
       # See docs/dns01-provider-credentials.md for the least-privilege policy
       # each provider needs. These credentials can rewrite your zone, so scope
@@ -88,6 +92,14 @@ tls:
       #     credentials_refs:
       #       api_key: env:VALLET_DNS_GODADDY_KEY
       #       api_secret: env:VALLET_DNS_GODADDY_SECRET
+      #
+      #   ovh -> application_key, application_secret, consumer_key, and an
+      #     optional endpoint (ovh-eu (default) | ovh-ca | ovh-us):
+      #     credentials_refs:
+      #       application_key: env:VALLET_DNS_OVH_APP_KEY
+      #       application_secret: env:VALLET_DNS_OVH_APP_SECRET
+      #       consumer_key: env:VALLET_DNS_OVH_CONSUMER_KEY
+      #       endpoint: env:VALLET_DNS_OVH_ENDPOINT   # optional; default ovh-eu
       #
       # The single-value providers above also accept credentials_refs with one
       # entry; the provider uses the sole value.

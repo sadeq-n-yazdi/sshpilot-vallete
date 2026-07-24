@@ -206,6 +206,16 @@ func (r *Runner) runJob(ctx context.Context, j Job) {
 			r.logger.Info("maintenance sweep stopped", slog.String("sweep", j.Name))
 			return
 		case <-timer.C:
+			// A ready timer does not by itself authorize a pass. When the tick
+			// and ctx.Done() are both ready, select chooses between them at
+			// random, so a shutdown that races the tick -- including a Runner
+			// started already-canceled, whose timer can fire before the loop is
+			// even reached -- could otherwise run one pass on its way
+			// out. Re-check the context first and honor cancellation over it.
+			if ctx.Err() != nil {
+				r.logger.Info("maintenance sweep stopped", slog.String("sweep", j.Name))
+				return
+			}
 			// Inline, deliberately: spawning a goroutine per tick is what would
 			// let two passes of the same job overlap. The next wait is computed
 			// after the pass returns, so a slow pass delays the next one rather
