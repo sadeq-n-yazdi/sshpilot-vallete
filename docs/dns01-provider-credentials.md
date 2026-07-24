@@ -19,8 +19,9 @@ this program holds, so two rules apply to every provider below:
 Providers that authenticate with a **single value** (Cloudflare, DigitalOcean,
 DNSimple, Gandi, ArvanCloud) use `credentials_ref`.
 
-Providers that need **several named values** — currently Route 53, GoDaddy, and
-OVH — use `credentials_refs`, a map from a credential name to its own reference:
+Providers that need **several named values** — currently Route 53, GoDaddy,
+Namecheap, and OVH — use `credentials_refs`, a map from a credential name to
+its own reference:
 
 ```yaml
 tls:
@@ -536,6 +537,9 @@ which is a strictly stronger condition.
 
 ---
 
+## Namecheap
+
+Namecheap needs **four** named values, supplied through `credentials_refs`:
 ## OVH
 
 OVH does not authenticate with a single token. Every request is **signed** with
@@ -547,6 +551,88 @@ tls:
   acme:
     dns:
       mode: api
+      provider: namecheap
+      credentials_refs:
+        api_user: env:VALLET_DNS_NAMECHEAP_API_USER
+        api_key: env:VALLET_DNS_NAMECHEAP_API_KEY
+        username: env:VALLET_DNS_NAMECHEAP_USERNAME
+        client_ip: env:VALLET_DNS_NAMECHEAP_CLIENT_IP
+```
+
+Each value is resolved independently through the secret provider. All four are
+required and refused at startup if missing or blank:
+
+- **`api_user`** — the API user account, from *Profile → Tools → API Access*.
+- **`api_key`** — the API key issued on the same page. This is the one secret of
+  the four; the others are account handles and a public address. Enable API
+  access before it will work.
+- **`username`** — the Namecheap username to act as. For most accounts this is
+  the same as `api_user`; it is required explicitly rather than defaulted so the
+  acting identity is never guessed.
+- **`client_ip`** — the public IPv4 address this server calls Namecheap from. It
+  must be on the account's **API allowlist** (*Manage → whitelisted IPs*), or
+  Namecheap rejects every call. It is supplied rather than auto-detected because
+  auto-detection would mean an outbound call to a third-party "what is my IP"
+  service on the certificate path.
+
+The endpoint is fixed at `https://api.namecheap.com/xml.response` and is never
+configurable — a settable endpoint would be a way to point this zone-editing
+credential at another host. The sandbox endpoint is deliberately not offered.
+Every request is a POST so the credentials travel in the request body, never the
+URL, keeping the key out of access logs and transport errors.
+
+### The scope is coarse, and the replace-all API makes correctness the risk
+
+Namecheap's API key is **account-wide** — there is no way to narrow it to one
+domain, record type or record name, so a key that can edit DNS can edit every
+domain in the account. That is a limit of the API, not something this code can
+close.
+
+More importantly, Namecheap has **no per-record API**. The only write is
+`namecheap.domains.dns.setHosts`, which **replaces the domain's entire host-record
+set** in one call — there is no "add one TXT record" operation. This program
+therefore reads the full current host set with `getHosts`, appends the one
+`_acme-challenge` TXT, and re-submits the **whole** set; on cleanup it reads the
+set again and re-submits it **minus** its own value. Every other record — your
+`A`, `AAAA`, `CNAME`, `MX` (with its priority), `TXT` and `CAA` records — is
+carried through **byte for byte** on every write. None of the safety below comes
+from the key:
+
+- The program only ever removes a TXT **value it published itself**, matched
+  exactly, so it cannot remove a record it did not create — including your own
+  TXT record at the same name, and including the second challenge of a wildcard
+  certificate, which sits at the same name with a different digest. That is a
+  property of *this program*, not a limit the key enforces.
+- A failed or unparseable `getHosts` **aborts before any `setHosts`**. A write
+  built on a partial read would replace your whole zone with a truncated copy, so
+  the read must succeed first or nothing is written.
+- If the domain is **not using Namecheap DNS** (`IsUsingOurDNS` is false), the
+  program refuses to write. A `setHosts` there can switch the domain onto
+  Namecheap DNS and drop every externally-served record.
+
+Give DNS-01 its own API key rather than reusing one, store it in the secret
+provider, and rotate it if it is ever exposed. If your threat model cannot accept
+an account-wide credential on this host, use a provider whose API supports
+scoping, or run DNS-01 in `manual` mode.
+
+### Domains: what will be refused
+
+Namecheap's `getHosts`/`setHosts` address a domain by its second-level label
+(`SLD`) and top-level part (`TLD`) as separate parameters, so the registrable
+boundary must be known exactly — and it cannot be guessed from the record name,
+because multi-label suffixes like `co.uk` make "the last two labels" wrong. The
+program enumerates the account's domains with `namecheap.domains.getList` and
+matches the record name against them:
+
+- **The most specific domain wins.** If you hold both `example.com` and a
+  delegated `eu.example.com`, a name under the latter is written there.
+- **No matching domain is an error.** The name being validated must sit under a
+  domain in the account; guessing a split would write the challenge somewhere the
+  CA never queries.
+
+The program does not poll Namecheap for the change to be applied. The solver
+already waits until every authoritative nameserver for the zone serves the value,
+which is a strictly stronger condition.
       provider: ovh
       credentials_refs:
         application_key: env:VALLET_DNS_OVH_APP_KEY

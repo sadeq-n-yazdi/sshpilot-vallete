@@ -44,7 +44,7 @@ tls:
       # manual | api
       mode: ""
       # Required for dns_01 + api: cloudflare | route53 | digitalocean |
-      #   dnsimple | gandi | godaddy | arvancloud | ovh
+      #   dnsimple | gandi | godaddy | arvancloud | namecheap | ovh
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -70,6 +70,9 @@ tls:
       #   arvancloud -> the API key from the machine-user API keys page (the
       #                 bare key; valletd adds the "Apikey " prefix). This key
       #                 is account-wide; see the doc below.
+      #   namecheap  -> four NAMED values via credentials_refs below (api_user,
+      #                 api_key, username, client_ip); there is no single-value
+      #                 form. See the doc below.
       #   ovh        -> NOT a single value: OVH signs each request with three
       #                 fields, so it is set only through credentials_refs
       #                 (application_key, application_secret, consumer_key, and
@@ -93,6 +96,13 @@ tls:
       #       api_key: env:VALLET_DNS_GODADDY_KEY
       #       api_secret: env:VALLET_DNS_GODADDY_SECRET
       #
+      #   namecheap -> api_user, api_key, username and client_ip (all required):
+      #     credentials_refs:
+      #       api_user: env:VALLET_DNS_NAMECHEAP_API_USER
+      #       api_key: env:VALLET_DNS_NAMECHEAP_API_KEY
+      #       username: env:VALLET_DNS_NAMECHEAP_USERNAME
+      #       client_ip: env:VALLET_DNS_NAMECHEAP_CLIENT_IP
+      #     client_ip must be on the account's Namecheap API allowlist.
       #   ovh -> application_key, application_secret, consumer_key, and an
       #     optional endpoint (ovh-eu (default) | ovh-ca | ovh-us):
       #     credentials_refs:

@@ -155,6 +155,8 @@ func NewAPIProvider(name string, creds Credentials, client *http.Client) (Provid
 		return NewGoDaddy(creds, client)
 	case "arvancloud":
 		return NewArvanCloud(creds, client)
+	case "namecheap":
+		return NewNamecheap(creds, client)
 	case "ovh":
 		return NewOVH(creds, client)
 	default:

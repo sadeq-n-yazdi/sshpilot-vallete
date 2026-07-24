@@ -320,6 +320,14 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	//   - arvancloud.go: in do, where the API key is written into the
 	//     Authorization header. Its constructor's emptiness check compares the
 	//     wrapped value against "" for the same reason Cloudflare's does.
+	//   - namecheap.go: in splitNamecheapCredential, the single place the four
+	//     values packed as "api_user\x00api_key\x00username\x00client_ip" are
+	//     unwrapped. Like route53's split it is called from the constructor (to
+	//     fail a malformed credential at startup) and from authParams (to build
+	//     the request body), but there is still exactly one line of source that
+	//     can produce plaintext, which is the property this test defends. The
+	//     constructor's per-field presence check uses IsBlank, which inspects the
+	//     wrapped value without revealing it.
 	//   - ovh.go: FOUR sites, because OVH's scheme genuinely needs several
 	//     distinct values rather than one packed credential (unlike route53).
 	//     Each is documented and each writes straight into the outbound request:
@@ -335,7 +343,7 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	// path to plaintext and must be justified by editing this list.
 	want := map[string]int{
 		"cloudflare.go": 1, "route53.go": 1, "digitalocean.go": 1, "dnsimple.go": 1,
-		"gandi.go": 1, "godaddy.go": 1, "arvancloud.go": 1, "ovh.go": 4,
+		"gandi.go": 1, "godaddy.go": 1, "arvancloud.go": 1, "namecheap.go": 1, "ovh.go": 4,
 	}
 	if !maps.Equal(reveals, want) {
 		t.Errorf("Reveal() call sites = %v, want %v: the plaintext credential must "+
