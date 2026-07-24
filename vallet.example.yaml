@@ -43,7 +43,7 @@ tls:
     dns:
       # manual | api
       mode: ""
-      # Required for dns_01 + api: cloudflare | route53 | digitalocean |
+      # Required for dns_01 + api: cloudflare | route53 | gcp | digitalocean |
       #   dnsimple | gandi | godaddy | arvancloud | namecheap | ovh | azure
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
@@ -52,6 +52,9 @@ tls:
       #   cloudflare -> the API token
       #   route53    -> "ACCESS_KEY_ID:SECRET_ACCESS_KEY" (no region; Route 53
       #                 is global and always signed for us-east-1)
+      #   gcp        -> a service account JSON key (the whole key file). It
+      #                 contains the RSA private key, so prefer a file: ref such
+      #                 as file:/run/secrets/vallet-gcp.json. See the doc below.
       #   digitalocean -> a personal access token with write scope. NOTE: this
       #                 token is account-wide -- DigitalOcean has no per-domain
       #                 or per-record scoping. See the doc below.

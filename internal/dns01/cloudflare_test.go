@@ -338,6 +338,12 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	//     from the allowlist — it is not a secret, but it arrives redacted). The
 	//     constructor's blank checks compare the wrapped values against blank
 	//     without revealing, so they add no site.
+	//   - gcp.go: in parseServiceAccount, the single place the service account JSON
+	//     key (which contains the RSA private key) is unwrapped. Like route53's
+	//     split it is called from the constructor (to fail a malformed key at
+	//     startup) and from accessToken (to sign the JWT assertion), but there is
+	//     still exactly one line of source that can produce plaintext. The
+	//     constructor's blank check uses IsBlank, which does not reveal.
 	//   - azure.go: FOUR sites, because Azure's service-principal flow genuinely
 	//     needs several distinct values. Each is documented and each writes
 	//     straight into the outbound request: the tenant id, client id and client
@@ -355,6 +361,7 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	want := map[string]int{
 		"cloudflare.go": 1, "route53.go": 1, "digitalocean.go": 1, "dnsimple.go": 1,
 		"gandi.go": 1, "godaddy.go": 1, "arvancloud.go": 1, "namecheap.go": 1, "ovh.go": 4,
+		"gcp.go":   1,
 		"azure.go": 4,
 	}
 	if !maps.Equal(reveals, want) {

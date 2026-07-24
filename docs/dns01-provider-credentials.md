@@ -17,7 +17,7 @@ this program holds, so two rules apply to every provider below:
 ### One credential or several
 
 Providers that authenticate with a **single value** (Cloudflare, DigitalOcean,
-DNSimple, Gandi, ArvanCloud) use `credentials_ref`.
+DNSimple, Gandi, ArvanCloud, Google Cloud DNS) use `credentials_ref`.
 
 Providers that need **several named values** — currently Route 53, GoDaddy,
 Namecheap, OVH, and Azure DNS — use `credentials_refs`, a map from a credential
@@ -171,6 +171,63 @@ scoping, so a token that can edit DNS in a zone can edit any record in it. The
 program only ever deletes by the record ID its own create returned, so it cannot
 remove a record it did not create — but that is a property of this program, not
 a limit the token enforces.
+
+---
+
+## Google Cloud DNS
+
+Set `credentials_ref` to a **service account JSON key** — the entire key file,
+as issued from *IAM & Admin → Service Accounts → Keys → Add key → JSON*. The
+blob contains the account's RSA private key, so it is the highest-privilege
+value here; store it in the secret provider (for example
+`file:/run/secrets/vallet-gcp.json`) and never in the config file.
+
+The program authenticates the way Google's own libraries do: it signs a JWT with
+the key's private key and exchanges it at Google's OAuth token endpoint
+(`https://oauth2.googleapis.com/token`, a constant — the key's `token_uri` is
+ignored so a tampered key cannot redirect the signed assertion) for a
+short-lived access token scoped to Cloud DNS read/write only. The private key is
+unwrapped in a single place, to sign that assertion, and never appears in a log,
+an error, or telemetry.
+
+### Least-privilege service account
+
+Grant the service account the **DNS Administrator** role
+(`roles/dns.admin`) on the project, or — narrower — a custom role limited to the
+managed zone holding the domain with only these permissions:
+
+- `dns.managedZones.list` — to find the zone that holds the record.
+- `dns.resourceRecordSets.list` — to read the current TXT set (Cloud DNS has no
+  per-record identifier; a record set is keyed by name and type and holds a
+  *set* of values).
+- `dns.changes.create` and `dns.changes.get` — to add and remove the challenge
+  value.
+
+Use a dedicated service account for this program and attach nothing else to it.
+
+### Zones: what will be refused
+
+The program picks the zone rather than trusting configuration, and it fails
+loudly instead of guessing:
+
+- **The most specific zone wins.** If the project holds both `example.com` and a
+  delegated `eu.example.com`, a name under the latter is written there. Writing
+  to the parent would put the record in a zone that is not authoritative for the
+  name.
+- **Private zones are ignored.** A private managed zone is visible only inside
+  its associated networks; the CA queries the public internet. Only zones whose
+  visibility is `public` are considered.
+- **More than one public zone for the same DNS name is refused.** A project may
+  hold duplicate public zones for a name, and only the one the registrar
+  delegates to is real — the same ambiguity Route 53 has. Picking one would be a
+  coin flip resolved silently.
+
+The program only ever removes the TXT **value it published itself**, matched
+exactly, so cleanup cannot delete a record it did not create — including your
+own TXT record at the same name and the sibling challenge of a wildcard
+certificate. It does not poll Cloud DNS for the change to be applied; the solver
+already waits until every authoritative nameserver for the zone serves the
+value, which is a strictly stronger condition.
 
 ---
 

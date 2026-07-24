@@ -145,6 +145,8 @@ func NewAPIProvider(name string, creds Credentials, client *http.Client) (Provid
 		return NewCloudflare(creds, client)
 	case "route53":
 		return NewRoute53(creds, client)
+	case "gcp":
+		return NewGCP(creds, client)
 	case "digitalocean":
 		return NewDigitalOcean(creds, client)
 	case "dnsimple":
