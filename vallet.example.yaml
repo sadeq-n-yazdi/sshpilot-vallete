@@ -1,0 +1,395 @@
+# sshpilot-vallet example configuration.
+#
+# Precedence: environment variables override this file, which overrides the
+# built-in defaults (ADR-0022). Every value shown below is the built-in default
+# unless noted; delete anything you do not need to change.
+#
+# Secrets are NEVER written here. Fields ending in `_ref` take a *reference* of
+# the form `scheme:opaque`:
+#   env:VALLET_PG_DSN        -> read from the named environment variable
+#   file:/run/secrets/pg-dsn -> read from the file (one trailing newline trimmed)
+#
+# Every leaf can also be set from the environment as VALLET_ + the upper-snaked
+# path, e.g. server.public_base_url -> VALLET_SERVER_PUBLIC_BASE_URL.
+#
+# Durations accept Go syntax (300ms, 15m, 1h30m) plus a day suffix (30d = 720h).
+
+server:
+  # production | development. Production is fail-closed: it requires an https
+  # public_base_url and a token signing key, and rejects self-signed TLS.
+  environment: production
+  listen_addr: ":8443"
+  # Required in production; must be https://. The externally reachable base URL.
+  public_base_url: ""
+  # Source IPs/CIDRs of trusted reverse proxies (required for tls.mode upstream).
+  trusted_proxies: []
+  # Optional PLAINTEXT health-probe listener (ADR-0015, Decision 43). When set it
+  # serves ONLY /healthz and /readyz on this address so an orchestrator that dials
+  # the pod/instance IP can probe a server whose certificate its client does not
+  # trust (Cloudflare Origin CA, self-signed) and could not TLS-handshake. It MUST
+  # bind a loopback or private address (127.0.0.0/8, ::1, RFC1918, or ULA); a
+  # public or wildcard bind is refused at startup. Empty (default) = not started.
+  health_listen_addr: ""
+
+tls:
+  # REQUIRED, no default. One of:
+  #   acme | cloudflare_origin | manual | csr | upstream | self_signed
+  mode: ""
+  min_version: "1.2"
+  acme:
+    directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+    # tls_alpn_01 | dns_01
+    solver: ""
+    dns:
+      # manual | api
+      mode: ""
+      # Required for dns_01 + api: cloudflare | route53 | gcp | digitalocean |
+      #   dnsimple | gandi | godaddy | arvancloud | namecheap | ovh | azure | rfc2136
+      provider: ""
+      # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
+      #
+      # The referenced secret's format depends on the provider:
+      #   cloudflare -> the API token
+      #   route53    -> "ACCESS_KEY_ID:SECRET_ACCESS_KEY" (no region; Route 53
+      #                 is global and always signed for us-east-1)
+      #   gcp        -> a service account JSON key (the whole key file). It
+      #                 contains the RSA private key, so prefer a file: ref such
+      #                 as file:/run/secrets/vallet-gcp.json. See the doc below.
+      #   digitalocean -> a personal access token with write scope. NOTE: this
+      #                 token is account-wide -- DigitalOcean has no per-domain
+      #                 or per-record scoping. See the doc below.
+      #   dnsimple   -> an ACCOUNT API token, not a user token. A user token
+      #                 reaches every account the user can see, so there is no
+      #                 single account behind it and it is refused. This token
+      #                 is also account-wide; see the doc below.
+      #   gandi      -> a Personal Access Token (PAT). The legacy "Apikey" is
+      #                 deprecated by Gandi and not accepted. Scope the PAT to
+      #                 the one organization holding the domain and to DNS
+      #                 management only; see the doc below.
+      #   godaddy    -> an API key AND secret. Prefer credentials_refs with
+      #                 api_key and api_secret; the single credentials_ref form
+      #                 is "KEY:SECRET" (colon-packed). This key is account-wide;
+      #                 see the doc below.
+      #   arvancloud -> the API key from the machine-user API keys page (the
+      #                 bare key; valletd adds the "Apikey " prefix). This key
+      #                 is account-wide; see the doc below.
+      #   namecheap  -> four NAMED values via credentials_refs below (api_user,
+      #                 api_key, username, client_ip); there is no single-value
+      #                 form. See the doc below.
+      #   ovh        -> NOT a single value: OVH signs each request with three
+      #                 fields, so it is set only through credentials_refs
+      #                 (application_key, application_secret, consumer_key, and
+      #                 an optional endpoint). See credentials_refs below.
+      #   azure      -> NOT a single value: an Azure AD service principal, so it
+      #                 is set only through credentials_refs (tenant_id,
+      #                 client_id, client_secret, subscription_id). See below.
+      #   rfc2136    -> the base64 TSIG shared secret. The nameserver, key name
+      #                 and algorithm are the NON-secret server/tsig_key_name/
+      #                 tsig_algorithm fields below, not part of this reference.
+      #
+      # See docs/dns01-provider-credentials.md for the least-privilege policy
+      # each provider needs. These credentials can rewrite your zone, so scope
+      # them as narrowly as the provider allows.
+      credentials_ref: ""
+      # Named, multi-credential alternative to credentials_ref for providers
+      # that need several values. Set EITHER credentials_ref OR credentials_refs
+      # for a given provider, never both (startup is refused if both are set).
+      # Each value is its own secret reference resolved independently.
+      #
+      #   route53 -> access_key_id and secret_access_key as separate references:
+      #     credentials_refs:
+      #       access_key_id: env:VALLET_DNS_AWS_KEY_ID
+      #       secret_access_key: env:VALLET_DNS_AWS_SECRET
+      #   godaddy -> api_key and api_secret as separate references:
+      #     credentials_refs:
+      #       api_key: env:VALLET_DNS_GODADDY_KEY
+      #       api_secret: env:VALLET_DNS_GODADDY_SECRET
+      #
+      #   namecheap -> api_user, api_key, username and client_ip (all required):
+      #     credentials_refs:
+      #       api_user: env:VALLET_DNS_NAMECHEAP_API_USER
+      #       api_key: env:VALLET_DNS_NAMECHEAP_API_KEY
+      #       username: env:VALLET_DNS_NAMECHEAP_USERNAME
+      #       client_ip: env:VALLET_DNS_NAMECHEAP_CLIENT_IP
+      #     client_ip must be on the account's Namecheap API allowlist.
+      #   ovh -> application_key, application_secret, consumer_key, and an
+      #     optional endpoint (ovh-eu (default) | ovh-ca | ovh-us):
+      #     credentials_refs:
+      #       application_key: env:VALLET_DNS_OVH_APP_KEY
+      #       application_secret: env:VALLET_DNS_OVH_APP_SECRET
+      #       consumer_key: env:VALLET_DNS_OVH_CONSUMER_KEY
+      #       endpoint: env:VALLET_DNS_OVH_ENDPOINT   # optional; default ovh-eu
+      #   azure -> tenant_id, client_id, client_secret and subscription_id (all
+      #     required); the resource group and DNS zone are discovered, not set:
+      #     credentials_refs:
+      #       tenant_id: env:VALLET_DNS_AZURE_TENANT_ID
+      #       client_id: env:VALLET_DNS_AZURE_CLIENT_ID
+      #       client_secret: env:VALLET_DNS_AZURE_CLIENT_SECRET
+      #       subscription_id: env:VALLET_DNS_AZURE_SUBSCRIPTION_ID
+      #
+      # The single-value providers above also accept credentials_refs with one
+      # entry; the provider uses the sole value.
+      credentials_refs: {}
+      # --- rfc2136 only (dynamic DNS UPDATE + TSIG) -----------------------------
+      # These three are NON-secret and are plain config, not secret references:
+      # the address, key name and algorithm all travel in the clear on the wire.
+      # Only the TSIG shared secret is sensitive and it rides credentials_ref
+      # above. All three are required (and refused) when provider is rfc2136.
+      #
+      # host:port of the authoritative nameserver that accepts dynamic updates
+      # (your primary / hidden primary). No discovery fallback -- you name the one
+      # server your TSIG key is shared with.
+      server: ""
+      # The TSIG key name, exactly as configured on the nameserver.
+      tsig_key_name: ""
+      # The TSIG HMAC algorithm. Allowlist (strong only; hmac-md5 / hmac-sha1 are
+      # refused): hmac-sha224 | hmac-sha256 | hmac-sha384 | hmac-sha512
+      tsig_algorithm: ""
+      # Example rfc2136 block:
+      #   mode: api
+      #   provider: rfc2136
+      #   server: ns1.example.com:53
+      #   tsig_key_name: acme-update.example.com.
+      #   tsig_algorithm: hmac-sha256
+      #   credentials_ref: env:VALLET_DNS_TSIG_SECRET   # base64 TSIG secret
+  cloudflare_origin:
+    # ONLY for an origin behind the Cloudflare proxy (orange cloud).
+    #
+    # A Cloudflare Origin CA certificate is trusted by the Cloudflare edge and
+    # by NOTHING else -- no browser, no curl, no Go client. If this origin is
+    # reachable directly, every direct client fails verification, and the fix
+    # operators reach for ("just use curl -k") removes the MITM protection on
+    # the key-publish path that is the reason this server is HTTPS-only.
+    #
+    # Because of that, this mode REQUIRES server.trusted_proxies above to list
+    # the Cloudflare edge ranges (https://www.cloudflare.com/ips/): startup is
+    # refused if it is empty, and the certificate is served only to peers in
+    # that list. Do not use this mode for a directly-reachable origin -- use
+    # acme (Let's Encrypt) instead, which issues publicly-trusted certificates.
+    #
+    # HEALTH CHECKS: that withholding applies to every direct peer, loopback
+    # included. A Kubernetes httpGet probe or a load-balancer health check that
+    # dials the pod/instance IP will fail its TLS handshake and the pod will
+    # never become ready. Either add the probe source to server.trusted_proxies
+    # or use a tcpSocket/exec probe, which performs no handshake.
+    #
+    # Required for cloudflare_origin mode. This is Cloudflare's dedicated
+    # "Origin CA Key" (its value starts "v1.0-"), not an ordinary API token; a
+    # scoped API token also works. e.g. env:VALLET_CF_ORIGIN_CA_KEY
+    api_token_ref: ""
+    # Required. Holds the issued certificate and its key (0600) across
+    # restarts, so a crash loop does not re-request a certificate each time.
+    cache_dir: ""
+    # One of 7, 30, 90, 365, 730, 1095, 5475. Default 365 -- deliberately not
+    # Cloudflare's 15-year maximum, which would leave a private key on disk
+    # with no moment at which it is ever replaced.
+    validity_days: 365
+  manual:
+    # Both required for manual mode.
+    cert_file: ""
+    key_file: ""
+  csr:
+    # All three required for csr mode. The app generates key_file (0600) and
+    # writes csr_file for you to have signed; install the returned chain at
+    # cert_file. The server refuses to start until cert_file exists.
+    key_file: ""
+    csr_file: ""
+    cert_file: ""
+  upstream:
+    # TLS terminated by an upstream proxy; trust X-Forwarded-Proto from proxies.
+    require_forwarded_proto: true
+    # Required for tls.mode: upstream, and refused in every other mode. The
+    # PLAINTEXT address the app listens on behind the proxy: in this mode the
+    # process holds no certificate, so this is its only socket. It MUST bind a
+    # loopback or private address (127.0.0.0/8, ::1, RFC1918, or ULA); a public or
+    # wildcard bind is refused at startup. Requests are additionally rejected
+    # unless they arrive from a server.trusted_proxies peer carrying
+    # X-Forwarded-Proto: https, so a plaintext request that bypassed the proxy is
+    # never served as if it were secure.
+    listen_addr: ""
+  # Permit self_signed in production (NOT recommended; production refuses it
+  # otherwise).
+  allow_self_signed_in_production: false
+  # Primary certificate domain (required for acme and csr modes).
+  domain: ""
+  sans: []
+
+database:
+  # sqlite | postgres
+  driver: sqlite
+  sqlite:
+    path: "./data/vallet.db"
+  postgres:
+    # Required for postgres driver. e.g. file:/run/secrets/pg-dsn
+    dsn_ref: ""
+
+auth:
+  access_token_ttl: 15m
+  refresh_token_max_age: 90d
+  # Required in production. e.g. env:VALLET_TOKEN_SIGNING_KEY
+  token_signing_key_ref: ""
+  # Signs and verifies administrator bearer tokens (ADR-0031). This is a
+  # DIFFERENT key from token_signing_key_ref above, and the separation is the
+  # point: it enforces "owner tokens can never grant administrator authority"
+  # (ADR-0018) cryptographically, so an owner-key compromise cannot forge an
+  # administrator token. Must resolve to at least 32 bytes.
+  #
+  #   openssl rand -hex 32   ->   store it, then reference it here
+  #
+  # Required in production: the admin list-edit routes are always mounted, so a
+  # deployment with no admin key answers 403 to every administrator with no
+  # complaint. Left empty in development the admin API stays disabled (every
+  # edit 403). No generated default is ever synthesized -- a per-restart key
+  # would silently invalidate every administrator token. Mint the first admin
+  # and a token with the bootstrap-admin subcommand. e.g. env:VALLET_ADMIN_TOKEN_SIGNING_KEY
+  admin_token_signing_key_ref: ""
+  # HMAC pepper keying the stored digest of every key-set access key.
+  # Must resolve to at least 32 bytes; a shorter or unresolvable value refuses
+  # startup rather than weakening the digests.
+  #
+  #   openssl rand -hex 32   ->   store it, then reference it here
+  #
+  # ROTATION INVALIDATES EVERY EXISTING ACCESS KEY. The pepper keys every stored
+  # digest, so changing it stops every consumer of every protected key set from
+  # verifying, all at once; each one needs a newly minted token. There is no
+  # overlap window and no migration.
+  #
+  # Required in production, and required whenever
+  # retention.access_key_grace_sweep_interval is set (the grace sweep is built
+  # over the same service and refuses a weak or absent pepper). Left empty in
+  # development with the sweep off the server still starts, but no access key
+  # verifies and every protected key set answers the same 404 an absent set
+  # gets. e.g. env:VALLET_ACCESS_KEY_PEPPER
+  access_key_pepper_ref: ""
+  # How long a rotated access key keeps working after its replacement has been
+  # minted -- the time your deployments have to pick up the new credential.
+  #
+  # Must be POSITIVE; startup fails otherwise. 0 is NOT "no deadline": that
+  # reading would leave every rotated credential live forever, so it is refused
+  # rather than guessed at. For rotation with no overlap at all, mint the
+  # replacement and revoke the old key -- two explicit, separately audited
+  # calls. Shortening this does not shorten a window already in flight; revoke
+  # the key to end one early.
+  access_key_grace_window: 24h
+  providers:
+    # At least one provider must be enabled.
+    api_token:
+      enabled: true
+    passkey:
+      enabled: false
+    oidc:
+      enabled: false
+
+rate_limit:
+  enabled: true
+  # memory | shared
+  #   memory: in-process counters. Correct for a single instance; with more
+  #           than one instance each enforces its own limits.
+  #   shared: a Redis/Valkey backend so counters are shared across instances,
+  #           with automatic failover to in-process memory whenever the backend
+  #           is unreachable. During an outage limits are still enforced, but
+  #           per instance, and the shared counts are not preserved; when the
+  #           backend recovers it becomes authoritative again. Limits are never
+  #           disabled -- only made per-instance for the duration of the outage.
+  store: memory
+  shared:
+    # Required when store is shared. A Redis URL:
+    #   redis://host:6379/0      plaintext
+    #   rediss://host:6379/0     TLS with full certificate verification
+    # The rediss:// scheme verifies the server certificate against the system
+    # roots and the URL host; verification is never disabled. A bare "host:port"
+    # is treated as redis:// (no TLS).
+    address: ""
+    # Optional AUTH password, as a secret reference (never the value itself).
+    # e.g. env:VALLET_RATE_LIMIT_PASSWORD or file:/run/secrets/redis-password
+    password_ref: ""
+  tiers:
+    auth: { requests: 5, window: 1m }
+    publish: { requests: 60, window: 1m }
+    management: { requests: 120, window: 1m }
+    admin: { requests: 60, window: 1m }
+
+telemetry:
+  log:
+    level: info
+    format: json
+  metrics:
+    prometheus:
+      # Collect metrics. This does NOT expose them: the scrape endpoint is
+      # served only on its own listener, never on the public API listener.
+      enabled: true
+      # The dedicated address for the scrape endpoint. EMPTY (the default)
+      # means the endpoint is not served at all -- nothing answers a scrape.
+      # Set it to expose metrics, and bind it somewhere only your monitoring
+      # can reach: 127.0.0.1:9090 for a node-local scraper or a sidecar,
+      # 0.0.0.0:9090 only when the platform scrapes across a private network.
+      # The endpoint is unauthenticated, so this address IS the access control.
+      listen_addr: ""
+      path: /metrics
+    otlp:
+      enabled: false
+      # Required when enabled. An http:// or https:// URL with no credentials
+      # in it -- put the collector's auth header in headers_ref instead.
+      endpoint: ""
+      # Optional. e.g. env:VALLET_OTLP_HEADERS
+      headers_ref: ""
+  traces:
+    enabled: false
+    # Required when enabled. Same rules as the OTLP metrics endpoint.
+    endpoint: ""
+    # Head-sampling probability in [0,1] for traces this process starts.
+    sample_ratio: 1.0
+
+onboarding:
+  # invite | open
+  mode: invite
+
+blocklist:
+  # Optional path to a newline-delimited reserved-identifier seed file.
+  seed_file: ""
+  extra_entries: []
+  allow_entries: []
+
+retention:
+  handle_quarantine: 30d
+  # How long audit records are kept. Must be > 0 -- 0 is rejected at startup and
+  # does NOT mean "keep nothing". To stop purging, set audit_purge_interval: 0.
+  audit_retention: 365d
+  # How often the retention purge runs. 0 disables purging entirely.
+  audit_purge_interval: 24h
+  # Records removed per transaction, and the ceiling on one pass. A backlog
+  # larger than the ceiling is drained over successive passes.
+  audit_purge_batch: 500
+  audit_purge_max_per_run: 100000
+  # How often elapsed handle quarantines are returned to the pool, and how many
+  # one pass releases. 0 on the interval disables the sweep, which is safe in
+  # the sense that a vacated name then stays reserved by its previous owner
+  # rather than becoming claimable by anyone else -- it fails closed.
+  handle_quarantine_sweep_interval: 1h
+  handle_quarantine_sweep_batch: 200
+  # How often lapsed rotation grace windows are retired, and how many one pass
+  # retires. 0 disables the sweep and is the DEFAULT.
+  #
+  # Off by default because this sweep enforces nothing. A credential past its
+  # grace deadline is already refused at verification, which compares the
+  # deadline against the clock on every request; the sweep moves the dead row to
+  # the revoked status so the stored state and the audit trail stop describing a
+  # window that closed. Enabling it requires auth.access_key_pepper_ref above.
+  access_key_grace_sweep_interval: 0
+  access_key_grace_sweep_batch: 200
+  max_sets_per_owner: 100
+
+install:
+  # Serve the helper installation script and its SHA-256 digest under /install/
+  # (ADR-0013, ADR-0029). Enabled by default: the script is the documented
+  # bootstrap path for a host that has nothing from this project yet, and it is
+  # not secret. Set to false on locked-down installations; both routes then
+  # behave exactly like any unknown path.
+  enabled: true
+
+docs:
+  # Serve the OpenAPI contract and the embedded documentation UI at /docs/
+  # (ADR-0021). Enabled by default: the contract is not secret, and consumers
+  # need it to build against this API. Set to false on locked-down
+  # installations; the routes then behave exactly like any unknown path.
+  enabled: true

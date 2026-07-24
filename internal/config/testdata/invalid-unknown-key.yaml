@@ -1,0 +1,4 @@
+# Contains an unknown key; Load must reject it via KnownFields(true).
+server:
+  environment: production
+  bogus_key: nope

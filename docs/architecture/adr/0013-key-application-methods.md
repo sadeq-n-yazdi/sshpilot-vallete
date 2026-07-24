@@ -27,6 +27,15 @@ Support and document **two application methods** for phase 1:
    Re-runs replace only the managed block; unmanaged lines are never touched.
    The helper must write atomically (temp file + rename) and preserve `0600`.
 
+   An existing but empty published set returns `200` with an empty body
+   (ADR-0019), which would render an empty managed block and drop every managed
+   key. Because a single accidental set-emptying would otherwise lock out every
+   host, the helper **refuses** a non-empty → empty transition of the managed
+   block unless `--allow-empty` is passed. The refusal is **fail-loud** (non-zero
+   exit, including under `--dry-run`/`--check`), never a silent no-op: an empty
+   render can be a genuine full revocation, so the operator is made aware and
+   opts in with `--allow-empty` rather than a revocation being quietly held back.
+
 2. **`AuthorizedKeysCommand` (recommended).** Document wiring sshd's
    `AuthorizedKeysCommand` to fetch keys on each auth, so hosts are always
    current without a cron/pull and without editing the file at all.
@@ -51,7 +60,8 @@ same audited bytes.
 - Users pick convenience (`curl`) or always-current correctness
   (`AuthorizedKeysCommand`).
 - The helper's safety properties (atomicity, permissions, block markers, never
-  removing unmanaged lines) are security-relevant and must be tested.
+  removing unmanaged lines, and the fail-loud empty-block refusal) are
+  security-relevant and must be tested.
 - Helper delivery form is **resolved: both** (release artifact + served
   endpoint), with a pinned-hash verified install documented.
 
