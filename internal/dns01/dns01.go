@@ -129,10 +129,19 @@ type Provider interface {
 
 // NewAPIProvider builds the provider selected by tls.acme.dns.provider.
 //
-// The switch is exhaustive and its default REFUSES. Adding a provider from
-// ADR-0015's phase-1 list is one file plus one case here; nothing else in the
-// solver, the ACME flow or the config schema changes. That is the property the
-// per-provider tasks depend on.
+// The switch is exhaustive and its default REFUSES. Adding an HTTP-API provider
+// from ADR-0015's phase-1 list is one file plus one case here; nothing else in
+// the solver or the ACME flow changes. That is the property the per-provider
+// tasks depend on.
+//
+// RFC 2136 is the documented exception: it does not speak a vendor HTTP API, so
+// it ignores the *http.Client and needs three non-secret settings this
+// signature cannot carry (nameserver address, TSIG key name, TSIG algorithm). It
+// is therefore built by [NewRFC2136] directly from config in the wiring layer,
+// not through this switch, and it also extends the config schema — see ADR-0034.
+// A caller that reaches this function with "rfc2136" is refused like any other
+// name the switch does not list, which is correct: this entry point genuinely
+// cannot construct it.
 //
 // The credentials arrive already resolved through the secret provider and
 // already wrapped in a [Credentials] set, so no caller of this package ever

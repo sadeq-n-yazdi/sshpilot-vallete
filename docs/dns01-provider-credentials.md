@@ -19,6 +19,11 @@ this program holds, so two rules apply to every provider below:
 Providers that authenticate with a **single value** (Cloudflare, DigitalOcean,
 DNSimple, Gandi, ArvanCloud, Google Cloud DNS) use `credentials_ref`.
 
+RFC 2136 (dynamic DNS UPDATE) is different again: it authenticates with a **TSIG
+key**, whose shared secret rides `credentials_ref` while three *non-secret*
+settings — the nameserver, the key name and the algorithm — are plain config.
+See [RFC 2136](#rfc-2136) below.
+
 Providers that need **several named values** — currently Route 53, GoDaddy,
 Namecheap, OVH, and Azure DNS — use `credentials_refs`, a map from a credential
 name to its own reference:
@@ -861,3 +866,87 @@ resource.
 The program does not poll Azure for the change to be applied. The solver already
 waits until every authoritative nameserver for the zone serves the value, which
 is a strictly stronger condition.
+
+## RFC 2136
+
+RFC 2136 is dynamic DNS UPDATE authenticated with a TSIG key (RFC 8945). Unlike
+every other provider here it is **not an HTTP API** — the program sends a signed
+DNS UPDATE message straight to your authoritative nameserver — so it is
+configured differently:
+
+```yaml
+tls:
+  acme:
+    dns:
+      mode: api
+      provider: rfc2136
+      server: ns1.example.com:53          # host:port of the primary nameserver
+      tsig_key_name: acme-update.example.com.
+      tsig_algorithm: hmac-sha256
+      credentials_ref: env:VALLET_DNS_TSIG_SECRET
+```
+
+Three of these are **plain config, not secret references**, because none of them
+is sensitive:
+
+- **`server`** — the `host:port` of the authoritative nameserver that accepts
+  dynamic updates (your primary/hidden-primary). It is required and has no
+  discovery fallback: a settable-then-guessed nameserver would be a way to steer
+  a zone-editing key at another host, so you name the one server your key is
+  shared with. The address travels in cleartext in every DNS packet anyway.
+- **`tsig_key_name`** — the name of the TSIG key, exactly as configured on the
+  nameserver (BIND's `key "acme-update.example.com." { ... };`). The key **name**
+  is sent in the clear inside every TSIG record on the wire, so it is not a
+  secret.
+- **`tsig_algorithm`** — the HMAC the signature uses. It names a public hash, not
+  a secret. It is validated against a fixed allowlist of strong algorithms —
+  `hmac-sha224`, `hmac-sha256`, `hmac-sha384`, `hmac-sha512` — and anything else,
+  including the historical `hmac-md5` and `hmac-sha1` defaults, is **refused at
+  startup**. A weak signing primitive lets a forged UPDATE rewrite the zone.
+
+Only the **TSIG shared secret** is a credential, and it rides `credentials_ref`
+like any single-value provider:
+
+```
+VALLET_DNS_TSIG_SECRET=<the base64 secret from the nameserver's key stanza>
+```
+
+It is the base64 string in the nameserver's `secret "...";` line. It is never
+written to logs, telemetry, the database or an error, and it is unwrapped in
+exactly one place in the code — where the DNS library computes the message MAC.
+A blank secret, an unsupported algorithm, a `server` that is not `host:port`, or
+a malformed key name is refused at startup rather than at the first renewal.
+
+### Scope the key as narrowly as your nameserver allows
+
+TSIG itself does not scope *what* a key may change — that is the nameserver's
+job. On BIND, restrict the key with an `update-policy` (RFC 3007) rather than a
+blanket `allow-update`, granting only what DNS-01 needs:
+
+```
+zone "example.com" {
+    type primary;
+    update-policy {
+        grant acme-update.example.com. name _acme-challenge.example.com. TXT;
+        grant acme-update.example.com. subdomain _acme-challenge.example.com. TXT;
+    };
+};
+```
+
+That lets the key add and remove **only** `_acme-challenge` TXT records and
+nothing else. The program itself only ever removes the exact TXT value it
+published — the UPDATE deletes one specific record, not the whole record set — so
+it cannot remove a record it did not create, including your own TXT record at the
+same name and the second challenge of a wildcard certificate. But that is a
+property of *this program*; the `update-policy` is what constrains anything else
+holding the key.
+
+### Zones: what happens
+
+The program finds the zone by asking your nameserver for the `SOA` of the record
+name, walking up the labels most-specific-first, so a delegated
+`eu.example.com` wins over its parent `example.com`. The SOA discovery query is a
+read and is **not** TSIG-signed; only the UPDATE that writes the record is
+signed. The program does not wait for the change to be served — the solver
+already waits until every authoritative nameserver for the zone serves the value,
+which is a strictly stronger condition.

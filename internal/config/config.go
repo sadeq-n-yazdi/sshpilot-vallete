@@ -148,6 +148,35 @@ type ACMEDNSConfig struct {
 	// field has no flat environment-variable binding because its keys are
 	// operator-chosen; configure it in YAML or a config file.
 	CredentialsRefs map[string]secrets.Ref `yaml:"credentials_refs"`
+
+	// Server is the "host:port" of the authoritative nameserver that accepts
+	// dynamic UPDATE messages, used ONLY by the "rfc2136" provider.
+	//
+	// It is plain config rather than a secret reference because it is not
+	// sensitive: the address travels in cleartext in every DNS packet this
+	// provider sends. It is required for rfc2136 and refused for it if empty —
+	// there is no discovery fallback, because a settable-then-guessed nameserver
+	// would be a way to steer a zone-editing key at another host.
+	Server string `yaml:"server"`
+
+	// TSIGKeyName is the name of the TSIG key shared with the nameserver, used
+	// ONLY by the "rfc2136" provider (e.g. "acme-update.example.com.").
+	//
+	// It is plain config rather than a secret reference because it is not
+	// sensitive: the key NAME is sent in the clear inside every TSIG record on
+	// the wire; only the shared secret behind the signature is secret and that
+	// rides credentials_ref/credentials_refs. Required for rfc2136.
+	TSIGKeyName string `yaml:"tsig_key_name"`
+
+	// TSIGAlgorithm is the HMAC algorithm the TSIG signature uses, used ONLY by
+	// the "rfc2136" provider (e.g. "hmac-sha256").
+	//
+	// It is plain config rather than a secret reference because it names a public
+	// hash, not a secret. It is required for rfc2136 and validated against a
+	// fixed allowlist of strong HMAC algorithms (SHA-224 and up); the historical
+	// HMAC-MD5/HMAC-SHA1 defaults are deliberately refused, because a weak
+	// signing primitive lets a forged UPDATE rewrite the zone.
+	TSIGAlgorithm string `yaml:"tsig_algorithm"`
 }
 
 // CloudflareOriginConfig configures Cloudflare Origin certificates.

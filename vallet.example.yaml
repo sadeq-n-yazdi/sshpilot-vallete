@@ -44,7 +44,7 @@ tls:
       # manual | api
       mode: ""
       # Required for dns_01 + api: cloudflare | route53 | gcp | digitalocean |
-      #   dnsimple | gandi | godaddy | arvancloud | namecheap | ovh | azure
+      #   dnsimple | gandi | godaddy | arvancloud | namecheap | ovh | azure | rfc2136
       provider: ""
       # Required for dns_01 + api. e.g. env:VALLET_DNS_CREDENTIALS
       #
@@ -83,6 +83,9 @@ tls:
       #   azure      -> NOT a single value: an Azure AD service principal, so it
       #                 is set only through credentials_refs (tenant_id,
       #                 client_id, client_secret, subscription_id). See below.
+      #   rfc2136    -> the base64 TSIG shared secret. The nameserver, key name
+      #                 and algorithm are the NON-secret server/tsig_key_name/
+      #                 tsig_algorithm fields below, not part of this reference.
       #
       # See docs/dns01-provider-credentials.md for the least-privilege policy
       # each provider needs. These credentials can rewrite your zone, so scope
@@ -127,6 +130,28 @@ tls:
       # The single-value providers above also accept credentials_refs with one
       # entry; the provider uses the sole value.
       credentials_refs: {}
+      # --- rfc2136 only (dynamic DNS UPDATE + TSIG) -----------------------------
+      # These three are NON-secret and are plain config, not secret references:
+      # the address, key name and algorithm all travel in the clear on the wire.
+      # Only the TSIG shared secret is sensitive and it rides credentials_ref
+      # above. All three are required (and refused) when provider is rfc2136.
+      #
+      # host:port of the authoritative nameserver that accepts dynamic updates
+      # (your primary / hidden primary). No discovery fallback -- you name the one
+      # server your TSIG key is shared with.
+      server: ""
+      # The TSIG key name, exactly as configured on the nameserver.
+      tsig_key_name: ""
+      # The TSIG HMAC algorithm. Allowlist (strong only; hmac-md5 / hmac-sha1 are
+      # refused): hmac-sha224 | hmac-sha256 | hmac-sha384 | hmac-sha512
+      tsig_algorithm: ""
+      # Example rfc2136 block:
+      #   mode: api
+      #   provider: rfc2136
+      #   server: ns1.example.com:53
+      #   tsig_key_name: acme-update.example.com.
+      #   tsig_algorithm: hmac-sha256
+      #   credentials_ref: env:VALLET_DNS_TSIG_SECRET   # base64 TSIG secret
   cloudflare_origin:
     # ONLY for an origin behind the Cloudflare proxy (orange cloud).
     #
