@@ -321,12 +321,22 @@ func TestCloudflareTokenIsRevealedExactlyOnce(t *testing.T) {
 	//     can produce plaintext, which is the property this test defends. The
 	//     constructor's per-field presence check uses IsBlank, which inspects the
 	//     wrapped value without revealing it.
+	//   - ovh.go: FOUR sites, because OVH's scheme genuinely needs several
+	//     distinct values rather than one packed credential (unlike route53).
+	//     Each is documented and each writes straight into the outbound request:
+	//     the application secret is revealed only in sign (into the SHA-1 that
+	//     becomes X-Ovh-Signature); the application and consumer keys only in do
+	//     (into the X-Ovh-Application and X-Ovh-Consumer headers); and the
+	//     endpoint region label only in ovhBaseURL (to select the fixed base URL
+	//     from the allowlist — it is not a secret, but it arrives redacted). The
+	//     constructor's blank checks compare the wrapped values against blank
+	//     without revealing, so they add no site.
 	//
-	// Any other file, or a second site in any of these, means a new path to
-	// plaintext and must be justified by editing this list.
+	// Any other file, or a second unexplained site in any of these, means a new
+	// path to plaintext and must be justified by editing this list.
 	want := map[string]int{
 		"cloudflare.go": 1, "route53.go": 1, "digitalocean.go": 1, "dnsimple.go": 1,
-		"gandi.go": 1, "arvancloud.go": 1, "namecheap.go": 1,
+		"gandi.go": 1, "arvancloud.go": 1, "namecheap.go": 1, "ovh.go": 4,
 	}
 	if !maps.Equal(reveals, want) {
 		t.Errorf("Reveal() call sites = %v, want %v: the plaintext credential must "+

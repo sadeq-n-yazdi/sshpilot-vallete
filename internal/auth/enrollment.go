@@ -181,7 +181,7 @@ func (s *EnrollmentService) StartDeviceGrant(ctx context.Context, clientLabel st
 	// transcribed code produces. Hashing the grouped display form instead would
 	// make every approval fail.
 	userCode, canonical := newUserCode()
-	return s.create(ctx, &domain.DevicePairing{
+	return s.create(ctx, s.store.Repos(), &domain.DevicePairing{
 		UserCodeHash: hashUserCode(canonical),
 		Scopes:       cloneScopes(scopes),
 		ClientLabel:  clientLabel,
@@ -197,6 +197,30 @@ func (s *EnrollmentService) StartDeviceGrant(ctx context.Context, clientLabel st
 // ownerID is trusted here because the caller has already resolved it; no
 // credential is verified on this path.
 func (s *EnrollmentService) Mint(ctx context.Context, ownerID domain.OwnerID, clientLabel string, scopes []domain.Scope) (*Grant, error) {
+	// Standalone mint keeps its historical shape: the pairing and its link are
+	// two auto-commit writes through the store's ambient repos. Callers that need
+	// the mint to commit or roll back atomically with other work use MintInto and
+	// supply a transaction-bound repos handle instead.
+	return s.mintInto(ctx, s.store.Repos(), ownerID, clientLabel, scopes)
+}
+
+// MintInto is Mint composed into a caller's transaction. It performs exactly the
+// same validation and writes as Mint, but through the repos handle r, so the
+// pairing and its link land in the caller's unit of work -- committing or rolling
+// back together with everything else the caller wrote in that transaction.
+//
+// This exists so a caller that creates an owner and immediately mints that
+// owner's enrollment credential can make both all-or-nothing: without it a mint
+// failure after the owner-create commit would strand an owner with a claimed
+// handle and no way to enroll (there is no API path to re-issue a credential for
+// an existing owner -- that would be an admin->owner escalation, ADR-0031). Mint
+// and MintInto share one implementation so single-use, TTL and identity-linking
+// semantics can never drift between the two paths.
+func (s *EnrollmentService) MintInto(ctx context.Context, r repository.Repos, ownerID domain.OwnerID, clientLabel string, scopes []domain.Scope) (*Grant, error) {
+	return s.mintInto(ctx, r, ownerID, clientLabel, scopes)
+}
+
+func (s *EnrollmentService) mintInto(ctx context.Context, r repository.Repos, ownerID domain.OwnerID, clientLabel string, scopes []domain.Scope) (*Grant, error) {
 	if ownerID == "" {
 		return nil, fmt.Errorf("auth: owner id must not be empty: %w", domain.ErrInvalidInput)
 	}
@@ -217,7 +241,7 @@ func (s *EnrollmentService) Mint(ctx context.Context, ownerID domain.OwnerID, cl
 		Status:       domain.PairingStatusApproved,
 		ApprovedAt:   &approved,
 	}
-	grant, err := s.create(ctx, pairing, "")
+	grant, err := s.create(ctx, r, pairing, "")
 	if err != nil {
 		return nil, err
 	}
@@ -225,17 +249,18 @@ func (s *EnrollmentService) Mint(ctx context.Context, ownerID domain.OwnerID, cl
 	// the explicit, owner-authorized act that makes the pairing's principal
 	// resolvable to an owner. Without it the device code would verify and then
 	// resolve to nobody.
-	if err := s.link(ctx, pairing.ID, ownerID, approved); err != nil {
+	if err := s.link(ctx, r, pairing.ID, ownerID, approved); err != nil {
 		return nil, err
 	}
-	// AUDIT: credential minted -- owner, pairing id, label, scopes. The pairing
-	// and its link are both committed at this point.
+	// AUDIT: credential minted -- owner, pairing id, label, scopes. Both writes
+	// have been issued through r; whether they are visible outside this call
+	// depends on whether r's transaction commits.
 	return grant, nil
 }
 
 // create fills in the identifiers, timestamps and digests a repository is
 // forbidden to generate, writes the row, and returns the codes.
-func (s *EnrollmentService) create(ctx context.Context, pairing *domain.DevicePairing, userCode secrets.Redacted) (*Grant, error) {
+func (s *EnrollmentService) create(ctx context.Context, r repository.Repos, pairing *domain.DevicePairing, userCode secrets.Redacted) (*Grant, error) {
 	now := s.now()
 	secret := newDeviceSecret()
 	pairing.ID = newPairingID()
@@ -245,7 +270,7 @@ func (s *EnrollmentService) create(ctx context.Context, pairing *domain.DevicePa
 	// A client may poll immediately; the interval applies between polls.
 	pairing.NextPollAt = now
 
-	if err := s.store.Repos().DevicePairings.Create(ctx, pairing); err != nil {
+	if err := r.DevicePairings.Create(ctx, pairing); err != nil {
 		return nil, fmt.Errorf("auth: creating device pairing: %w", err)
 	}
 	return &Grant{
@@ -308,7 +333,7 @@ func (s *EnrollmentService) Approve(ctx context.Context, ownerID domain.OwnerID,
 	if err := s.store.Repos().DevicePairings.Approve(ctx, pairing.ID, ownerID, now); err != nil {
 		return ErrAuthFailed
 	}
-	if err := s.link(ctx, pairing.ID, ownerID, now); err != nil {
+	if err := s.link(ctx, s.store.Repos(), pairing.ID, ownerID, now); err != nil {
 		return ErrAuthFailed
 	}
 	// AUDIT: pairing approved -- owner, pairing id, scopes. Both writes have
@@ -323,8 +348,8 @@ func (s *EnrollmentService) Approve(ctx context.Context, ownerID domain.OwnerID,
 // requires: there is no implicit linking anywhere, because an implicit link is
 // an account takeover primitive. The only two callers are Mint and Approve, and
 // in both the owner has authenticated and consented.
-func (s *EnrollmentService) link(ctx context.Context, id domain.PairingID, ownerID domain.OwnerID, now time.Time) error {
-	err := s.store.Repos().LinkedIdentities.Create(ctx, &domain.LinkedIdentity{
+func (s *EnrollmentService) link(ctx context.Context, r repository.Repos, id domain.PairingID, ownerID domain.OwnerID, now time.Time) error {
+	err := r.LinkedIdentities.Create(ctx, &domain.LinkedIdentity{
 		ID:      domain.LinkedIdentityID(id),
 		OwnerID: ownerID,
 		// The provider half comes from the provider's own constant, never from

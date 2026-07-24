@@ -1091,6 +1091,48 @@ paths:
           $ref: "#/components/responses/AdminEntryNotFound"
         "500":
           $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/admin/owners:
+    post:
+      tags: [admin]
+      operationId: provisionOwner
+      summary: Provision a new owner and return a one-time enrollment code.
+      description: |
+        Creates an owner, claims its handle, and opens an empty public default
+        key set — in one transaction — on an administrator's authority, then
+        returns a short-lived, single-use enrollment code (ADR-0033, Phase-1
+        decision #14). The owner redeems that code at `POST /api/v1/enroll/redeem`
+        to mint their own refresh and access tokens, so the operator never holds
+        the owner's long-lived credential.
+
+        The request is authorized against an ACTIVE administrator, audited, and
+        persisted before the owner exists; a disabled administrator's token is
+        refused even though its signature verifies (ADR-0031). The handle and any
+        explicit set name pass the reserved-identifier blocklist (ADR-0017); a
+        refused name and a syntactically invalid one both answer `400`, rendered
+        the same so nothing reveals which rule fired. A `409` means the handle is
+        taken. The one-time code is returned in the response body only and is
+        never written to the audit log.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProvisionOwnerRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/OwnerProvisioned"
+        "400":
+          $ref: "#/components/responses/AdminEditBadRequest"
+        "403":
+          $ref: "#/components/responses/AdminRefused"
+        "409":
+          $ref: "#/components/responses/OwnerHandleConflict"
+        "429":
+          $ref: "#/components/responses/AdminRateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
   /api/v1/enroll/device:
     post:
       tags: [enrollment]
@@ -2091,6 +2133,50 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
           example: { status: error }
+    OwnerProvisioned:
+      description: |
+        The owner, its handle, and its default key set were created, and a
+        one-time enrollment code was minted. The code is disclosed HERE and
+        nowhere else — it is a credential and never appears in the audit log.
+        The administrator hands it to the owner, who redeems it once at
+        `POST /api/v1/enroll/redeem` before it expires.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProvisionedOwner"
+    OwnerHandleConflict:
+      description: |
+        The requested handle is already claimed, by this owner or another. The
+        answer is the same either way and names no owner: a handle that resolves
+        to another owner must be indistinguishable from one that is simply taken.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    AdminRateLimited:
+      description: |
+        The ADMIN rate-limit tier refused the request: the administrator's key
+        has exhausted its budget for the window, or the counter store was
+        unavailable and the tier fails closed (ADR-0023). The body names no
+        count, limit, or tier, for the same reason the other tiers' refusals do
+        not.
+      headers:
+        Retry-After:
+          description: |
+            Seconds until the administrator's window resets, rounded up. Derived
+            from the actual remaining life of the window, not a constant.
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
     InternalError:
       description: |
         An internal fault. The body is fixed text; the cause is in the server
@@ -2411,6 +2497,64 @@ components:
             match engine applies, so an entry that could never be compared
             against an identifier cannot be stored. An empty entry, or one whose
             skeleton is empty, is refused with `400`.
+      additionalProperties: false
+    ProvisionOwnerRequest:
+      type: object
+      description: |
+        The owner to provision. There is deliberately no owner id, no status, no
+        key, and no device field: the server mints the identifiers, the owner is
+        always created active, and the owner adds their own keys after they
+        enroll. `additionalProperties: false` refuses any other field rather than
+        ignoring it.
+      required: [handle]
+      properties:
+        handle:
+          type: string
+          description: |
+            The public name to claim for the new owner. It passes the
+            reserved-identifier blocklist and the handle syntax rules; a refused
+            or invalid handle is a `400` that names no reason.
+        set_name:
+          type: string
+          description: |
+            The name of the owner's default key set. Optional; omitted means
+            `default`. When supplied it is checked against the blocklist too.
+        client_label:
+          type: string
+          description: |
+            A non-secret label recorded on the minted enrollment credential and
+            its audit trail. Optional; omitted means a server default.
+      additionalProperties: false
+    ProvisionedOwner:
+      type: object
+      description: |
+        The provisioned owner and its one-time enrollment code. The code is the
+        only secret here and appears in no other response and no log.
+      required: [owner_id, handle, set_name, enrollment_code, expires_at, pairing_id]
+      properties:
+        owner_id:
+          type: string
+          description: The identifier of the newly created owner.
+        handle:
+          type: string
+          description: The handle claimed for the owner.
+        set_name:
+          type: string
+          description: The name the default key set was created with.
+        enrollment_code:
+          type: string
+          description: |
+            The single-use code the owner redeems at `POST /api/v1/enroll/redeem`
+            to mint their own tokens. It expires at `expires_at`.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the enrollment code expires if unredeemed.
+        pairing_id:
+          type: string
+          description: |
+            Identifies the pairing the code belongs to. Not a secret; on its own
+            it authenticates nothing.
       additionalProperties: false
     CreateKeySetRequest:
       type: object
