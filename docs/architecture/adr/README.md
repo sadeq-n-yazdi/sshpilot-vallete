@@ -42,6 +42,12 @@ consequences. They are the project's decision memory.
 | [0026](0026-handle-lifecycle.md) | Handle lifecycle: uniqueness, rename, quarantine | Accepted |
 | [0027](0027-supply-chain-and-build-security.md) | Supply-chain and build security | Accepted |
 | [0028](0028-migrations-and-backup.md) | Schema migrations and backup | Accepted |
+| [0029](0029-served-helper-installer-and-pinned-hash-install.md) | Served helper installer and pinned-hash install | Accepted |
+| [0030](0030-handle-fold-storage-and-recompute.md) | Handle look-alike fold: stored column, fail-closed drift, startup recompute | Accepted |
+| [0031](0031-administrator-authentication-and-provisioning.md) | Administrator authentication and provisioning | Proposed |
+| [0032](0032-enrollment-and-token-issuance-http-surface.md) | Enrollment and token-issuance HTTP surface | Accepted |
+| [0033](0033-admin-provisioned-owner-onboarding.md) | Admin-provisioned owner onboarding | Proposed |
+| [0034](0034-rfc2136-dns01-provider.md) | RFC 2136 (dynamic DNS UPDATE + TSIG) DNS-01 provider | Proposed |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number, add
 a row above.

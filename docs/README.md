@@ -24,6 +24,8 @@ described in Termius's "SSH ID / passkeys for SSH".
 | **Frontend / client developers (human + AI)** | Requirements today; an API contract (OpenAPI) and client guide will be added once the API surface is agreed. |
 | **Contributors** | The ADR process below, plus [CONTRIBUTING.md](../CONTRIBUTING.md) and the [Code of Conduct](../CODE_OF_CONDUCT.md). |
 | **Security researchers** | [SECURITY.md](../SECURITY.md) — private disclosure policy. |
+| **Operators installing the helper** | [Installing the managed-block helper](install-helper.md) — verified, fail-closed install instructions. |
+| **Operators configuring DNS-01** | [DNS-01 provider credentials](dns01-provider-credentials.md) — credential formats and least-privilege policies per DNS provider. |
 
 ## How decisions are recorded
 

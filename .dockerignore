@@ -1,0 +1,28 @@
+# Keep the build context small and deterministic. The build only needs the Go
+# module sources; everything below is either irrelevant to `go build` or would
+# leak host/VCS state into the image and hurt reproducibility.
+.git
+.gitignore
+.githooks
+Dockerfile
+docker-compose.yml
+.dockerignore
+.env
+*.env
+dist/
+data/
+*.db
+*.db-*
+coverage.out
+*.out
+sbom*.json
+do-not-commit/
+.claude/
+.idea/
+.vscode/
+*.swp
+.DS_Store
+secrets/
+*.pem
+*.key
+*.crt

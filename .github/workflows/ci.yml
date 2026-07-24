@@ -1,0 +1,188 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned to an exact patch release, not a floating minor: the toolchain is
+  # the dominant input to build reproducibility, and go.mod pins the same
+  # version so local and CI builds use one compiler. check-latest is
+  # deliberately absent -- it would re-introduce the float this pin removes.
+  GO_VERSION: "1.26.5"
+
+jobs:
+  build-test:
+    name: build & test (${{ matrix.engine }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [sqlite, postgres]
+
+    # A Postgres service backs the "postgres" matrix leg and any future
+    # storage tests. It also starts for the "sqlite" leg, which is harmless.
+    services:
+      postgres:
+        image: postgres:17.2
+        env:
+          POSTGRES_USER: vallet
+          POSTGRES_PASSWORD: vallet
+          POSTGRES_DB: vallet_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vallet -d vallet_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      VALLET_TEST_ENGINE: ${{ matrix.engine }}
+      VALLET_TEST_POSTGRES_DSN: postgres://vallet:vallet@localhost:5432/vallet_test?sslmode=disable
+
+    steps:
+      # Every third-party action is pinned to a full commit SHA (ADR-0027). A
+      # tag is a mutable pointer the action's owner can repoint at any time, so
+      # tag-pinning leaves a live supply-chain compromise vector open. The
+      # human-readable version is kept in the trailing comment.
+      #
+      # persist-credentials: false keeps GITHUB_TOKEN out of .git/config, so it
+      # is not readable by any later step -- including anything a dependency's
+      # build script might run. No job in this workflow pushes.
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./... -race -coverprofile=coverage.out
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: golangci-lint
+        # golangci-lint must be built with a Go toolchain >= the module's
+        # `go` directive (1.26); v2.12.2 ships on go1.26. The action major
+        # version is kept in step (v8 requires golangci-lint >= v2.1).
+        uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8.0.0
+        with:
+          version: v2.12.2
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # The scanner version is pinned and mirrored in the Makefile
+      # (GOVULNCHECK_VERSION), so a local `make vuln` and this job agree. An
+      # unpinned scanner is itself an unpinned dependency.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+
+      # This is a hard gate: govulncheck exits non-zero when it finds a known
+      # vulnerability reachable in the module's own dependency graph, and that
+      # failure is intentionally never suppressed or made advisory. A release
+      # does not ship over a known vulnerability.
+      - name: Run govulncheck
+        run: govulncheck ./...
+
+  build:
+    name: reproducible build & SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@3041bf56c941b39c61721a86cd11f3bb1338122a # v5.2.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # Builds through the same scripts/build.sh the release job uses, so CI
+      # exercises the real release path rather than a parallel one.
+      - name: Build release binary
+        run: make dist
+
+      # Builds twice and compares bytes. Reproducibility that is only asserted
+      # in a document is not reproducibility, so it is checked on every push.
+      - name: Verify build is reproducible
+        run: make repro
+
+      - name: Generate SBOM
+        run: make sbom
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom-cyclonedx
+          path: dist/sbom.cdx.json
+          if-no-files-found: error
+
+  docker:
+    name: docker image build
+    runs-on: ubuntu-latest
+    # Build-only validation: prove the production Dockerfile still builds on
+    # every push/PR, the same way the jobs above prove `go build` and the
+    # reproducible binary. Nothing is pushed and no registry credential is
+    # used, so this job is fork-safe under the default contents:read token.
+    #
+    # Publishing and signing the image (cosign + SLSA provenance, per ADR-0027)
+    # is deliberately NOT wired here: ADR-0027 defers the registry, tag scheme,
+    # and signing-identity choices as owner decisions, and a release-only push
+    # job cannot be exercised by a PR. That belongs in release.yml as a separate
+    # change once those choices are made.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      # Plain `docker build` on the runner's bundled Docker/BuildKit. This adds
+      # no new third-party action to SHA-pin (ADR-0027 favours a minimal, vetted
+      # action set); build-only validation needs no buildx cache export or
+      # multi-arch matrix. The image is loaded into the local store and never
+      # pushed. VERSION mirrors how scripts/build.sh / the Dockerfile stamp it,
+      # so the build arg is exercised rather than left at its dev default; the
+      # SHA reaches docker through the environment, never ${{ }} interpolation
+      # into the run block.
+      - name: Build image
+        env:
+          VERSION: 0.0.0-ci-${{ github.sha }}
+        run: docker build --build-arg "VERSION=${VERSION}" -t valletd:ci .

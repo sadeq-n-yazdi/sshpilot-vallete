@@ -60,7 +60,8 @@ Implementation has not started yet. When it does, the following will apply:
 - **Tests are mandatory** across happy / failure / gray paths, including negative
   tests; security-critical packages target 100% coverage, and the suite runs on
   both SQLite and PostgreSQL.
-- Run `gofmt`/`go vet` (and the project linter) before pushing.
+- Run `gofmt`/`go vet` (and the project linter) before pushing. Run `make hooks`
+  once per clone to install the pre-commit hook that enforces these gates locally.
 - Keep the OpenAPI contract in sync with any endpoint change.
 
 Until then, contributions are **documentation, design review, threat-model input,

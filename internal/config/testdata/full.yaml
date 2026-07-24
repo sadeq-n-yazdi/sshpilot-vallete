@@ -1,0 +1,88 @@
+# Fuller config exercising many sections; secrets are refs only.
+server:
+  environment: development
+  listen_addr: :9443
+  public_base_url: https://vallet.dev.example.com
+  trusted_proxies:
+    - 10.0.0.1
+    - 10.0.0.2
+tls:
+  mode: acme
+  min_version: "1.3"
+  acme:
+    directory_url: https://acme-staging-v02.api.letsencrypt.org/directory
+    solver: dns_01
+    account_key_file: /var/lib/vallet/acme/account.key
+    cache_dir: /var/lib/vallet/acme
+    contact_email: ops@example.com
+    accept_tos: true
+    dns:
+      mode: api
+      provider: cloudflare
+      credentials_ref: env:VALLET_DNS_CREDS
+  domain: vallet.dev.example.com
+  sans:
+    - www.vallet.dev.example.com
+database:
+  driver: postgres
+  postgres:
+    dsn_ref: file:/run/secrets/pg-dsn
+auth:
+  access_token_ttl: 10m
+  refresh_token_max_age: 30d
+  token_signing_key_ref: env:VALLET_SIGNING_KEY
+  providers:
+    api_token:
+      enabled: true
+    passkey:
+      enabled: true
+    oidc:
+      enabled: false
+rate_limit:
+  enabled: true
+  store: shared
+  shared:
+    address: redis.internal:6379
+    password_ref: env:VALLET_REDIS_PASSWORD
+  tiers:
+    auth:
+      requests: 10
+      window: 1m
+    publish:
+      requests: 100
+      window: 1m
+    management:
+      requests: 200
+      window: 1m
+    admin:
+      requests: 50
+      window: 1m
+telemetry:
+  log:
+    level: debug
+    format: text
+  metrics:
+    prometheus:
+      enabled: true
+      listen_addr: :9100
+      path: /metrics
+    otlp:
+      enabled: true
+      endpoint: otel.internal:4317
+      headers_ref: env:VALLET_OTLP_HEADERS
+  traces:
+    enabled: true
+    endpoint: otel.internal:4317
+onboarding:
+  mode: open
+blocklist:
+  seed_file: ./blocklist.txt
+  extra_entries:
+    - admin
+    - root
+  allow_entries:
+    - support
+retention:
+  handle_quarantine: 45d
+  audit_retention: 730d
+  max_sets_per_owner: 250

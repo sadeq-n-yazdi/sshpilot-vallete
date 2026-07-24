@@ -1,0 +1,2854 @@
+openapi: 3.1.1
+info:
+  title: sshpilot-vallete API
+  version: 1.0.0-rc2
+  summary: Publishes SSH public key sets as native authorized_keys documents.
+  description: |
+    The contract for what the server implements **today**: the two probe
+    endpoints, the unauthenticated publish read path, and device management.
+
+    The remaining management endpoints (owner onboarding, handle and key-set
+    administration, device pairing, credential enrollment) are **forthcoming**
+    and are deliberately absent. A specification that describes unbuilt routes
+    cannot be used as a contract, because a consumer has no way to tell the
+    parts that are real from the parts that are aspirational. Routes are added
+    here as they land, and a contract test fails the build when this document
+    and the router disagree in either direction.
+
+    ## Errors on the management API
+
+    Every management error response is the same JSON object and carries no
+    diagnostics:
+
+    ```json
+    { "status": "error" }
+    ```
+
+    This is documented as it actually is. The body does not name a field, a
+    reason, or a code, and no error-detail model is described here, because the
+    server returns none — a richer schema in this document would promise
+    consumers a level of detail they will never receive.
+
+    ## Authorization
+
+    Management endpoints require a bearer token. The owner is taken from that
+    token and from nowhere else: **no management route accepts an owner
+    identifier as a path, query, or body parameter** (ADR-0004), and a request
+    body carrying an unrecognized field is rejected rather than having the
+    field ignored — so a request that attempted to assert an owner fails
+    outright instead of appearing to succeed.
+
+    A token's scope is checked before any storage is read (ADR-0018). A
+    read-only token cannot reach a mutating operation, and a token bound to a
+    single device can reach only that device.
+
+    ## Enumeration on the management API
+
+    A device identifier that the caller's token does not own is answered
+    **identically** to one that does not exist: the same `404`, the same body.
+    An already-revoked device is answered the same way. The three cases are not
+    distinguishable and are not documented as separate responses, because the
+    indistinguishability is the security property — an authenticated caller
+    must not be able to enumerate other owners' devices, or read a device's
+    lifecycle state, off a difference between two error responses.
+
+    ## Transport
+
+    HTTPS only (ADR-0015). Plaintext HTTP is not a supported transport for any
+    endpoint described here.
+
+    Responses served over a connection known to be HTTPS additionally carry a
+    `Strict-Transport-Security` header. It is a transport-wide policy applied to
+    every response, including error responses, rather than a property of any one
+    operation, so it is not repeated under each response below.
+
+    ## Methods
+
+    `HEAD` is supported wherever `GET` is, and returns the identical status and
+    headers with no body. It is spelled out only on the publish routes, where
+    ADR-0019 requires it and the handler implements the parity explicitly; on
+    the probe endpoints it follows from the same routing rule.
+
+    Any other method on any of these paths is answered with `405 Method Not
+    Allowed` and an `Allow: GET, HEAD` header, by the router rather than by a
+    handler. It is not repeated under each operation below.
+
+    ## Enumeration
+
+    Every negative verdict on the publish path — an unknown handle, an unknown
+    set, a set owned by somebody else, an inactive set, a malformed name, and
+    every refused access key — produces one byte-identical `404`. The cases are
+    **not** distinguishable, and are not documented as separate responses,
+    because the indistinguishability is the security property (ADR-0019): a
+    stranger must not be able to read the existence of a handle or set off a
+    difference between two error responses.
+
+    ## Protected key sets
+
+    A key set is public or protected, per set (ADR-0010, ADR-0016). A public set
+    is served to anyone. A protected set is served only to a request carrying
+    `Authorization: Bearer <access key>` minted for **that** set.
+
+    The credential is read from the `Authorization` header only. There is no
+    query parameter and no cookie that carries it, by design: both are recorded
+    by proxies and browser history and are sent by the client without a
+    deliberate act.
+
+    Anything short of a valid access key for the requested set — no header, a
+    malformed token, a revoked one, or one minted for another of the same
+    owner's sets — is answered with the same uniform `404` above, identical to a
+    set that does not exist. There is deliberately **no** `401` and **no** `403`
+    on these routes:
+
+    - A `401` would confirm the set exists to any unauthenticated prober, which
+      is the oracle the uniform `404` closes.
+    - A `403` for a token minted for a different set would leak the same fact to
+      a consumer holding any one of the owner's tokens. Such a consumer is not
+      the owner and must not learn the owner's other set names. Access keys are
+      bound to a single key set and carry no other scope dimension, so no
+      "authenticated but unauthorized" verdict exists on this path for a `403`
+      to describe.
+
+    The accepted cost, named in ADR-0019: a legitimate consumer with a mistyped
+    or stale key sees `404` rather than a diagnostic `401`.
+
+    A protected set is refused before its credential is examined if the set
+    itself is not active, so a still-valid token cannot resolve a quarantined or
+    retired set.
+
+    A successful protected response is `Cache-Control: private` and carries
+    `Vary: Authorization`, so no shared cache holds access-gated key material
+    and no cache serves one consumer's copy to a request bearing another
+    credential. The `404` carries neither, on either path.
+servers:
+  - url: https://{host}
+    description: A vallete deployment.
+    variables:
+      host:
+        default: localhost:8443
+tags:
+  - name: probes
+    description: Liveness and readiness, for orchestrators and load balancers.
+  - name: publish
+    description: |
+      The read path consumed by sshd and by operators. A public key set needs no
+      credential; a protected one needs an access key minted for that set. See
+      "Protected key sets" above.
+  - name: install
+    description: |
+      The served helper installer and its SHA-256 digest (ADR-0013, ADR-0029).
+      Unauthenticated and enabled by default; a deployer may disable it, and
+      both routes then answer `404` exactly as an unrouted path does.
+  - name: docs
+    description: |
+      This document, served by the server that implements it (ADR-0021).
+      Enabled by default; a deployer may disable it, and every route below then
+      answers `404` exactly as an unrouted path does.
+  - name: devices
+    description: |
+      The owner's device inventory. Every operation is scoped to the owner
+      carried by the bearer token.
+  - name: keys
+    description: |
+      The owner's SSH public keys. Every operation is scoped to the owner
+      carried by the bearer token. Public key material only (ADR-0002): private
+      key material is refused, never stored, and never echoed.
+  - name: keysets
+    description: |
+      The owner's named key sets (ADR-0016). Every operation is scoped to the
+      owner carried by the bearer token. Creating and listing address the
+      account; renaming and deleting address one set, so a set-bound token
+      reaches only the set it was issued for.
+  - name: enrollment
+    description: |
+      Enrollment and token issuance (ADR-0032, ADR-0018 modes 1 and 2). An
+      unauthenticated client starts, polls, and redeems a device-authorization
+      grant, or exchanges a refresh token; an authenticated owner mints a
+      credential or approves a pending device grant. Every credential-check
+      endpoint is metered by the AUTH tier and answers a rejection as one
+      indistinguishable status. Mode 3 (in-client interactive/OIDC) is deferred.
+  - name: admin
+    description: |
+      Instance administration of the reserved-identifier lists (ADR-0017, Fb4).
+      These edit GLOBAL service policy — which identifiers every owner may
+      claim — so they are not owner-scoped and do not use an owner bearer token.
+      Each edit is authorized against an administrator, audited, and persisted
+      before it takes effect (ADR-0007).
+
+      The administrator credential scheme (`adminAuth`) is provisional: the
+      transport binding for administrator identity is a separate decision with
+      its own ADR and is not finalized. Until it is wired every edit fails
+      closed — the routes exist and answer `403` to everyone — so no list is
+      ever edited on nobody's authority.
+paths:
+  /healthz:
+    get:
+      tags: [probes]
+      operationId: getHealthz
+      summary: Liveness probe.
+      description: |
+        Reports on the process alone and performs no dependency checks: if this
+        handler runs, the process is alive and must not be restarted. It cannot
+        fail with a non-2xx of its own.
+      responses:
+        "200":
+          $ref: "#/components/responses/Status"
+  /readyz:
+    get:
+      tags: [probes]
+      operationId: getReadyz
+      summary: Readiness probe.
+      description: |
+        Reflects database health and **fails closed**: `200` is returned only
+        when the datastore answers within the internal 2s deadline. A missing
+        datastore, an error, and a timeout are all reported as `503`, with no
+        indication of which, so an unauthenticated probe cannot map the
+        deployment's dependencies.
+      responses:
+        "200":
+          $ref: "#/components/responses/Status"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /install/vallet-helper.sh:
+    get:
+      tags: [install]
+      operationId: getInstallScript
+      summary: Fetch the helper installation script.
+      description: |
+        The POSIX shell script that installs `vallet-helper` onto a managed
+        host. The bytes are embedded in the binary at build time and are
+        byte-identical for every requester; nothing in the request selects or
+        influences them, and there is deliberately no `/install/{name}` route.
+
+        **Do not pipe this into a shell.** Download it, verify it against the
+        digest below, and only then run it. The documented one-liner in
+        `docs/install-helper.md` chains the two with `&&`, so a mismatched
+        digest aborts before anything executes.
+
+        The `ETag` is the script's SHA-256 — the same value the digest endpoint
+        publishes — so a client that has already verified a copy revalidates
+        against the exact value it verified.
+
+        Served as `text/plain` with `nosniff` and
+        `Content-Disposition: attachment`, so no browser or intermediary renders
+        or executes it.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/InstallAsset"
+        "304":
+          $ref: "#/components/responses/InstallNotModified"
+        "404":
+          $ref: "#/components/responses/RoutingNotFound"
+  /install/vallet-helper.sh.sha256:
+    get:
+      tags: [install]
+      operationId: getInstallScriptDigest
+      summary: Fetch the installation script's SHA-256 digest.
+      description: |
+        The script's digest in `sha256sum -c` format — hex digest, two spaces,
+        file name — so it can be piped straight into `sha256sum -c -` without
+        the operator writing a comparison that could get subtly wrong.
+
+        The digest is computed from the embedded script bytes at process
+        initialization. It is never hand-maintained, so it cannot go stale and
+        cannot disagree with what the script endpoint serves.
+
+        **This endpoint is not a trust anchor.** A server compromised into
+        serving a hostile script would serve that script's digest too.
+        Verifying against a hash from the same origin proves the transfer was
+        intact, not that the origin is honest. Pin the digest published
+        out-of-band in the release notes; this endpoint exists so that published
+        value can be checked for staleness and so the documented install has
+        something to fail closed against.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/InstallAsset"
+        "304":
+          $ref: "#/components/responses/InstallNotModified"
+        "404":
+          $ref: "#/components/responses/RoutingNotFound"
+  /docs:
+    get:
+      tags: [docs]
+      operationId: getDocsRedirect
+      summary: Redirect to the canonical documentation path.
+      description: |
+        Exists so the path a human types resolves. The target is the fixed
+        string `/docs/`; no part of the request contributes to it, so this
+        cannot be driven into an open redirect.
+      responses:
+        "301":
+          description: Moved permanently to `/docs/`.
+        "404":
+          $ref: "#/components/responses/RoutingNotFound"
+  /docs/:
+    get:
+      tags: [docs]
+      operationId: getDocs
+      summary: Fetch this document in the representation you ask for.
+      description: |
+        Content-negotiated on `Accept`. **JSON is the default and the fallback**
+        — an absent, wildcard, unparseable, or unsatisfiable `Accept` all yield
+        `application/json` rather than an error, because an endpoint that serves
+        one static document has no reason to refuse a request. YAML is returned
+        only when the client ranks it strictly above JSON; `application/yaml`,
+        `text/yaml`, and `application/x-yaml` are all understood. Quality values
+        are honored with RFC 9110 specificity, so an explicit preference beats
+        a trailing `*/*`.
+
+        A browser gets `text/html`: a rendered UI whose markup, styles, and
+        script are embedded in the binary and served in this one response. It
+        loads no external assets, and its `Content-Security-Policy` pins the
+        inline script and style by SHA-256 hash under `default-src 'none'`,
+        with no `unsafe-inline` and no `unsafe-eval`. `curl`, which sends no
+        `Accept`, is unaffected and receives JSON.
+
+        The response carries `Vary: Accept`; a cache that ignored it would serve
+        one client's representation to another.
+
+        Prefer `/docs/spec/openapi.json` or `/docs/spec/openapi.yaml` for
+        tooling: negotiation is a convenience, not the contract.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The API contract, as JSON, YAML, or a rendered page.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            Vary:
+              description: Always `Accept`, because the body depends on it.
+              required: true
+              schema:
+                type: string
+          content:
+            application/json: {}
+            application/yaml: {}
+            text/html: {}
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/RoutingNotFound"
+  /docs/spec/openapi.json:
+    get:
+      tags: [docs]
+      operationId: getDocsSpecJSON
+      summary: Fetch this document as JSON at a fixed URL.
+      description: |
+        The same document `/docs/` serves, at a deterministic path that ignores
+        `Accept`. Converted at runtime from the one embedded YAML source, so the
+        two representations cannot disagree.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The API contract as JSON.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/json: {}
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/RoutingNotFound"
+  /docs/spec/openapi.yaml:
+    get:
+      tags: [docs]
+      operationId: getDocsSpecYAML
+      summary: Fetch this document as YAML at a fixed URL.
+      description: |
+        The bytes embedded in the binary at build time, verbatim — comments and
+        formatting intact, never re-serialized and never read from disk.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          description: The API contract as YAML.
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+          content:
+            application/yaml: {}
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/RoutingNotFound"
+  /{handle}:
+    parameters:
+      - $ref: "#/components/parameters/Handle"
+    get:
+      tags: [publish]
+      operationId: getDefaultKeySet
+      security:
+        # Both entries are meaningful. The empty object is the public case: a
+        # public key set is served with no credential at all. bearerAuth is the
+        # protected case. A tool must not read the second entry as "a missing
+        # token yields 401" -- on these routes it yields the uniform 404.
+        - {}
+        - bearerAuth: []
+      summary: Fetch an owner's default key set.
+      description: |
+        Returns the key set the owner designated as their default (ADR-0016).
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/AuthorizedKeys"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    head:
+      tags: [publish]
+      operationId: headDefaultKeySet
+      security:
+        # Both entries are meaningful. The empty object is the public case: a
+        # public key set is served with no credential at all. bearerAuth is the
+        # protected case. A tool must not read the second entry as "a missing
+        # token yields 401" -- on these routes it yields the uniform 404.
+        - {}
+        - bearerAuth: []
+      summary: Headers for an owner's default key set.
+      parameters:
+        - $ref: "#/components/parameters/IfNoneMatch"
+      responses:
+        "200":
+          $ref: "#/components/responses/AuthorizedKeysHead"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /{handle}/{set}:
+    parameters:
+      - $ref: "#/components/parameters/Handle"
+      - $ref: "#/components/parameters/Set"
+    get:
+      tags: [publish]
+      operationId: getKeySet
+      security:
+        # Both entries are meaningful. The empty object is the public case: a
+        # public key set is served with no credential at all. bearerAuth is the
+        # protected case. A tool must not read the second entry as "a missing
+        # token yields 401" -- on these routes it yields the uniform 404.
+        - {}
+        - bearerAuth: []
+      summary: Fetch a named key set.
+      responses:
+        "200":
+          $ref: "#/components/responses/AuthorizedKeys"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    head:
+      tags: [publish]
+      operationId: headKeySet
+      security:
+        # Both entries are meaningful. The empty object is the public case: a
+        # public key set is served with no credential at all. bearerAuth is the
+        # protected case. A tool must not read the second entry as "a missing
+        # token yields 401" -- on these routes it yields the uniform 404.
+        - {}
+        - bearerAuth: []
+      summary: Headers for a named key set.
+      responses:
+        "200":
+          $ref: "#/components/responses/AuthorizedKeysHead"
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "404":
+          $ref: "#/components/responses/UniformNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/devices:
+    get:
+      tags: [devices]
+      operationId: listDevices
+      summary: List the token owner's devices.
+      description: |
+        Returns every device belonging to the owner the bearer token identifies,
+        including revoked ones — the owner is entitled to see its own history,
+        and hiding revoked devices would make a revoked one indistinguishable
+        from one that was never registered.
+
+        No other owner's device can appear, and there is no parameter by which
+        another owner's inventory could be requested.
+
+        Requires a token that is not bound to a single resource: a device-bound
+        token is refused here, because this operation addresses the account
+        rather than any one device.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/DeviceList"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+    post:
+      tags: [devices]
+      operationId: registerDevice
+      summary: Register a device for the token owner.
+      description: |
+        Creates a device owned by the bearer token's owner and returns it with a
+        freshly minted, unguessable identifier.
+
+        The request body carries a name and nothing else. There is no owner
+        field, and an unrecognized field is an error rather than being ignored.
+
+        Requires a token that permits mutation and is not bound to a single
+        resource: a read-only token and a device-bound token are both refused.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterDeviceRequest"
+            example: { name: "work laptop" }
+      responses:
+        "201":
+          $ref: "#/components/responses/DeviceCreated"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/devices/{deviceID}:
+    parameters:
+      - $ref: "#/components/parameters/DeviceID"
+    delete:
+      tags: [devices]
+      operationId: revokeDevice
+      summary: Revoke one of the token owner's devices.
+      description: |
+        Marks the device revoked. The device is not deleted; it remains in the
+        owner's list with a `revoked` status and a `revoked_at` timestamp.
+
+        `204` is returned only for the transition from active to revoked.
+        Repeating the call answers `404`, identically to an unknown identifier
+        and to another owner's identifier — see the enumeration note in the API
+        description. Repeating is therefore safe: it changes nothing, and it
+        discloses nothing about whether the device ever existed.
+
+        Requires a token that permits mutation. A device-bound token may revoke
+        only the device it is bound to.
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          $ref: "#/components/responses/DeviceRevoked"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ManagementNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/keys:
+    get:
+      tags: [keys]
+      operationId: listPublicKeys
+      summary: List the token owner's public keys.
+      description: |
+        Returns every public key belonging to the owner the bearer token
+        identifies, including revoked ones — the owner is entitled to see its
+        own history, and hiding revoked keys would make a revoked one
+        indistinguishable from one that was never enrolled.
+
+        No other owner's key can appear, and there is no parameter by which
+        another owner's keys could be requested.
+
+        The key material itself is **not** returned. A key is identified by its
+        fingerprint, which is what an owner recognizes it by; the blob is what
+        the publish path serves, and there is no management question it answers
+        that the fingerprint does not.
+
+        Requires a token that is not bound to a single resource.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/PublicKeyList"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+    post:
+      tags: [keys]
+      operationId: addPublicKey
+      summary: Enroll a public key on one of the token owner's devices.
+      description: |
+        Accepts one `authorized_keys`-style public key line and attaches it to a
+        device the bearer token's owner owns.
+
+        The submission is validated by a single ingest layer and is stored
+        canonically (ADR-0006): the algorithm, blob, comment, fingerprint, and
+        bit length are all derived by the server from the parsed key. A client
+        cannot assert any of them, because a client-asserted fingerprint would
+        be a client-asserted identity for the key.
+
+        Refused with `400`: private key material (ADR-0002 — the submission is
+        detected before parsing, is never stored, and is never echoed back),
+        `authorized_keys` options of any kind (ADR-0006), an algorithm outside
+        the allowlist, an RSA key below the 3072-bit floor, more than one key,
+        and an oversized submission.
+
+        A `device_id` that is unknown, belongs to another owner, or names a
+        revoked device answers `404`, identically to one another — see the
+        enumeration note in the API description.
+
+        Requires a token that permits mutation and is not bound to a single
+        resource.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AddPublicKeyRequest"
+            example:
+              device_id: PBQKV3XZ2YJ7N4M8RTFC6WDGHA
+              public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExa work laptop"
+      responses:
+        "201":
+          $ref: "#/components/responses/PublicKeyCreated"
+        "400":
+          $ref: "#/components/responses/PublicKeyRejected"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ManagementNotFound"
+        "409":
+          $ref: "#/components/responses/PublicKeyDuplicate"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/keys/{keyID}:
+    parameters:
+      - $ref: "#/components/parameters/KeyID"
+    delete:
+      tags: [keys]
+      operationId: revokePublicKey
+      summary: Revoke one of the token owner's public keys.
+      description: |
+        Marks the key revoked. The key is not deleted; it remains in the owner's
+        list with a `revoked` status and a `revoked_at` timestamp, and stops
+        being served by the publish path.
+
+        `204` is returned only for the transition from active to revoked.
+        Repeating the call answers `404`, identically to an unknown identifier
+        and to another owner's identifier. Repeating is therefore safe: it
+        changes nothing, and it discloses nothing about whether the key ever
+        existed.
+
+        Requires a token that permits mutation and is not bound to a single
+        resource.
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          $ref: "#/components/responses/PublicKeyRevoked"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/ManagementNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/keysets:
+    get:
+      tags: [keysets]
+      operationId: listKeySets
+      summary: List the token owner's key sets.
+      description: |
+        Returns every live key set belonging to the owner the bearer token
+        identifies. An owner with none gets an empty array, not a `404`.
+
+        Quarantined tombstones are not returned. A renamed or deleted set name
+        is held in reserve for a quarantine window (ADR-0016, aligned with the
+        handle lifecycle in ADR-0026) so re-creating it cannot silently serve
+        different keys at a URL consumers are still polling — but a reserved
+        name is not a set, and nothing can be published from it.
+
+        No other owner's set can appear, and there is no parameter by which
+        another owner's sets could be requested.
+
+        Requires a token that is not bound to a single resource.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/KeySetList"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+    post:
+      tags: [keysets]
+      operationId: createKeySet
+      summary: Create a key set for the token owner.
+      description: |
+        Creates a new, empty key set under the given name.
+
+        The name is a slug: 1–64 characters of lowercase `a–z`, `0–9`, and
+        hyphen, with no leading or trailing hyphen. It is also checked against
+        the reserved-identifier blocklist (ADR-0017); a blocked name is refused
+        with `400` and a deliberately vague message that never names which
+        curated term fired.
+
+        The new set is always created **protected** and is never the default.
+        Visibility and default designation are separate operations with their
+        own authorization story, and the request body has no field for either —
+        an unrecognized field is refused rather than ignored.
+
+        `409` with reason `name_taken` means the owner already holds that name,
+        including as a quarantined tombstone. `409` with reason `limit_reached`
+        means the owner is at the per-owner cap (configurable, default 100),
+        which counts tombstones because a reserved name still occupies the
+        owner's namespace.
+
+        Requires a token that permits mutation and is not bound to a single
+        resource — a token scoped to one key set must not be able to mint
+        another.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateKeySetRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/KeySetCreated"
+        "400":
+          $ref: "#/components/responses/KeySetBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/KeySetConflict"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/keysets/{keySetID}:
+    parameters:
+      - $ref: "#/components/parameters/KeySetID"
+    patch:
+      tags: [keysets]
+      operationId: renameKeySet
+      summary: Rename one of the token owner's key sets.
+      description: |
+        Moves the set onto a different name. The destination name is validated
+        and blocklist-checked exactly as at creation: a name blocked at create
+        is blocked at rename, or creating a permitted name and renaming
+        afterwards would be a bypass.
+
+        **The response carries a new `id`.** A key set row's name is immutable,
+        so a rename is a new row under the new name plus a quarantined tombstone
+        holding the freed name in reserve. Membership moves to the new row, and
+        if the renamed set was the owner's default the designation moves with it
+        — quarantining the old default without transferring it would leave bare
+        `GET /{handle}` resolving to a set that is no longer live. A client
+        holding the old identifier must re-read the set, and gets the same `404`
+        a stranger's identifier gets if it does not.
+
+        The whole composition is one transaction; a partial rename — a new row
+        with no members, or a freed name with no successor — is not a reachable
+        state.
+
+        `404` covers an unknown identifier, another owner's identifier, and a
+        quarantined tombstone; the cases cannot be told apart.
+
+        Requires a token that permits mutation. A token bound to this key set is
+        sufficient; a token bound to a different one is refused.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenameKeySetRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/KeySetRenamed"
+        "400":
+          $ref: "#/components/responses/KeySetBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/KeySetNotFound"
+        "409":
+          $ref: "#/components/responses/KeySetConflict"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+    delete:
+      tags: [keysets]
+      operationId: deleteKeySet
+      summary: Delete one of the token owner's key sets.
+      description: |
+        Removes the set and its membership rows. The underlying public keys are
+        never deleted: a key may belong to other sets, and it always belongs to
+        its device.
+
+        Two refusals, both `409` and both reporting only on the caller's own
+        account:
+
+        - `default_set` — the designated default cannot be deleted by any path,
+          so bare `GET /{handle}` never dangles. Designate another default
+          first.
+        - `confirmation_required` — the set still has members, and ADR-0016
+          requires an explicit acknowledgement. Send `{"confirm": true}`.
+
+        The confirmation fails closed. An absent body, an absent field, and
+        `false` all leave it unset and refuse; a body that is present but
+        malformed is refused with `400` rather than read as a declined
+        confirmation. There is no shape of malformed request that deletes more
+        than a well-formed one would.
+
+        `404` covers an unknown identifier, another owner's identifier, and a
+        quarantined tombstone; the cases cannot be told apart, and a delete
+        aimed at a stranger's set is byte-identical to one aimed at an
+        identifier that never existed.
+
+        Requires a token that permits mutation. A token bound to this key set is
+        sufficient; a token bound to a different one is refused.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteKeySetRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/KeySetDeleted"
+        "400":
+          $ref: "#/components/responses/KeySetBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/KeySetNotFound"
+        "409":
+          $ref: "#/components/responses/KeySetConflict"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/keysets/{keySetID}/default:
+    parameters:
+      - $ref: "#/components/parameters/KeySetID"
+    put:
+      tags: [keysets]
+      operationId: setDefaultKeySet
+      summary: Designate one of the token owner's key sets as the default.
+      description: |
+        Makes this set the one bare `GET /{handle}` resolves to (ADR-0016).
+
+        Exactly one set is the default at any moment. The previous designation
+        is cleared and the new one set inside a single transaction, backed by a
+        partial unique index, so two defaults — which would make bare
+        `GET /{handle}` non-deterministic — and zero defaults — which would make
+        it dangle — are both unreachable states rather than checked-for ones.
+
+        Designating a new default is what frees the previous one for deletion:
+        `DELETE /api/v1/keysets/{keySetID}` refuses the designated default, and
+        the refusal follows the designation.
+
+        There is no request body. The set is named by the path and the operation
+        has no other input.
+
+        A quarantined tombstone cannot be designated: a reserved name is not a
+        set, and pointing the bare handle at one would serve nothing. It answers
+        the same `404` an unknown identifier and another owner's identifier get;
+        the cases cannot be told apart.
+
+        Requires a token that permits mutation and **is not bound to a single
+        key set**, unlike rename and delete. Designating a default also writes
+        the previous default's row and repoints account-wide state, so a token
+        confined to one set must not be able to reach it.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          $ref: "#/components/responses/KeySetUpdated"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/KeySetNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/keysets/{keySetID}/visibility:
+    parameters:
+      - $ref: "#/components/parameters/KeySetID"
+    put:
+      tags: [keysets]
+      operationId: setKeySetVisibility
+      summary: Move one of the token owner's key sets between public and protected.
+      description: |
+        Sets whether the key set may be resolved without a credential (ADR-0010,
+        refined per key set by ADR-0016; publish semantics in ADR-0019).
+
+        Both directions are access-affecting and both are audited.
+        `protected`→`public` exposes the handle-to-keys association the owner
+        had chosen to restrict; `public`→`protected` breaks consumers still
+        polling the URL. Neither is the harmless direction.
+
+        The value is required and fails closed. An absent body, an absent field,
+        an empty string, and any value outside `{public, protected}` are all
+        refused with `400`; an unrecognized field is refused rather than
+        ignored. There is no shape of malformed request that publishes a set.
+
+        Re-asserting the visibility a set already has succeeds and is recorded.
+
+        A quarantined tombstone has no visibility to change — nothing resolves
+        through a reserved name — and answers the same `404` an unknown
+        identifier and another owner's identifier get.
+
+        Requires a token that permits mutation. A token bound to this key set is
+        sufficient; a token bound to a different one is refused.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetKeySetVisibilityRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/KeySetUpdated"
+        "400":
+          $ref: "#/components/responses/KeySetBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/KeySetNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/admin/reserved/allowlist:
+    post:
+      tags: [admin]
+      operationId: addAllowlistEntry
+      summary: Exempt an identifier from the reserved-identifier blocklist.
+      description: |
+        Adds an allowlist entry: an identifier the blocklist would otherwise
+        refuse becomes claimable. This is a deliberate hole in a security
+        control, so it is authorized against an administrator, audited, and made
+        durable before it takes effect — and, because it weakens the control,
+        the audit record is written before the exemption is applied (ADR-0017).
+
+        The entry is the administrator's own spelling; a `409` means it is
+        already present. The response names no reason and echoes no entry.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminListEntryRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/AdminEditApplied"
+        "400":
+          $ref: "#/components/responses/AdminEditBadRequest"
+        "403":
+          $ref: "#/components/responses/AdminRefused"
+        "409":
+          $ref: "#/components/responses/AdminEntryConflict"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+    delete:
+      tags: [admin]
+      operationId: removeAllowlistEntry
+      summary: Withdraw an allowlist exemption.
+      description: |
+        Removes an allowlist entry, re-blocking the identifier for future
+        creates and renames. Identifiers already claimed under the entry are not
+        affected — the blocklist is enforced at creation and rename only
+        (ADR-0017). Removal strengthens the control, so it is persisted before
+        it is reported as done.
+
+        The entry is matched on its skeleton, so a removal withdraws an entry
+        added under any confusable spelling of the same word. A `404` means no
+        such entry is present.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminListEntryRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/AdminEditApplied"
+        "400":
+          $ref: "#/components/responses/AdminEditBadRequest"
+        "403":
+          $ref: "#/components/responses/AdminRefused"
+        "404":
+          $ref: "#/components/responses/AdminEntryNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/admin/reserved/blocklist:
+    post:
+      tags: [admin]
+      operationId: addBlocklistTerm
+      summary: Reserve an additional identifier at runtime.
+      description: |
+        Adds an administrator-chosen term to the reserved-identifier blocklist,
+        refused from that point on for creates and renames. The term is
+        whole-skeleton and its confusable spellings are refused with it;
+        substring terms are not offered at runtime, because one mistaken
+        substring could refuse a large share of the namespace (ADR-0017).
+
+        A `409` means the term is already present. The response names no reason.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminListEntryRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/AdminEditApplied"
+        "400":
+          $ref: "#/components/responses/AdminEditBadRequest"
+        "403":
+          $ref: "#/components/responses/AdminRefused"
+        "409":
+          $ref: "#/components/responses/AdminEntryConflict"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+    delete:
+      tags: [admin]
+      operationId: removeBlocklistTerm
+      summary: Withdraw an administrator-added reserved term.
+      description: |
+        Removes a term previously added at runtime. Curated terms from the
+        built-in lists are not reachable here: they are reviewed data, and a
+        runtime operation that could silently disable a shipped impersonation
+        term would be a larger hole than the allowlist it complements
+        (ADR-0017). Removal weakens the control, so the audit record is written
+        before the term stops being enforced.
+
+        A `404` means no such administrator-added term is present.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminListEntryRequest"
+      responses:
+        "204":
+          $ref: "#/components/responses/AdminEditApplied"
+        "400":
+          $ref: "#/components/responses/AdminEditBadRequest"
+        "403":
+          $ref: "#/components/responses/AdminRefused"
+        "404":
+          $ref: "#/components/responses/AdminEntryNotFound"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/admin/owners:
+    post:
+      tags: [admin]
+      operationId: provisionOwner
+      summary: Provision a new owner and return a one-time enrollment code.
+      description: |
+        Creates an owner, claims its handle, and opens an empty public default
+        key set — in one transaction — on an administrator's authority, then
+        returns a short-lived, single-use enrollment code (ADR-0033, Phase-1
+        decision #14). The owner redeems that code at `POST /api/v1/enroll/redeem`
+        to mint their own refresh and access tokens, so the operator never holds
+        the owner's long-lived credential.
+
+        The request is authorized against an ACTIVE administrator, audited, and
+        persisted before the owner exists; a disabled administrator's token is
+        refused even though its signature verifies (ADR-0031). The handle and any
+        explicit set name pass the reserved-identifier blocklist (ADR-0017); a
+        refused name and a syntactically invalid one both answer `400`, rendered
+        the same so nothing reveals which rule fired. A `409` means the handle is
+        taken. The one-time code is returned in the response body only and is
+        never written to the audit log.
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProvisionOwnerRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/OwnerProvisioned"
+        "400":
+          $ref: "#/components/responses/AdminEditBadRequest"
+        "403":
+          $ref: "#/components/responses/AdminRefused"
+        "409":
+          $ref: "#/components/responses/OwnerHandleConflict"
+        "429":
+          $ref: "#/components/responses/AdminRateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/enroll/device:
+    post:
+      tags: [enrollment]
+      operationId: startDeviceGrant
+      summary: Start a device-authorization grant (mode 1).
+      description: |
+        Opens a pending pairing for an unauthenticated client and returns the
+        device code the client keeps and the short user code its human operator
+        transcribes into an authenticated session to approve it (ADR-0032,
+        ADR-0018 mode 1).
+
+        This endpoint is deliberately unauthenticated: the caller has not yet
+        proven to be anybody, and the pairing is unusable until an owner approves
+        it. It carries no owner field — there is no owner yet — and an
+        unrecognized field is refused rather than ignored.
+
+        It is metered by the AUTH tier keyed on the client IP so an address
+        already locked out for spraying the redeem endpoint cannot open fresh
+        pairings here either; a successful start is not counted as a failure.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantRequest"
+            example:
+              client_label: "ci runner"
+              scopes: [{ kind: full_owner }]
+      responses:
+        "201":
+          $ref: "#/components/responses/GrantIssued"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/enroll/poll:
+    post:
+      tags: [enrollment]
+      operationId: pollDeviceGrant
+      summary: Poll a pending device grant for approval.
+      description: |
+        Reports whether the pairing the presented device code identifies has been
+        approved yet: `200` approved, `202` still pending, `401` refused. The
+        client already holds the pairing's own 256-bit device code, so telling it
+        "keep waiting" from "give up" reveals nothing it does not already have,
+        and a device-authorization client cannot function without the
+        distinction.
+
+        Unauthenticated and metered by the AUTH tier keyed on the client IP. The
+        device code is unguessable and the service throttles poll cadence per
+        code, so a poll is not counted as a credential-guess failure; the IP
+        lockout earned on the minting endpoints still applies.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceCodeRequest"
+            example:
+              device_code: "b0f3…redeemable-256-bit-code"
+      responses:
+        "200":
+          $ref: "#/components/responses/EnrollApproved"
+        "202":
+          $ref: "#/components/responses/EnrollPending"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/EnrollRejected"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/enroll/redeem:
+    post:
+      tags: [enrollment]
+      operationId: redeemDeviceGrant
+      summary: Redeem an approved device grant for the first credential pair.
+      description: |
+        Exchanges an approved device code for the pairing's first refresh and
+        access tokens, disclosed exactly once in the response body.
+
+        Unauthenticated and metered by the full AUTH-tier pattern keyed on the
+        client IP: the check runs before the service call, a genuine rejection
+        climbs the backoff curve, and a correct redemption clears the count. An
+        unknown, expired, unapproved, or already-redeemed code is one
+        indistinguishable `401`, so a redeemer learns nothing about which. A
+        malformed body is a `400` and is not counted — a parse failure is not a
+        credential guess.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceCodeRequest"
+            example:
+              device_code: "b0f3…approved-256-bit-code"
+      responses:
+        "200":
+          $ref: "#/components/responses/CredentialIssued"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/EnrollRejected"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/enroll/mint:
+    post:
+      tags: [enrollment]
+      operationId: mintCredential
+      summary: Mint a credential for the token owner (mode 2).
+      description: |
+        Mints a fresh pairing already approved for the bearer token's owner and
+        returns its device code (mode 2, the manual-paste flow: ADR-0032,
+        ADR-0018). The user code is empty and omitted — the mint IS the approval,
+        so there is nothing for an operator to transcribe.
+
+        The owner is the verified token's and nothing in the request body reaches
+        it (ADR-0004). It requires a token that permits mutation and is not bound
+        to a single resource: enrollment is an account-wide act.
+
+        It carries no AUTH-tier failure counter of its own — it verifies no
+        guessable secret — and runs behind the per-credential management tier like
+        the device routes.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GrantRequest"
+            example:
+              client_label: "backup host"
+              scopes: [{ kind: full_owner }]
+      responses:
+        "201":
+          $ref: "#/components/responses/GrantIssued"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/enroll/approve:
+    post:
+      tags: [enrollment]
+      operationId: approveDeviceGrant
+      summary: Approve a pending device grant for the token owner (mode 1).
+      description: |
+        Binds a pending pairing to the bearer token's owner on the strength of the
+        short user code the operator transcribed from the pairing client.
+
+        The owner is the verified token's (ADR-0004); the request carries only the
+        user code. It requires a token that permits mutation and is not bound to a
+        single resource. An unknown code, an expired or already-approved pairing,
+        and an exhausted attempt budget are one indistinguishable `403`, so an
+        owner cannot confirm a hit on another pairing's code; the bearer already
+        passed authorization, so a refusal is `403` (the action is refused) rather
+        than `401` (which would wrongly invite a token refresh).
+
+        It is metered by the AUTH tier keyed on the VERIFIED OWNER, not the client
+        IP: the user code is the ~40-bit secret this surface protects, so guessing
+        is bounded independently of IP rotation and behind an authenticated
+        identity, with exponential backoff layered over the service's own flat
+        per-pairing attempt cap.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproveRequest"
+            example:
+              user_code: "WDGH-6RTF"
+      responses:
+        "204":
+          $ref: "#/components/responses/PairingApproved"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+  /api/v1/token:
+    post:
+      tags: [enrollment]
+      operationId: exchangeToken
+      summary: Exchange a refresh token for a fresh credential pair.
+      description: |
+        Rotates a refresh token single-use and mints a fresh access token,
+        disclosed once in the response body (ADR-0032, ADR-0018 reuse-theft
+        detection). A replayed refresh token additionally revokes its whole
+        lineage inside the service, but the wire response is the same
+        indistinguishable `401` as any other rejection, so a replayer cannot tell
+        a live lineage it just burned from a dead one.
+
+        Unauthenticated — the refresh token is itself the credential — and metered
+        by the full AUTH-tier pattern keyed on the client IP. It is the sibling of
+        the redeem endpoint and shares that IP key space, so a campaign that sprays
+        one is throttled on the other. A malformed body is a `400` and is not
+        counted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExchangeRequest"
+            example:
+              refresh_token: "5d1c…single-use-refresh-token"
+      responses:
+        "200":
+          $ref: "#/components/responses/CredentialIssued"
+        "400":
+          $ref: "#/components/responses/ManagementBadRequest"
+        "401":
+          $ref: "#/components/responses/EnrollRejected"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ManagementInternalError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        An access token issued by the enrollment flow. Exactly one
+        `Authorization` header is accepted; two is a request-smuggling shape and
+        is refused rather than resolved.
+    adminAuth:
+      type: http
+      scheme: bearer
+      description: |
+        A signed administrator bearer token (ADR-0031). The token names an
+        administrator and is signed with a DEDICATED administrator signing key,
+        distinct from the owner access-token signing key, so an owner token can
+        never grant administrator authority (ADR-0018) and an owner-key
+        compromise cannot forge one. Provision the first administrator and mint
+        its token with the `bootstrap-admin` subcommand.
+
+        Verification checks the signature and validity window only; the actual
+        authority is the `administrators` table, consulted on every request, so
+        a validly-signed token for a disabled or unknown administrator is
+        refused with `403`. There is no per-token revocation in v1: disabling
+        the administrator row revokes all of that admin's tokens at once, and a
+        bounded token lifetime caps a leaked token's exposure until then.
+
+        Whether the server accepts these tokens depends on deployment wiring: an
+        administrator signing key must be configured
+        (`auth.admin_token_signing_key_ref`), required in production. Without it
+        the admin routes stay fail-closed and every edit is refused with `403`.
+  parameters:
+    Handle:
+      name: handle
+      in: path
+      required: true
+      description: The owner's handle. Reserved terms are not routable as handles (ADR-0017).
+      schema:
+        type: string
+    Set:
+      name: set
+      in: path
+      required: true
+      description: The key set name, scoped to the handle's owner.
+      schema:
+        type: string
+    DeviceID:
+      name: deviceID
+      in: path
+      required: true
+      description: |
+        The device's opaque, unguessable identifier, as returned by the register
+        and list operations. It is not derived from the device's name or from
+        anything else a caller could reconstruct.
+      schema:
+        type: string
+    KeyID:
+      name: keyID
+      in: path
+      required: true
+      description: |
+        The key's opaque, unguessable identifier, as returned by the add and
+        list operations. It is not derived from the key's fingerprint, comment,
+        or material, so it cannot be reconstructed from a key a caller has seen
+        elsewhere.
+      schema:
+        type: string
+    KeySetID:
+      name: keySetID
+      in: path
+      required: true
+      description: |
+        The key set's opaque, unguessable identifier, as returned by the create
+        and list operations. It is not derived from the set's name, so it cannot
+        be reconstructed from a `/{handle}/{set}` URL a caller has seen. A
+        rename mints a new one.
+      schema:
+        type: string
+    IfNoneMatch:
+      name: If-None-Match
+      in: header
+      required: false
+      description: |
+        A previously returned `ETag`, or `*`. Compared with the weak comparison
+        RFC 9110 prescribes for this header, so a `W/` prefix is ignored. A
+        value that does not parse simply fails to match and yields a full `200`
+        — the safe direction, since a wrongly matched tag would answer `304` and
+        leave a consumer using a key list it should have replaced.
+      schema:
+        type: string
+  headers:
+    ETag:
+      description: |
+        A strong entity tag: the SHA-256 of the body. Because it is derived from
+        the content rather than from a clock or a random token, it is stable
+        across restarts, rebuilds, and replicas, so any instance can validate a
+        tag any other instance issued.
+      required: true
+      schema:
+        type: string
+    CacheControlPublish:
+      description: |
+        `public, max-age=60` for a public key set, and `private, max-age=60` for
+        a protected one. The TTL bounds the revocation window on the cached
+        path: a revoked key can be honored by a cache for at most this long.
+
+        `private` on the protected path is what keeps access-gated key material
+        out of shared caches (ADR-0019); it is paired with `Vary: Authorization`
+        so that a cache which stores the response anyway is keyed by the
+        credential rather than by the URL alone.
+      required: true
+      schema:
+        type: string
+    CacheControlNoStore:
+      description: |
+        `no-store`. Failure and probe responses are never cached. A cached
+        negative would keep answering `404` after the owner published the set,
+        and a cached probe would let an unhealthy instance keep passing.
+      required: true
+      schema:
+        type: string
+    VaryAuthorizationPublish:
+      description: |
+        `Authorization`, on a protected key set's response only. It is ABSENT on
+        a public one, which is shared-cacheable by URL alone and gains nothing
+        from being keyed by a credential no consumer sends.
+
+        It is likewise absent from the `404`. Emitting it for a protected miss
+        and not for an absent set would recreate, in a header, exactly the
+        distinguishable pair the uniform `404` exists to prevent.
+      required: false
+      schema:
+        type: string
+    VaryAuthorization:
+      description: |
+        Always `Authorization`. It is set on every access-gated response,
+        success and refusal alike (ADR-0019). The success path is where it
+        matters most: two owners issuing the same request each see a body they
+        alone may see, and a shared cache without this header would serve the
+        first one's devices to the second.
+      required: true
+      schema:
+        type: string
+    CacheControlInstall:
+      description: |
+        `public, max-age=300`. The artifact is fixed at build time, so the only
+        purpose of the ceiling is to stop a cache shadowing a redeployed script
+        for long. Kept short on purpose: a stale installer whose digest no
+        longer matches the published one trains operators to skip verification.
+      required: true
+      schema:
+        type: string
+    ContentDispositionAttachment:
+      description: |
+        `attachment; filename="..."`. Forces a download rather than an inline
+        render, so an installer script is never displayed in a page a reader
+        could copy it out of without the verification step.
+      required: true
+      schema:
+        type: string
+    ContentTypeOptions:
+      description: Always `nosniff`.
+      required: true
+      schema:
+        type: string
+    ContentLength:
+      description: |
+        Set explicitly rather than inferred from what was written, so it is
+        accurate on a `HEAD` response that carries no body.
+      required: true
+      schema:
+        type: integer
+  responses:
+    Status:
+      description: The instance is healthy.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+          examples:
+            live:
+              value: { status: ok, version: 1.0.0-rc2 }
+            ready:
+              value: { status: ready, version: 1.0.0-rc2 }
+    Unavailable:
+      description: |
+        The instance is not ready to serve traffic and should be removed from
+        the load balancer. The reason is logged, never returned.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Status"
+          example: { status: unavailable }
+    AuthorizedKeys:
+      description: |
+        The key set, as a native `authorized_keys` document: one canonical,
+        options-free line per active key, in a deterministic order so identical
+        content yields a stable `ETag`. An existing but empty set is a `200`
+        with an empty body, not a `404`.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlPublish"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorizationPublish"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Content-Length:
+          $ref: "#/components/headers/ContentLength"
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: |
+            ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyMaterial01234567890abc owner@example
+    AuthorizedKeysHead:
+      description: |
+        Identical status and headers to the `GET`, with no body. `Content-Length`
+        still reports the size the body would have had.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlPublish"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorizationPublish"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Content-Length:
+          $ref: "#/components/headers/ContentLength"
+    InstallAsset:
+      description: |
+        The requested install artifact, verbatim from the bytes embedded at
+        build time.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlInstall"
+        Content-Disposition:
+          $ref: "#/components/headers/ContentDispositionAttachment"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+      content:
+        text/plain:
+          schema:
+            type: string
+    InstallNotModified:
+      description: |
+        The client's copy is current; no body. The validator is repeated so the
+        next request still has something to revalidate against.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlInstall"
+    NotModified:
+      description: |
+        The consumer's copy is current. The response carries no body.
+
+        It repeats the `ETag` and `Cache-Control` deliberately: a conditional
+        response that dropped its validator would leave the consumer with
+        nothing to revalidate against next time, silently degrading every
+        subsequent request into a full fetch.
+      headers:
+        ETag:
+          $ref: "#/components/headers/ETag"
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlPublish"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorizationPublish"
+    RoutingNotFound:
+      description: |
+        This path is not routed. Returned when the documentation or install
+        endpoints are disabled, and byte-for-byte identical to the response any
+        unrouted path
+        produces, so probing cannot reveal that the feature exists to be
+        disabled. Distinct from the publish `404`, which is a handler response
+        with its own cache directives.
+      headers:
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: "404 page not found\n"
+    UniformNotFound:
+      description: |
+        No key set is served for this path. This single response covers every
+        negative verdict, and the cases cannot be told apart — see the
+        enumeration note in the API description. It carries no `ETag` and is not
+        cacheable.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Content-Length:
+          $ref: "#/components/headers/ContentLength"
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: "not found\n"
+    DeviceList:
+      description: The owner's devices. An owner with none gets an empty array, not a `404`.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DeviceList"
+          example:
+            devices:
+              - id: PBQKV3XZ2YJ7N4M8RTFC6WDGHA
+                name: work laptop
+                status: active
+                created_at: "2026-07-20T12:00:00Z"
+                updated_at: "2026-07-20T12:00:00Z"
+    DeviceCreated:
+      description: The device was registered.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Device"
+          example:
+            id: PBQKV3XZ2YJ7N4M8RTFC6WDGHA
+            name: work laptop
+            status: active
+            created_at: "2026-07-20T12:00:00Z"
+            updated_at: "2026-07-20T12:00:00Z"
+    DeviceRevoked:
+      description: |
+        The device was revoked. The response carries no body: there is nothing
+        to report beyond the fact of the transition, and a body would be a place
+        for detail this operation deliberately does not disclose.
+      headers:
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+    PublicKeyList:
+      description: The owner's public keys. An owner with none gets an empty array, not a `404`.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PublicKeyList"
+          example:
+            keys:
+              - id: 7GQ2XR4TZBM9KNHVCW5JDPFY6A
+                device_id: PBQKV3XZ2YJ7N4M8RTFC6WDGHA
+                algorithm: ssh-ed25519
+                comment: work laptop
+                fingerprint: "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+                bit_len: 256
+                status: active
+                created_at: "2026-07-20T12:00:00Z"
+                updated_at: "2026-07-20T12:00:00Z"
+    PublicKeyCreated:
+      description: The key was enrolled.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PublicKey"
+          example:
+            id: 7GQ2XR4TZBM9KNHVCW5JDPFY6A
+            device_id: PBQKV3XZ2YJ7N4M8RTFC6WDGHA
+            algorithm: ssh-ed25519
+            comment: work laptop
+            fingerprint: "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU"
+            bit_len: 256
+            status: active
+            created_at: "2026-07-20T12:00:00Z"
+            updated_at: "2026-07-20T12:00:00Z"
+    PublicKeyRevoked:
+      description: |
+        The key was revoked. The response carries no body: there is nothing to
+        report beyond the fact of the transition, and a body would be a place
+        for detail this operation deliberately does not disclose.
+      headers:
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+    PublicKeyRejected:
+      description: |
+        The submission is not an acceptable public key, or the body is not
+        well-formed JSON.
+
+        This is the one management response that carries a reason, and it is
+        safe here because it reports on the bytes the caller just sent and on
+        nothing the system holds. The reason is drawn from a fixed set of
+        strings that never reflect the submission — in particular, a body that
+        contained private key material produces a fixed instruction to submit
+        the `.pub` file instead, and none of the pasted content is echoed,
+        stored, or logged.
+
+        A malformed body produces the reasonless `Error` body instead, because
+        a JSON decoder's message can quote the bytes it choked on.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/KeyRejected"
+          example:
+            status: error
+            reason: "keys: authorized_keys options are not permitted: domain: invalid input"
+    PublicKeyDuplicate:
+      description: |
+        The owner already holds a key with this fingerprint.
+
+        Unlike the not-found response this one is distinguishable, and safely
+        so: the uniqueness constraint is per-owner, so the only key it can
+        report on is one the caller already holds and can already see in its own
+        list. It discloses nothing about any other owner, and it is what stops a
+        client from retrying an enrollment that will never succeed.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    KeySetList:
+      description: The owner's live key sets. An owner with none gets an empty array, not a `404`.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/KeySetList"
+          example:
+            key_sets:
+              - id: 4JH2QK9WZTB7NRMXCV5PDF6YSA
+                name: prod
+                visibility: protected
+                is_default: false
+                created_at: "2026-07-20T12:00:00Z"
+                updated_at: "2026-07-20T12:00:00Z"
+    KeySetCreated:
+      description: The key set was created. It is empty, protected, and not the default.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/KeySet"
+          example:
+            id: 4JH2QK9WZTB7NRMXCV5PDF6YSA
+            name: prod
+            visibility: protected
+            is_default: false
+            created_at: "2026-07-20T12:00:00Z"
+            updated_at: "2026-07-20T12:00:00Z"
+    KeySetRenamed:
+      description: |
+        The key set was renamed. The `id` in this body is a NEW identifier; the
+        one in the request path now names a quarantined tombstone and answers
+        `404`.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/KeySet"
+          example:
+            id: 8MTPD3ZC6RKJ4WNHQXVY2BFG5A
+            name: production
+            visibility: protected
+            is_default: false
+            created_at: "2026-07-20T12:05:00Z"
+            updated_at: "2026-07-20T12:05:00Z"
+    KeySetUpdated:
+      description: |
+        The key set as it now stands. The `id` is unchanged — unlike a rename,
+        neither of these operations replaces the row — so a client holding it
+        may keep using it.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/KeySet"
+          example:
+            id: 8MTPD3ZC6RKJ4WNHQXVY2BFG5A
+            name: production
+            visibility: public
+            is_default: true
+            created_at: "2026-07-20T12:05:00Z"
+            updated_at: "2026-07-20T12:10:00Z"
+    KeySetDeleted:
+      description: |
+        The key set and its membership rows were removed; the underlying public
+        keys were not. The response carries no body: there is nothing to report
+        beyond the fact of the transition, and a body would be a place for
+        detail this operation deliberately does not disclose.
+      headers:
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+    KeySetNotFound:
+      description: |
+        No such key set for this caller. This single response covers an unknown
+        identifier, another owner's identifier, and a quarantined tombstone; the
+        cases cannot be told apart, and the body is byte-identical to the one an
+        unauthenticated caller receives.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            status: error
+    KeySetBadRequest:
+      description: |
+        The request body is unreadable, oversized, carries an unrecognized
+        field, or names an invalid or blocked set name.
+
+        It reports on nothing but what the caller just sent, which is why it is
+        safe for this surface to say "bad request" at all rather than collapsing
+        into the uniform `404`. The body still names no field and no reason — in
+        particular it never reveals whether a refused name was malformed or
+        blocked, nor which curated term a blocked name matched.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            status: error
+    KeySetConflict:
+      description: |
+        The request conflicts with the current state of the caller's own
+        account. The `reason` is one of a fixed, closed set of constants chosen
+        by the server; it never contains any part of the request.
+
+        Carrying a reason is safe here and not on the `404`: every one of these
+        is reached only after an owner-scoped read or write has already matched
+        a row of the CALLER'S OWN, so each reports a fact the caller can already
+        read out of its own list. A stranger's identifier produces the
+        reasonless `404` long before any of them.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/KeySetConflict"
+          example:
+            status: error
+            reason: default_set
+    Unauthenticated:
+      description: |
+        No usable credential was presented, or the token is expired, revoked, or
+        unverifiable. The cases are not distinguishable.
+
+        The `WWW-Authenticate` challenge names the scheme and nothing else: RFC
+        6750's `error` codes are precisely the distinctions this response exists
+        to erase.
+
+        This status depends solely on the presented token and never on whether
+        the addressed device exists, because authorization refuses before any
+        handler runs and no lookup has happened.
+      headers:
+        WWW-Authenticate:
+          description: Always the bare value `Bearer`, with no realm and no error parameter.
+          required: true
+          schema:
+            type: string
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    Forbidden:
+      description: |
+        The token is valid but its grant does not cover this request — a
+        read-only token attempting a mutation, or a resource-bound token
+        addressing something outside its binding.
+
+        It discloses nothing about what exists. The verdict is computed from the
+        token's own claims against the request the caller composed; no storage
+        is read to produce it.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    ManagementNotFound:
+      description: |
+        No such device for this caller. This single response covers an unknown
+        identifier, another owner's identifier, and an already-revoked device;
+        the cases cannot be told apart — see the enumeration note in the API
+        description.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    ManagementBadRequest:
+      description: |
+        The request body is unreadable, oversized, carries an unrecognized
+        field, or names an invalid device name.
+
+        It reports on nothing but what the caller just sent, which is why it is
+        safe for this surface to say "bad request" at all rather than collapsing
+        into the uniform `404`. The body still names no field and no reason.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    ManagementInternalError:
+      description: |
+        An internal fault, including a management route reached on a deployment
+        where the service behind it was not wired. The cause is in the server
+        log and never on the wire.
+
+        A wiring fault is deliberately a `500` and not a `404`: degrading into
+        "not found" would be indistinguishable from a genuine miss and would
+        hide a broken deployment behind a plausible answer.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    AdminEditApplied:
+      description: |
+        The reserved-identifier list edit was authorized, audited, persisted,
+        and applied. The response carries no body: the fact of the transition is
+        the whole report, and a body would be a place for detail this surface
+        deliberately does not disclose.
+    AdminRefused:
+      description: |
+        The edit was refused because the request did not establish an active
+        administrator — no administrator identity, an unknown one, or a disabled
+        one. These cases are deliberately indistinguishable: telling them apart
+        would let a caller enumerate which administrator IDs exist. The body is
+        fixed text and names nothing.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    AdminEditBadRequest:
+      description: |
+        The request body is unreadable, oversized, carries an unrecognized
+        field, or names an entry that is empty or has no comparable skeleton. It
+        reports only on what the caller sent, and names no field and no reason.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    AdminEntryConflict:
+      description: |
+        The entry is already present in the list, so adding it would record a
+        change that changed nothing. Reached only by an authorized administrator,
+        who can see the same fact in the list; it names no reserved term.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    AdminEntryNotFound:
+      description: |
+        No such entry is present, so there is nothing to remove. Reached only by
+        an authorized administrator; it names no reserved term and echoes no
+        entry.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    OwnerProvisioned:
+      description: |
+        The owner, its handle, and its default key set were created, and a
+        one-time enrollment code was minted. The code is disclosed HERE and
+        nowhere else — it is a credential and never appears in the audit log.
+        The administrator hands it to the owner, who redeems it once at
+        `POST /api/v1/enroll/redeem` before it expires.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProvisionedOwner"
+    OwnerHandleConflict:
+      description: |
+        The requested handle is already claimed, by this owner or another. The
+        answer is the same either way and names no owner: a handle that resolves
+        to another owner must be indistinguishable from one that is simply taken.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    AdminRateLimited:
+      description: |
+        The ADMIN rate-limit tier refused the request: the administrator's key
+        has exhausted its budget for the window, or the counter store was
+        unavailable and the tier fails closed (ADR-0023). The body names no
+        count, limit, or tier, for the same reason the other tiers' refusals do
+        not.
+      headers:
+        Retry-After:
+          description: |
+            Seconds until the administrator's window resets, rounded up. Derived
+            from the actual remaining life of the window, not a constant.
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    InternalError:
+      description: |
+        An internal fault. The body is fixed text; the cause is in the server
+        log and never on the wire, because the failure reasons name internal
+        state that an unauthenticated caller has no business learning.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+        X-Content-Type-Options:
+          $ref: "#/components/headers/ContentTypeOptions"
+        Content-Length:
+          $ref: "#/components/headers/ContentLength"
+      content:
+        text/plain:
+          schema:
+            type: string
+          example: "internal server error\n"
+    GrantIssued:
+      description: |
+        A pairing was opened (device-grant start) or minted (mode 2). The body is
+        the one and only disclosure of its device code, and — for the device-grant
+        flow — the short user code an operator transcribes to approve it. On the
+        mint path there is no user code and the field is omitted.
+
+        These are secrets in transit: the response is not cacheable and the values
+        appear nowhere else, so a client that loses them starts a new pairing
+        rather than re-reading these.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/GrantResponse"
+    CredentialIssued:
+      description: |
+        A credential pair was issued (redeem) or rotated (exchange). The body is
+        the one-time disclosure of the fresh refresh and access tokens; on the
+        exchange path the previous refresh token is now spent.
+
+        These are bearer secrets, so the response is not cacheable and the tokens
+        appear nowhere else.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/IssuedCredential"
+    EnrollApproved:
+      description: The polled pairing has been approved and is ready to redeem.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/EnrollStatus"
+          example: { status: approved }
+    EnrollPending:
+      description: |
+        The polled pairing exists and is still awaiting an owner's approval. The
+        client should keep polling no faster than the interval the grant reported.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/EnrollStatus"
+          example: { status: pending }
+    PairingApproved:
+      description: |
+        The pairing was bound to the token owner. No body: the poll and redeem
+        endpoints carry the result the client acts on.
+      headers:
+        Vary:
+          $ref: "#/components/headers/VaryAuthorization"
+    EnrollRejected:
+      description: |
+        The presented device or refresh token was not accepted — unknown, expired,
+        revoked, unapproved, or already spent. The cases are one indistinguishable
+        answer, so a caller learns nothing about which.
+
+        Unlike the management surface's `401` this carries no `WWW-Authenticate`
+        challenge: the credential is a device/refresh token in the body, not a
+        bearer header, so there is no scheme to challenge and nothing to erase.
+      headers:
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+    RateLimited:
+      description: |
+        The AUTH tier refused the request: the caller's key (client IP, or the
+        verified owner on the approval route) has exhausted its budget or is in
+        backoff, the counter store was unavailable and the tier fails closed, or
+        the client address could not be resolved. The body names no count, limit,
+        or tier — that would be a calibration oracle for pacing a slower campaign.
+      headers:
+        Retry-After:
+          description: |
+            Seconds until the caller's window resets, rounded up. Derived from the
+            actual remaining life of the window, not a constant.
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+        Cache-Control:
+          $ref: "#/components/headers/CacheControlNoStore"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example: { status: error }
+  schemas:
+    Status:
+      type: object
+      description: |
+        Carries no diagnostics. An unauthenticated probe must not disclose which
+        dependency failed or why, since that maps the deployment for an attacker.
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, unavailable]
+        version:
+          type: string
+          description: The running server's version. Omitted when unavailable.
+      additionalProperties: false
+    Error:
+      type: object
+      description: |
+        The uniform management error body. It carries a single constant field
+        and no diagnostics.
+
+        There is deliberately no code, message, or field pointer. Every error on
+        this surface is this exact object, which is what makes a `404` for
+        another owner's device byte-identical to a `404` for a device that never
+        existed.
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [error]
+      additionalProperties: false
+    RegisterDeviceRequest:
+      type: object
+      description: |
+        A device registration. It carries a name and nothing else.
+
+        `additionalProperties: false` is the contract, and the server enforces
+        it by rejecting the request rather than dropping the extra field. That
+        matters most for a field this schema does not have: there is no owner
+        property, so a body attempting to name one is refused instead of
+        silently having its claim ignored.
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: |
+            A display name: 1–64 printable characters, no control characters,
+            no leading or trailing whitespace. It is not an identifier and need
+            not be unique.
+      additionalProperties: false
+    Device:
+      type: object
+      description: |
+        A device in the owner's inventory.
+
+        It carries no owner field. That would be redundant — a caller only ever
+        sees its own devices — and echoing an owner back would invite clients to
+        start sending one, which is the shape the register request exists to
+        prevent.
+      required: [id, name, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          description: The opaque, unguessable device identifier.
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, revoked]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          description: Present only when the device is revoked.
+      additionalProperties: false
+    DeviceList:
+      type: object
+      description: |
+        The devices are wrapped in an object rather than returned as a bare
+        array, so the response can gain fields later without breaking consumers.
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: "#/components/schemas/Device"
+      additionalProperties: false
+    AddPublicKeyRequest:
+      type: object
+      description: |
+        A key enrollment. It names a device and carries one public key line.
+
+        `additionalProperties: false` is the contract, and the server enforces
+        it by rejecting the request rather than dropping the extra field. There
+        is no owner property, so a body attempting to name one is refused
+        instead of silently having its claim ignored — and there is no
+        algorithm, fingerprint, or bit-length property either, because those are
+        derived from the key by the server and are not a client's to assert.
+      required: [device_id, public_key]
+      properties:
+        device_id:
+          type: string
+          description: |
+            The device the key belongs to. It must be an active device of the
+            token's owner; anything else answers `404`.
+        public_key:
+          type: string
+          maxLength: 16384
+          description: |
+            One `authorized_keys`-style public key line: an algorithm, a
+            base64 blob, and an optional comment. Exactly one key. No
+            `authorized_keys` options. Never a private key.
+      additionalProperties: false
+    PublicKey:
+      type: object
+      description: |
+        A public key in the owner's inventory.
+
+        It carries no owner field, for the reason `Device` does not, and no key
+        blob: the fingerprint identifies the key, and the material is what the
+        publish path serves.
+      required: [id, device_id, algorithm, comment, fingerprint, bit_len, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          description: The opaque, unguessable key identifier.
+        device_id:
+          type: string
+        algorithm:
+          type: string
+          enum:
+            - ssh-ed25519
+            - ecdsa-sha2-nistp256
+            - ecdsa-sha2-nistp384
+            - ecdsa-sha2-nistp521
+            - ssh-rsa
+            - sk-ssh-ed25519@openssh.com
+            - sk-ecdsa-sha2-nistp256@openssh.com
+          description: |
+            The algorithm the server parsed out of the key. `ssh-dss` is absent
+            deliberately and is refused at ingest.
+        comment:
+          type: string
+          description: The trailing comment, normalized. Empty when the key carried none.
+        fingerprint:
+          type: string
+          description: The key's SHA-256 fingerprint, in OpenSSH's `SHA256:` form.
+        bit_len:
+          type: integer
+          description: The key's strength in bits. RSA below 3072 is refused at ingest.
+        status:
+          type: string
+          enum: [active, revoked]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+          description: Present only when the key is revoked.
+      additionalProperties: false
+    PublicKeyList:
+      type: object
+      description: |
+        The keys are wrapped in an object rather than returned as a bare array,
+        so the response can gain fields later without breaking consumers.
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: "#/components/schemas/PublicKey"
+      additionalProperties: false
+    AdminListEntryRequest:
+      type: object
+      description: |
+        A single reserved-identifier list entry, in the administrator's own
+        spelling. It is stored and audited exactly as written; the server
+        derives the comparison skeleton itself and never accepts or returns one.
+        `additionalProperties: false` refuses any other field rather than
+        ignoring it.
+      required: [entry]
+      properties:
+        entry:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: |
+            The word to add or remove. Bounded at 256 bytes, the same limit the
+            match engine applies, so an entry that could never be compared
+            against an identifier cannot be stored. An empty entry, or one whose
+            skeleton is empty, is refused with `400`.
+      additionalProperties: false
+    ProvisionOwnerRequest:
+      type: object
+      description: |
+        The owner to provision. There is deliberately no owner id, no status, no
+        key, and no device field: the server mints the identifiers, the owner is
+        always created active, and the owner adds their own keys after they
+        enroll. `additionalProperties: false` refuses any other field rather than
+        ignoring it.
+      required: [handle]
+      properties:
+        handle:
+          type: string
+          description: |
+            The public name to claim for the new owner. It passes the
+            reserved-identifier blocklist and the handle syntax rules; a refused
+            or invalid handle is a `400` that names no reason.
+        set_name:
+          type: string
+          description: |
+            The name of the owner's default key set. Optional; omitted means
+            `default`. When supplied it is checked against the blocklist too.
+        client_label:
+          type: string
+          description: |
+            A non-secret label recorded on the minted enrollment credential and
+            its audit trail. Optional; omitted means a server default.
+      additionalProperties: false
+    ProvisionedOwner:
+      type: object
+      description: |
+        The provisioned owner and its one-time enrollment code. The code is the
+        only secret here and appears in no other response and no log.
+      required: [owner_id, handle, set_name, enrollment_code, expires_at, pairing_id]
+      properties:
+        owner_id:
+          type: string
+          description: The identifier of the newly created owner.
+        handle:
+          type: string
+          description: The handle claimed for the owner.
+        set_name:
+          type: string
+          description: The name the default key set was created with.
+        enrollment_code:
+          type: string
+          description: |
+            The single-use code the owner redeems at `POST /api/v1/enroll/redeem`
+            to mint their own tokens. It expires at `expires_at`.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the enrollment code expires if unredeemed.
+        pairing_id:
+          type: string
+          description: |
+            Identifies the pairing the code belongs to. Not a secret; on its own
+            it authenticates nothing.
+      additionalProperties: false
+    CreateKeySetRequest:
+      type: object
+      description: |
+        There is deliberately no `visibility`, no `is_default`, and no owner
+        field. `additionalProperties: false` is the enforcement, not the
+        documentation: the server refuses an unrecognized field rather than
+        ignoring it, so a request that tries to assert any of them fails
+        loudly instead of being silently stripped.
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          description: |
+            The set name, unique per owner. It is the second segment of the
+            published `/{handle}/{set}` URL. Also checked against the
+            reserved-identifier blocklist (ADR-0017), which the pattern above
+            cannot express.
+      additionalProperties: false
+    RenameKeySetRequest:
+      type: object
+      description: |
+        The destination name. The source is the set named by the path, so there
+        is no field here that could address a different set than the one
+        authorization approved.
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+          description: The new set name, validated and blocklist-checked exactly as at creation.
+      additionalProperties: false
+    SetKeySetVisibilityRequest:
+      type: object
+      description: |
+        The visibility to move the set to. It is a required positive assertion:
+        there is no safe default the server could fall back to, because
+        `protected` would silently narrow and `public` would silently publish.
+      required: [visibility]
+      properties:
+        visibility:
+          type: string
+          enum: [public, protected]
+          description: |
+            `public` — the set resolves without a credential. `protected` — it
+            resolves only to a credentialed consumer. Any other value is
+            refused rather than persisted.
+      additionalProperties: false
+    DeleteKeySetRequest:
+      type: object
+      description: |
+        Optional. Its absence is equivalent to `{"confirm": false}` — the
+        fail-closed direction, which refuses to delete a non-empty set.
+      properties:
+        confirm:
+          type: boolean
+          default: false
+          description: |
+            Explicit acknowledgement that a non-empty set may be deleted
+            (ADR-0016). Required only when the set still has members; harmless
+            otherwise.
+      additionalProperties: false
+    KeySet:
+      type: object
+      description: |
+        A named, resolvable collection of the owner's public keys (ADR-0016).
+
+        The owner is absent: a caller can only ever see its own sets, so it
+        would be redundant, and echoing it back invites a client to start
+        sending it. The lifecycle state is absent because only live sets are
+        ever returned — the field would be the constant `active` on every
+        response it could appear in.
+      required: [id, name, visibility, is_default, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          description: |
+            The set's opaque, unguessable identifier. Not derived from the name;
+            a rename mints a new one.
+        name:
+          type: string
+          description: The set name — the second segment of the published `/{handle}/{set}` URL.
+        visibility:
+          type: string
+          enum: [public, protected]
+          description: |
+            Whether the set resolves to anyone or only to a caller presenting a
+            per-set access key (ADR-0010, ADR-0016). A newly created set is
+            always `protected`.
+        is_default:
+          type: boolean
+          description: |
+            Whether bare `GET /{handle}` resolves to this set. Exactly one of an
+            owner's sets carries it, and the one that does cannot be deleted.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+    KeySetList:
+      type: object
+      description: |
+        The sets are wrapped in an object rather than returned as a bare array,
+        so the response can gain fields later without breaking consumers.
+      required: [key_sets]
+      properties:
+        key_sets:
+          type: array
+          items:
+            $ref: "#/components/schemas/KeySet"
+      additionalProperties: false
+    KeySetConflict:
+      type: object
+      description: |
+        The conflict body. It is a distinct schema from `Error` rather than
+        `Error` with an optional field, so that no other error response on this
+        surface can start carrying a reason by accident.
+      required: [status, reason]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        reason:
+          type: string
+          enum: [name_taken, limit_reached, default_set, confirmation_required]
+          description: |
+            A fixed constant naming which rule the request broke. The set is
+            closed and the value is chosen by the server; it never contains any
+            part of the request.
+      additionalProperties: false
+    KeyRejected:
+      type: object
+      description: |
+        The ingest rejection body. It is a distinct schema from `Error` rather
+        than `Error` with an optional field, so that no other error response on
+        this surface can start carrying a reason by accident.
+      required: [status, reason]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        reason:
+          type: string
+          description: |
+            A fixed string naming which ingest rule the submission broke. It
+            never contains any part of the submission.
+      additionalProperties: false
+    Scope:
+      type: object
+      description: |
+        One capability a credential asks for or carries. The field names are the
+        domain's own vocabulary so the wire contract cannot drift from the model
+        it serializes. `resource_id` is present only for a resource-bound kind and
+        omitted otherwise.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          description: The scope kind, e.g. `full_owner`, `key_set`, or `device`.
+        resource_id:
+          type: string
+          description: The opaque id of the bound resource, for a resource-bound kind.
+      additionalProperties: false
+    GrantRequest:
+      type: object
+      description: |
+        A request to open a device-authorization grant or to mint a credential.
+        It carries a short client label and the scopes the pairing asks for, and
+        deliberately NO owner: on the mint path the owner is the verified token's,
+        and on the device-grant path there is no owner yet. An owner field here
+        would be the one change that turned the owner boundary into a
+        client-supplied value, so the strict decoder refuses any unknown field.
+      required: [client_label, scopes]
+      properties:
+        client_label:
+          type: string
+          description: A short human label for the pairing, for an owner to recognize it by.
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+      additionalProperties: false
+    ApproveRequest:
+      type: object
+      description: |
+        The short user code an owner transcribed from a pairing client, and
+        nothing else. There is no owner field: the owner is the verified token's.
+      required: [user_code]
+      properties:
+        user_code:
+          type: string
+          description: The short code the device-grant start disclosed to its operator.
+      additionalProperties: false
+    DeviceCodeRequest:
+      type: object
+      description: |
+        The 256-bit device code a pairing client holds, presented to poll or
+        redeem the pairing. It is the pairing's own secret, so it is the whole
+        body and the strict decoder refuses any companion field.
+      required: [device_code]
+      properties:
+        device_code:
+          type: string
+          description: The device code the grant disclosed to this client.
+      additionalProperties: false
+    ExchangeRequest:
+      type: object
+      description: |
+        The refresh token to rotate. Its single field is the secret, and the
+        strict decoder refuses any companion field — there is nothing else a
+        caller may assert here.
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          description: The current refresh token, spent single-use by a successful exchange.
+      additionalProperties: false
+    EnrollStatus:
+      type: object
+      description: |
+        The poll outcome for a pending pairing. `approved` (also `200`) means the
+        pairing may now be redeemed; `pending` (also `202`) means keep waiting. A
+        refusal is a `401` carrying the uniform Error body, not this schema.
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [approved, pending]
+      additionalProperties: false
+    GrantResponse:
+      type: object
+      description: |
+        The one-time disclosure of a pairing's codes. The secrets appear here and
+        nowhere else; a client that loses them starts a new pairing. `user_code`
+        is present for a device-grant start and omitted for a mint, where the mint
+        itself is the approval.
+      required: [pairing_id, device_code, expires_at, poll_interval_seconds]
+      properties:
+        pairing_id:
+          type: string
+          description: The pairing's opaque, non-secret identifier.
+        device_code:
+          type: string
+          description: The 256-bit code the client keeps and presents to poll and redeem.
+        user_code:
+          type: string
+          description: The short code an operator transcribes to approve; omitted on a mint.
+        expires_at:
+          type: string
+          format: date-time
+          description: When the pairing expires if it is not redeemed.
+        poll_interval_seconds:
+          type: integer
+          minimum: 0
+          description: The minimum seconds a client should wait between polls.
+      additionalProperties: false
+    IssuedCredential:
+      type: object
+      description: |
+        The one-time disclosure of a freshly issued or rotated credential pair.
+        The refresh and access tokens are bearer secrets that appear here and
+        nowhere else.
+      required:
+        - refresh_token
+        - refresh_expires_at
+        - access_token
+        - access_expires_at
+        - owner_id
+        - scopes
+      properties:
+        refresh_token:
+          type: string
+          description: The refresh token, spent single-use by a future exchange.
+        refresh_expires_at:
+          type: string
+          format: date-time
+        access_token:
+          type: string
+          description: The short-lived access token presented as a bearer credential.
+        access_expires_at:
+          type: string
+          format: date-time
+        owner_id:
+          type: string
+          description: The owner the credential authenticates as.
+        scopes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Scope"
+      additionalProperties: false

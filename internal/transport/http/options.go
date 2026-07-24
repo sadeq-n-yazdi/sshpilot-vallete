@@ -1,0 +1,184 @@
+package httpserver
+
+import (
+	"context"
+	"log/slog"
+	"time"
+
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/auth"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/counter"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/secrets"
+	"github.com/sadeq-n-yazdi/sshpilot-vallete/internal/telemetry"
+)
+
+// handlerOptions are the optional dependencies of the route table: the
+// authenticated management surface, which an embedder serving only the publish
+// path does not need.
+type handlerOptions struct {
+	authorizer      Authorizer
+	devices         DeviceService
+	keys            PublicKeyService
+	keySets         KeySetService
+	listAdmin       ListAdminService
+	adminIdentifier AdminIdentifier
+	ownerOnboarding OwnerOnboardingService
+	enrollment      EnrollmentService
+	tokens          TokenIssuer
+	telemetry       *telemetry.Provider
+	counter         counter.Store
+}
+
+// HandlerOption configures NewHandler.
+type HandlerOption func(*handlerOptions)
+
+// WithAuthorizer supplies the authorization dependency for the management
+// routes. Without it those routes are mounted behind a Guardian that refuses
+// everything; see managementGuardian for why that is the failure mode rather
+// than leaving them unmounted.
+func WithAuthorizer(a Authorizer) HandlerOption {
+	return func(o *handlerOptions) { o.authorizer = a }
+}
+
+// WithDeviceService supplies the device management service.
+func WithDeviceService(s DeviceService) HandlerOption {
+	return func(o *handlerOptions) { o.devices = s }
+}
+
+// WithTelemetry supplies the tracing and metrics provider.
+//
+// Its absence is not a failure and needs no fallback: a nil *telemetry.Provider
+// yields a no-op tracer and a no-op meter, so the middleware is mounted either
+// way and the request path is identical in shape whether or not telemetry is
+// configured. Nothing about this option can weaken a security control -- it
+// only decides whether spans and metrics are recorded.
+//
+// Note what this option does NOT do: it never causes the scrape endpoint to be
+// mounted on this handler. The Prometheus endpoint lives on its own listener
+// (telemetry.MetricsServer) and there is no code path from here to it.
+func WithTelemetry(p *telemetry.Provider) HandlerOption {
+	return func(o *handlerOptions) { o.telemetry = p }
+}
+
+// WithCounterStore supplies the counter store that backs every rate-limit
+// tier, overriding the in-process store NewHandler would otherwise build.
+//
+// It exists so the composition root can inject the shared (Redis/Valkey with
+// memory failover) store selected by rate_limit.store: it is the seam through
+// which a store with a lifecycle -- a connection pool, a reprobe goroutine --
+// reaches the handler while its Close stays owned by the caller that built it.
+// Absent this option, NewHandler builds the in-process store, which is the
+// right default for a single-node deployment and for an embedder. A nil store
+// supplied here is treated as "not supplied" and the fallback is used, so the
+// option can never be the reason rate limiting silently vanishes.
+func WithCounterStore(s counter.Store) HandlerOption {
+	return func(o *handlerOptions) { o.counter = s }
+}
+
+// WithPublicKeyService supplies the public key management service.
+func WithPublicKeyService(s PublicKeyService) HandlerOption {
+	return func(o *handlerOptions) { o.keys = s }
+}
+
+// WithKeySetService supplies the key set management service.
+func WithKeySetService(s KeySetService) HandlerOption {
+	return func(o *handlerOptions) { o.keySets = s }
+}
+
+// WithListAdminService supplies the reserved-identifier list editing service.
+// Without it the admin list routes are mounted but answer 500, the same
+// unconditional-mount-then-refuse shape the other management services take.
+func WithListAdminService(s ListAdminService) HandlerOption {
+	return func(o *handlerOptions) { o.listAdmin = s }
+}
+
+// WithEnrollmentService supplies the enrollment service backing the device-grant
+// and mint routes. Without it those routes are mounted but answer 500, the same
+// unconditional-mount-then-refuse shape the other management services take, so
+// the surface is constant and a missing service reads as a broken deployment
+// rather than an absent feature.
+func WithEnrollmentService(s EnrollmentService) HandlerOption {
+	return func(o *handlerOptions) { o.enrollment = s }
+}
+
+// WithTokenService supplies the token-exchange service backing POST /api/v1/token.
+// Without it that route is mounted but answers 500, for the same reason as
+// WithEnrollmentService.
+func WithTokenService(s TokenIssuer) HandlerOption {
+	return func(o *handlerOptions) { o.tokens = s }
+}
+
+// WithOwnerOnboardingService supplies the admin-provisioned owner onboarding
+// service backing POST /api/v1/admin/owners. Without it that route is mounted
+// but answers 500, the same unconditional-mount-then-refuse shape the other
+// management services take, so the surface is constant and a missing service
+// reads as a broken deployment rather than an absent feature.
+func WithOwnerOnboardingService(s OwnerOnboardingService) HandlerOption {
+	return func(o *handlerOptions) { o.ownerOnboarding = s }
+}
+
+// WithAdminIdentifier supplies the administrator identity resolver for the admin
+// list routes. Without it those routes run behind denyAllAdminIdentifier, which
+// authenticates nobody, so every edit is attributed to the empty ID and refused
+// by the service -- the fail-closed default, mirroring how a missing Authorizer
+// leaves the owner surface refusing everyone. Production wiring MUST pass this
+// once an admin authenticator exists; see the SEAM note in cmd/valletd.
+func WithAdminIdentifier(id AdminIdentifier) HandlerOption {
+	return func(o *handlerOptions) { o.adminIdentifier = id }
+}
+
+// managementGuardian builds the Guardian for the management routes.
+//
+// # Why the routes are mounted even with no Authorizer
+//
+// The alternative -- registering them only when an Authorizer is supplied --
+// makes the route table's shape depend on wiring. A deployment that forgot to
+// wire authorization would then serve 404 on the management API, which is
+// indistinguishable from "this build has no management API" and is exactly the
+// kind of quiet difference that gets diagnosed as a client bug. Worse, it makes
+// the presence of a security control something a reader has to infer from
+// runtime state rather than read off the table.
+//
+// So the routes always exist, and when there is no Authorizer they are guarded
+// by one that refuses every credential. The surface is then constant and the
+// failure is loud in the right direction: every management call is refused,
+// which is the safe answer, and no request is ever served unauthenticated.
+//
+// This is a fallback, not a default anybody should reach in production. Prod
+// wiring MUST pass WithAuthorizer; see the note in cmd/valletd.
+func managementGuardian(a Authorizer, logger *slog.Logger) *Guardian {
+	if a == nil {
+		a = denyAllAuthorizer{}
+	}
+	// DenyUnauthorized is correct for this surface and is chosen deliberately
+	// rather than inherited. Devices are addressed by non-guessable internal
+	// identifiers and the caller is by definition an account holder, so
+	// existence is not the secret here -- and a 401 is what lets a client with
+	// an expired token know to refresh rather than present it forever. The
+	// existence question that DOES matter on this surface, "is this device
+	// someone else's", is answered by the handler's 404 and never by this
+	// layer, which refuses before any lookup happens.
+	//
+	// The error is discarded because it has exactly one cause, a nil
+	// Authorizer, which the line above has just made impossible.
+	g, err := NewGuardian(a, DenyUnauthorized, nil, logger)
+	if err != nil {
+		// Unreachable: NewGuardian fails only on a nil Authorizer. Panicking
+		// rather than returning a nil Guardian means a future change that
+		// introduces a second failure mode stops the process at startup instead
+		// of nil-panicking on the first management request.
+		panic("httpserver: management guardian: " + err.Error())
+	}
+	return g
+}
+
+// denyAllAuthorizer refuses every credential. It is the fail-closed stand-in
+// used when no Authorizer was supplied.
+type denyAllAuthorizer struct{}
+
+// Authorize always fails. It returns ErrAuthFailed rather than ErrForbidden so
+// the refusal is indistinguishable from a bad token: a 403 would tell a caller
+// its credential was valid and merely insufficient, which is a claim this type
+// is in no position to make.
+func (denyAllAuthorizer) Authorize(context.Context, secrets.Redacted, auth.Access, time.Time) (*auth.Authorization, error) {
+	return nil, auth.ErrAuthFailed
+}

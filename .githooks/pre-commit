@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook: keep the same gates CI enforces from ever landing in a
+# commit. Enable it once per clone with `make hooks` (sets core.hooksPath).
+#
+# Runs against the whole module (fast for this codebase). Set
+# VALLET_SKIP_HOOKS=1 to bypass in an emergency (`VALLET_SKIP_HOOKS=1 git commit`).
+set -euo pipefail
+
+if [[ "${VALLET_SKIP_HOOKS:-0}" == "1" ]]; then
+	echo "pre-commit: skipped (VALLET_SKIP_HOOKS=1)"
+	exit 0
+fi
+
+# Only run the Go gates when Go files are part of this commit.
+if ! git diff --cached --name-only --diff-filter=ACM | grep -q '\.go$'; then
+	exit 0
+fi
+
+fail=0
+
+echo "pre-commit: gofmt"
+unformatted="$(gofmt -l .)"
+if [[ -n "$unformatted" ]]; then
+	echo "  files need gofmt:" >&2
+	echo "$unformatted" | sed 's/^/    /' >&2
+	echo "  fix with: gofmt -w ." >&2
+	fail=1
+fi
+
+echo "pre-commit: go vet"
+if ! go vet ./...; then
+	fail=1
+fi
+
+# golangci-lint is optional locally; CI is the source of truth. Warn if absent
+# rather than block, so a missing tool never stops a commit.
+if command -v golangci-lint >/dev/null 2>&1; then
+	echo "pre-commit: golangci-lint"
+	if ! golangci-lint run; then
+		fail=1
+	fi
+else
+	echo "pre-commit: golangci-lint not installed, skipping (CI still enforces it)"
+fi
+
+if [[ "$fail" != "0" ]]; then
+	echo "pre-commit: FAILED — fix the issues above or bypass with VALLET_SKIP_HOOKS=1" >&2
+	exit 1
+fi

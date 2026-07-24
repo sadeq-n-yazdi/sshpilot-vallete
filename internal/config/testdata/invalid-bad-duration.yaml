@@ -1,0 +1,3 @@
+# Contains an unparseable duration; Load must reject it.
+auth:
+  access_token_ttl: 15zebras

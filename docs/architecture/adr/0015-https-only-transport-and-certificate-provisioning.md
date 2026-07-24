@@ -25,6 +25,47 @@ The app serves content **only over TLS**. When the app terminates TLS it opens
 **refused, not redirected**. A valid domain (FQDN + SANs) is required for the
 ACME and CSR modes; its absence is a hard configuration error.
 
+**Two tightly-fenced plaintext exceptions (owner-approved).** The "no plaintext
+listener" rule is qualified — never relaxed — for exactly two cases, and only
+when the app is **not** terminating TLS on that socket. Both bind
+**loopback/private only**, enforced by a single shared config fence
+(`validatePrivateBindAddr`: refuses wildcard, public, and unclassifiable binds;
+accepts `127.0.0.0/8`, `::1`, RFC1918, and ULA). Each is its own listener type,
+kept separate from the HTTPS `Server` (whose only serve method stays `ServeTLS`),
+so no bug or later refactor of the HTTPS type can emit plaintext.
+
+1. **Upstream-termination request listener (Decision 31).** When
+   `tls.mode: upstream`, a trusted proxy terminates TLS and forwards **plaintext
+   HTTP**, so the process holds no certificate and there is no HTTPS listener to
+   bind — this plaintext socket is the app's only listener. It is required in
+   upstream mode and **refused in every other mode** (a plaintext app socket must
+   never coexist with local TLS termination). Every request passes an outer
+   `requireSecureTransport` gate before the handler: unless it arrives from a
+   `server.trusted_proxies` peer carrying `X-Forwarded-Proto: https` it is refused
+   (400), so a request that bypassed the proxy cannot be served as if it were
+   secure. The forwarded-scheme check reuses the HSTS layer's `requestIsSecure`,
+   so there is one definition of a trusted forwarded scheme. Note:
+   `tls.upstream.require_forwarded_proto` is documented as **always-on** for this
+   listener — the forwarded-`https` check is the fence and is not made
+   disable-able, so the flag cannot lower it.
+
+2. **Loopback health-probe listener (Decision 43).** A server certificate that
+   public clients do not trust — a Cloudflare Origin CA cert, or the ephemeral
+   self-signed one — makes a direct TLS probe fail the handshake, so an
+   orchestrator that dials the pod/instance IP cannot health-check the HTTPS
+   listener. An optional separate plaintext listener (`server.health_listen_addr`,
+   unset by default) serves **only** `/healthz` and `/readyz` — no publish,
+   management, docs, or secret surface, on a fresh mux where everything else is a
+   404. Its `/readyz` reflects the same database-ping readiness the HTTPS listener
+   reports. It is the answer to this ADR's own "Operational consequence — health
+   checks" note under Cloudflare Origin CA: probe **here** rather than adding the
+   probe source to `server.trusted_proxies`.
+
+This amends the repository rule "no plaintext listener" (CLAUDE.md) for these two
+fenced cases specifically; a future reader should treat these listeners as the
+sanctioned exception, not a violation. Everything else — the public API surface,
+every TLS-terminating mode — remains HTTPS-only with no plaintext listener.
+
 **TLS policy (defaults):** minimum **TLS 1.2**, **TLS 1.3 preferred**; cipher
 suites restricted to a **strong AEAD allowlist** (no CBC/RC4/3DES/export), with
 forward secrecy required for the 1.2 suites. **HSTS** is sent. The floor at 1.2
@@ -55,6 +96,31 @@ publish path while remaining strong; the policy is config-tunable upward.
   Cloudflare API token is a secret (§3). Note: an Origin CA cert is trusted by
   the Cloudflare edge, **not** by public clients connecting directly — it is for
   the Cloudflare-fronted topology.
+  - **Misconfiguration gate (fail-closed).** Because that certificate is
+    meaningless to a direct client, this mode is a **trap** on a
+    directly-reachable origin: the symptom is a verification failure from every
+    direct client, and the fix operators reach for is disabling verification —
+    which removes exactly the MITM protection on the key-publish path this ADR
+    exists to provide. The server **cannot prove from the inside** that it is
+    unreachable from the internet, so it does not guess. It requires the
+    operator to **declare** the topology by listing the Cloudflare edge ranges
+    in `server.trusted_proxies` (startup is **refused** when empty, as in the
+    upstream mode), and then **enforces that declaration on every handshake**:
+    the origin certificate is **withheld** from any peer outside the list. The
+    credential is Cloudflare's dedicated **Origin CA Key** (value prefixed
+    `v1.0-`, sent as `X-Auth-User-Service-Key`) or a scoped API token (sent as a
+    bearer); both come from the secret provider per §3. Requested validity
+    defaults to **365 days**, deliberately not Cloudflare's 5475-day maximum,
+    so the §4 renew-ahead machinery actually re-keys rather than leaving a
+    private key on disk for fifteen years.
+  - **Operational consequence — health checks.** Withholding on every handshake
+    applies to *all* direct peers, including a Kubernetes `httpGet` probe or a
+    load-balancer health check that dials the pod/instance IP rather than
+    passing through Cloudflare. Loopback is refused too; the gate has no
+    exemptions. Operators must either add the probe source to
+    `server.trusted_proxies` or use a `tcpSocket`/`exec` probe, which completes
+    no TLS handshake. This is stated here because the failure mode (a pod that
+    never becomes ready) reads as a bug rather than as the policy working.
 - **Operator-provided cert + key** — load a supplied certificate and private
   key; the operator owns renewal.
 - **Generate CSR for external signing** — the app generates a private key and a
