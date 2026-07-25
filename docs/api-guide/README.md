@@ -33,6 +33,15 @@ with plain `curl` — no client, no agent, no private key on the backend.
 | **[6. API reference](06-api-reference.md)** | Every endpoint: auth, scope, rate-limit tier, parameters, request and response schemas, status codes, and a working curl example. |
 | **[7. Errors, security & limits](07-errors-security-and-limits.md)** | The uniform error bodies, the enumeration-resistance design, status-code tables, security headers, rate limiting, and the token model. |
 
+### Role runbooks
+Task-oriented, start-to-finish walkthroughs for a specific person. They reuse the
+reference chapters above rather than repeating them.
+
+| Guide | For whom | What it covers |
+| --- | --- | --- |
+| **[Administrator — provisioning users](admin-provisioning-guide.md)** | System administrators | Become an administrator, provision an owner with `POST /api/v1/admin/owners`, hand them an enrollment code that grants `full-owner` self-management, and — where a key must actually be published today — seed it with `bootstrap-owner`. |
+| **[End-user guide](end-user-guide.md)** | Owners managing their own keys | Authenticate and keep a token fresh, list your devices/keys/key sets, add and edit keys and sets, and get your keys onto another machine — including the honest gap where the API cannot yet publish a key on its own. |
+
 ---
 
 ## The shape of the system
